@@ -1,9 +1,8 @@
 import type { MutableRefObject } from "react";
-import * as Sentry from "@sentry/react";
 
 import { isRef } from "./isRef";
 
-type AnalyticsData = NonNullable<Sentry.Breadcrumb["data"]>;
+type AnalyticsData = Record<string, unknown>;
 
 /**
  * Analytics event categories for co-staking features
@@ -43,67 +42,19 @@ export enum AnalyticsMessage {
 }
 
 /**
- * Track a custom analytics event using Sentry captureEvent.
+ * Track a custom analytics event via console.
  */
 export function trackEvent(
   category: AnalyticsCategory,
   message: AnalyticsMessage,
   data: AnalyticsData = {},
 ) {
-  const tags: Record<string, string | number | boolean> = {
-    "analytics.category": category,
-  };
-
-  // Promote primitives from data to tags for searchability
-  // We add "extra.key" to support specific query patterns
-  Object.entries(data).forEach(([key, value]) => {
-    if (
-      typeof value === "string" ||
-      typeof value === "number" ||
-      typeof value === "boolean"
-    ) {
-      tags[`extra.${key}`] = value;
-    }
-  });
-
-  const timestamp = new Date().toISOString();
-
-  Sentry.captureEvent({
-    message,
-    level: "debug",
-    tags,
-    // Add a simple nonce into the fingerprint so that Sentry's
-    // client-side Dedupe integration does not drop consecutive
-    // analytics events that reuse the same `message`.
-    fingerprint: [message, timestamp],
-    extra: {
-      timestamp,
-      ...data,
-    },
-  });
+  console.debug(`[analytics:${category}]`, message, data);
 }
 
 /**
  * Track viewing time for modals, pages, or any component.
  * Returns a function to call when view ends to log duration.
- *
- * @param category - The analytics event category (e.g., modal, page, form).
- * @param message - The analytics event message describing the action.
- * @param data - Additional analytics data to include with the event.
- * @param minDurationMs - Minimum duration in ms to track (default: 1000ms). Ignores StrictMode double-mount and instant unmounts.
- * @remarks
- * You can pass either a static data object or a `MutableRefObject`.
- * Updating the ref's `.current` during the view ensures cleanup logs the latest values.
- *
- * @example
- * // Track page view
- * const logPageLeft = trackViewTime(AnalyticsCategory.PAGE_VIEW, AnalyticsMessage.PAGE_LEFT, { pageName: 'RewardsPage' });
- * return () => logPageLeft();
- *
- * @example
- * // Track modal view
- * const logModalClose = trackViewTime(AnalyticsCategory.MODAL_VIEW, AnalyticsMessage.MODAL_VIEWED, { modalName: 'ClaimPreview' });
- * return () => logModalClose();
  */
 export function trackViewTime(
   category: AnalyticsCategory,

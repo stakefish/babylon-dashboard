@@ -9,7 +9,6 @@ import Providers from "@/ui/common/providers";
 import { Router } from "@/ui/router";
 
 import "@/ui/globals.css";
-import "../sentry.client.config";
 
 /**
  * Initialize the ECC library for bitcoinjs-lib before app starts.

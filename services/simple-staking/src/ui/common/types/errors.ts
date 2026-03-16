@@ -28,7 +28,6 @@ export interface Error {
   message: string;
   type?: ErrorType;
   displayMessage?: string;
-  sentryEventId?: string;
   trace?: string;
   userPublicKey?: string;
   babylonAddress?: string;

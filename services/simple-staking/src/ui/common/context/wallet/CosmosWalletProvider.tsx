@@ -21,7 +21,6 @@ import { getNetworkConfigBBN } from "@/ui/common/config/network/bbn";
 import { useError } from "@/ui/common/context/Error/ErrorProvider";
 import { ClientError, ERROR_CODES } from "@/ui/common/errors";
 import { useLogger } from "@/ui/common/hooks/useLogger";
-import { useSentryUser } from "@/ui/common/hooks/useSentryUser";
 import { createBbnAminoTypes } from "@/ui/common/utils/wallet/amino";
 import { createBbnRegistry } from "@/ui/common/utils/wallet/bbnRegistry";
 
@@ -62,16 +61,13 @@ export const CosmosWalletProvider = ({ children }: PropsWithChildren) => {
   const logger = useLogger();
   const { open = () => {}, disconnect: disconnectAll } = useWalletConnect();
   const bbnConnector = useChainConnector("BBN");
-  const { updateUser } = useSentryUser();
 
   // Internal function to clear Cosmos state only (used by disconnect events)
   const clearCosmosState = useCallback(() => {
     setBBNWalletProvider(undefined);
     setCosmosBech32Address("");
     setSigningStargateClient(undefined);
-
-    updateUser({ babylonAddress: null });
-  }, [updateUser]);
+  }, []);
 
   // Public disconnect function - also disconnects other wallets
   const cosmosDisconnect = useCallback(() => {
@@ -133,8 +129,6 @@ export const CosmosWalletProvider = ({ children }: PropsWithChildren) => {
         setLoading(false);
         setWalletName(walletNameStr || "Unknown Wallet");
 
-        updateUser({ babylonAddress: bech32Address });
-
         logger.info("Babylon wallet connected", {
           babylonAddress: bech32Address,
           walletName: walletNameStr || "Unknown Wallet",
@@ -154,7 +148,7 @@ export const CosmosWalletProvider = ({ children }: PropsWithChildren) => {
         });
       }
     },
-    [handleError, cosmosBech32Address, walletName, logger, updateUser],
+    [handleError, cosmosBech32Address, walletName, logger],
   );
 
   // Listen for Babylon account changes

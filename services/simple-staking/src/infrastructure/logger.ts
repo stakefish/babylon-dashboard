@@ -1,5 +1,3 @@
-import { SeverityLevel, addBreadcrumb, captureException } from "@sentry/react";
-
 type Value = string | number | boolean | object;
 
 type Context = Record<string, Value | Value[]> & {
@@ -7,35 +5,15 @@ type Context = Record<string, Value | Value[]> & {
 };
 
 type ErrorContext = {
-  level?: SeverityLevel;
+  level?: string;
   tags?: Record<string, string>;
   data?: Record<string, Value | Value[]>;
 };
 
 export default {
   info: (message: string, { category, ...data }: Context = {}) =>
-    addBreadcrumb({
-      level: "info",
-      message,
-      category,
-      data,
-    }),
+    console.info(`[${category ?? "info"}]`, message, data),
   warn: (message: string, { category, ...data }: Context = {}) =>
-    addBreadcrumb({
-      level: "warning",
-      message,
-      category,
-      data,
-    }),
-  error: (
-    error: Error,
-    { level = "error", tags, data: extra }: ErrorContext = {},
-  ) =>
-    captureException(error, {
-      level,
-      tags: Reflect.has(error, "errorCode")
-        ? { ...tags, errorCode: Reflect.get(error, "errorCode") as string }
-        : tags,
-      extra,
-    }),
+    console.warn(`[${category ?? "warn"}]`, message, data),
+  error: (error: Error, _context: ErrorContext = {}) => console.error(error),
 };

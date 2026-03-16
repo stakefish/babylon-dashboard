@@ -6,7 +6,6 @@ import { network } from "@/ui/common/config/network/btc";
 import { Network } from "@/ui/common/types/network";
 import "@/ui/globals.css";
 
-import { Banner } from "./components/Banner/Banner";
 import { CoStakingBanner } from "./components/CoStakingBanner";
 import { Footer } from "./components/Footer/Footer";
 import { Header } from "./components/Header/Header";
@@ -25,7 +24,6 @@ export default function RootLayout() {
       )}
     >
       <div className="flex min-h-svh flex-col">
-        <Banner />
         <CoStakingBanner />
         <Header />
 

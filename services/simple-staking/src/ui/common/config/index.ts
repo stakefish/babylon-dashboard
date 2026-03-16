@@ -48,7 +48,7 @@ export const BBN_GAS_PRICE = (() => {
 export const PROD_ENVS = ["phase-2-mainnet"];
 
 export const isProductionEnv = (): boolean => {
-  const env = process.env.NEXT_PUBLIC_SENTRY_ENVIRONMENT ?? "";
+  const env = process.env.NEXT_PUBLIC_APP_ENVIRONMENT ?? "";
   return PROD_ENVS.includes(env);
 };
 
@@ -59,11 +59,4 @@ export const getDisabledWallets = (): string[] => {
     process.env.NEXT_PUBLIC_DISABLED_WALLETS?.split(",").map((w) => w.trim()) ||
     []
   );
-};
-
-// shouldRedactTelemetry controls whether sensitive wallet identifiers (addresses, public keys)
-// are redacted in telemetry logs sent to Sentry.
-// Default: true (redact for privacy). Set to "false" only for local debugging.
-export const shouldRedactTelemetry = (): boolean => {
-  return process.env.NEXT_PUBLIC_REDACT_TELEMETRY !== "false";
 };
