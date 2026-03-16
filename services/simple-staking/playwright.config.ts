@@ -11,7 +11,6 @@ const NEXT_BUILD_E2E = process.env.NEXT_BUILD_E2E ?? "true";
 
 const effectiveEnv = {
   NODE_OPTIONS: "--max-http-header-size=65536",
-  DISABLE_SENTRY: "true",
   PORT: String(PORT),
   NEXT_BUILD_E2E,
   ...process.env,

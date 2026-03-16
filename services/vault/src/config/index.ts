@@ -11,7 +11,7 @@ export { default as FeatureFlags } from "./featureFlags";
 const PROD_ENVS = ["phase-2-mainnet"];
 
 export const isProductionEnv = (): boolean => {
-  const env = process.env.NEXT_PUBLIC_SENTRY_ENVIRONMENT ?? "";
+  const env = process.env.NEXT_PUBLIC_APP_ENVIRONMENT ?? "";
   return PROD_ENVS.includes(env);
 };
 

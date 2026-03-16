@@ -22,7 +22,6 @@ import { getNetworkConfigBTC } from "@/ui/common/config/network/btc";
 import { useError } from "@/ui/common/context/Error/ErrorProvider";
 import { ClientError, ERROR_CODES } from "@/ui/common/errors";
 import { useLogger } from "@/ui/common/hooks/useLogger";
-import { useSentryUser } from "@/ui/common/hooks/useSentryUser";
 import { Fees } from "@/ui/common/types/fee";
 import {
   getAddressBalance,
@@ -103,7 +102,6 @@ export const BTCWalletProvider = ({ children }: PropsWithChildren) => {
   const btcConnector = useChainConnector("BTC");
   const { open = () => {}, disconnect: disconnectAll } = useWalletConnect();
   const logger = useLogger();
-  const { updateUser } = useSentryUser();
   const { screenAddress, clearAddressScreeningResult } =
     useAddressScreeningService();
 
@@ -115,9 +113,8 @@ export const BTCWalletProvider = ({ children }: PropsWithChildren) => {
     setAddress("");
     setFailedBtcAddressRiskAssessment(false);
 
-    updateUser({ btcAddress: null });
     clearAddressScreeningResult();
-  }, [updateUser, clearAddressScreeningResult]);
+  }, [clearAddressScreeningResult]);
 
   // Public disconnect function - also disconnects other wallets
   const btcDisconnect = useCallback(() => {
@@ -191,8 +188,6 @@ export const BTCWalletProvider = ({ children }: PropsWithChildren) => {
         setPublicKeyNoCoord(publicKeyNoCoordHex);
         setLoading(false);
 
-        updateUser({ btcAddress: address });
-
         logger.info("BTC wallet connected", {
           network,
           userPublicKey: publicKeyNoCoordHex,
@@ -217,7 +212,7 @@ export const BTCWalletProvider = ({ children }: PropsWithChildren) => {
         });
       }
     },
-    [handleError, publicKeyNoCoord, address, logger, updateUser, screenAddress],
+    [handleError, publicKeyNoCoord, address, logger, screenAddress],
   );
 
   useEffect(() => {

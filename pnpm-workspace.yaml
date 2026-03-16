@@ -3,9 +3,6 @@ packages:
   - tools/*
   - services/*
 
-ignoredBuiltDependencies:
-  - '@sentry/cli'
-
 onlyBuiltDependencies:
   - '@bufbuild/buf'
   - '@swc/core'

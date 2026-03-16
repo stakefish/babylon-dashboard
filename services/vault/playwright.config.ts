@@ -14,9 +14,7 @@ const MOCK_ENV_VARS = {
   NEXT_PUBLIC_TBV_AAVE_SPOKE: "0x0000000000000000000000000000000000000003",
   NEXT_PUBLIC_TBV_GRAPHQL_ENDPOINT: "http://localhost:9999/graphql",
   NEXT_PUBLIC_REOWN_PROJECT_ID: "test-project-id-12345",
-  NEXT_PUBLIC_SENTRY_DSN: "https://test@o12345.ingest.sentry.io/12345",
-  NEXT_PUBLIC_SIDECAR_API_URL: "http://localhost:8092",
-  NEXT_PUBLIC_SENTRY_ENVIRONMENT: "e2e-test",
+  NEXT_PUBLIC_APP_ENVIRONMENT: "e2e-test",
 };
 
 export default defineConfig({

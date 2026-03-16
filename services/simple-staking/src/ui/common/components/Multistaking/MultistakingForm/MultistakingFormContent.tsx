@@ -1,4 +1,5 @@
-import { HiddenField } from "@babylonlabs-io/core-ui";
+import { HiddenField, useFormContext } from "@babylonlabs-io/core-ui";
+import { useEffect } from "react";
 
 import { AuthGuard } from "@/ui/common/components/Common/AuthGuard";
 import { MultistakingModal } from "@/ui/common/components/Multistaking/MultistakingModal/MultistakingModal";
@@ -7,7 +8,6 @@ import { useStakingState } from "@/ui/common/state/StakingState";
 
 import { AmountSection } from "./AmountSection";
 import { ConnectButton } from "./ConnectButton";
-import { FinalityProvidersSection } from "./FinalityProvidersSection";
 import { FormAlert } from "./FormAlert";
 import { StakingFeesSection } from "./StakingFeesSection";
 import { SubmitButton } from "./SubmitButton";
@@ -49,4 +49,22 @@ export function MultistakingFormContent() {
       <MultistakingModal />
     </>
   );
+}
+
+function FinalityProvidersSection() {
+  const { setValue } = useFormContext();
+
+  useEffect(() => {
+    setValue(
+      "finalityProviders",
+      process.env.NEXT_PUBLIC_FINALITY_PROVIDER_PK,
+      {
+        shouldValidate: true,
+        shouldTouch: true,
+        shouldDirty: true,
+      },
+    );
+  }, [setValue]);
+
+  return null;
 }
