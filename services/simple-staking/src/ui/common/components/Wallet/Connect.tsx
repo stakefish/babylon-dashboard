@@ -9,9 +9,9 @@ import {
   useWidgetState,
 } from "@babylonlabs-io/wallet-connector";
 import { useMemo, useState } from "react";
-import { PiWalletBold } from "react-icons/pi";
 import { useLocation } from "react-router";
 import { twMerge } from "tailwind-merge";
+import { Icon } from "@stakefish/ui-kit";
 
 import { getNetworkConfigBBN } from "@/ui/common/config/network/bbn";
 import { getNetworkConfigBTC } from "@/ui/common/config/network/btc";
@@ -26,7 +26,7 @@ import { ubbnToBaby } from "@/ui/common/utils/bbn";
 import { satoshiToBtc } from "@/ui/common/utils/btc";
 import { formatBalance } from "@/ui/common/utils/formatCryptoBalance";
 
-import { SettingMenuWrapper } from "../Menu/SettingMenu";
+// import { SettingMenuWrapper } from "../Menu/SettingMenu";
 
 interface ConnectProps {
   loading?: boolean;
@@ -139,16 +139,16 @@ export const Connect: React.FC<ConnectProps> = ({
       <div className="flex items-center gap-2">
         <Button
           size="large"
-          className="h-[2.5rem] min-h-[2.5rem] rounded-full px-6 py-2 text-base text-white md:rounded"
+          className="!bg-transparent rounded-none group/button inline-flex items-center justify-center font-semibold whitespace-nowrap rounded-0 transition-[color,background,box-shadow] focus-visible:outline-brandDefault focus-visible:-outline-offset-1 focus-visible:outline-1 disabled:pointer-events-none outline-none uppercase ring-inset gap-2 font-mono tracking-normal ring-1 ring-itemPrimaryDefaultAlt2 hover:ring-itemSecondaryDefault dark:hover:ring-itemSecondaryDefault !text-itemPrimaryDefault data-[state=open]:ring-itemSecondaryDefault dark:ring-itemPrimaryMute disabled:text-backgroundPrimaryOnMute disabled:bg-transparent !py-1.5 !px-[12px] flounder:!py-1.5 flounder:!px-[14px] text-callout flounder:text-callout !py-[10px] flounder:!py-1.5 !h-auto"
           onClick={onConnect}
           disabled={isLoading}
           data-testid="connect-wallets-button"
         >
-          <PiWalletBold size={20} className="flex md:hidden" />
+          <Icon iconKey="connect" size={12} />
           <span className="hidden md:flex">{buttonContent}</span>
         </Button>
 
-        <SettingMenuWrapper />
+        {/* <SettingMenuWrapper /> */}
       </div>
     );
   }
@@ -208,7 +208,7 @@ export const Connect: React.FC<ConnectProps> = ({
         bbnCoinSymbol={bbnCoinSymbol}
       />
 
-      <SettingMenuWrapper />
+      {/* <SettingMenuWrapper /> */}
     </div>
   );
 };

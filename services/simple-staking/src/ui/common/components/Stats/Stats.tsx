@@ -1,7 +1,7 @@
 import { List, Button } from "@babylonlabs-io/core-ui";
 import { memo } from "react";
 
-import calculatorIcon from "@/ui/common/assets/calculator.svg";
+import CalculatorIcon from "@/ui/common/assets/Calculator";
 import { Section } from "@/ui/common/components/Section/Section";
 import { getNetworkConfigBTC } from "@/ui/common/config/network/btc";
 import { usePrice } from "@/ui/common/hooks/client/api/usePrices";
@@ -36,10 +36,11 @@ export const Stats = memo(() => {
     <Section title="Babylon Bitcoin Staking Stats" className="relative">
       <Button
         variant="outlined"
+        size="small"
         className="right-0 top-0 flex flex-row items-center justify-center gap-[5px] md:absolute"
         onClick={() => window.open("/calculator", "_blank")}
       >
-        <img src={calculatorIcon} alt="" className="h-4 w-4" />
+        <CalculatorIcon className="h-4 w-4" />
         Co-staking APR Calculator
       </Button>
       <List orientation="adaptive">

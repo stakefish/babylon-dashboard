@@ -11,6 +11,7 @@ import {
 import { useWalletConnect } from "@babylonlabs-io/wallet-connector";
 import { useMemo, useState, useEffect, useRef } from "react";
 import { useNavigate } from "react-router";
+import { Icon } from "@stakefish/ui-kit";
 
 import { Content } from "@/ui/common/components/Content/Content";
 import { Section } from "@/ui/common/components/Section/Section";
@@ -117,12 +118,10 @@ function RewardsPageContent() {
   function NotConnected() {
     return (
       <div className="flex flex-col gap-2">
-        <img
-          src="/images/mascot-happy.png"
-          alt="Mascot Happy"
-          width={400}
-          height={240}
-          className="mx-auto mt-8 max-h-72 object-cover"
+        <Icon
+          iconKey="connect"
+          size={48}
+          className="text-itemSecondaryDefault mx-auto"
         />
         <Heading variant="h5" className="text-center text-accent-primary">
           No wallet connected

@@ -3,6 +3,7 @@ import { useEffect } from "react";
 
 import { AuthGuard } from "@/ui/common/components/Common/AuthGuard";
 import { MultistakingModal } from "@/ui/common/components/Multistaking/MultistakingModal/MultistakingModal";
+import { getNetworkConfigBBN } from "@/ui/common/config/network/bbn";
 import FF from "@/ui/common/utils/FeatureFlagService";
 import { useStakingState } from "@/ui/common/state/StakingState";
 
@@ -53,18 +54,22 @@ export function MultistakingFormContent() {
 
 function FinalityProvidersSection() {
   const { setValue } = useFormContext();
+  const { chainId: BBN_CHAIN_ID } = getNetworkConfigBBN();
 
   useEffect(() => {
-    setValue(
-      "finalityProviders",
-      process.env.NEXT_PUBLIC_FINALITY_PROVIDER_PK,
-      {
-        shouldValidate: true,
-        shouldTouch: true,
-        shouldDirty: true,
-      },
-    );
-  }, [setValue]);
+    const providerPk = process.env.NEXT_PUBLIC_FINALITY_PROVIDER_PK;
+    if (providerPk) {
+      setValue(
+        "finalityProviders",
+        { [BBN_CHAIN_ID]: providerPk },
+        {
+          shouldValidate: true,
+          shouldTouch: true,
+          shouldDirty: true,
+        },
+      );
+    }
+  }, [setValue, BBN_CHAIN_ID]);
 
   return null;
 }
