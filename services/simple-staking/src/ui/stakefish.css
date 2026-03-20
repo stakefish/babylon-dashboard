@@ -1,0 +1,10 @@
+@import "./stakefish/theme/_typography.css";
+@import "./stakefish/theme/_extends.css";
+@import "./stakefish/theme/_buttons.css";
+@import "./stakefish/theme/_table.css";
+
+:root {
+  --font-primary: 'Inter', var(--font-fallback), sans-serif;
+  --font-display: 'InterDisplay', var(--font-fallback);
+  --font-mono: 'Noto Sans Mono', monospace;
+}
