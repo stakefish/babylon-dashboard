@@ -44,12 +44,12 @@ input[type="number"] {
   .text-balance {
     text-wrap: balance;
   }
-  .app-bg {
+  /* .app-bg {
     background-image: url("/background-light.webp");
   }
   .dark .app-bg {
     background-image: url("/background-dark.svg");
-  }
+  } */
 }
 
 [data-theme="dark"] .gradient-primary {
