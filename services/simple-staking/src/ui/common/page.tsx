@@ -53,10 +53,10 @@ const Home = () => {
   ];
 
   return (
-    <Card className="container mx-auto flex max-w-[760px] flex-1 flex-col gap-[3rem] bg-surface px-4 max-md:border-0 max-md:p-0">
+    <Card className="container mx-auto flex max-w-[760px] flex-1 flex-col gap-6 bg-surface px-4 max-md:border-0 max-md:p-0">
       <Container
         as="main"
-        className="mx-auto flex max-w-[760px] flex-1 flex-col gap-[3rem]"
+        className="mx-auto flex max-w-[760px] flex-1 flex-col gap-6"
       >
         <Stats />
         <Tabs
@@ -65,6 +65,7 @@ const Home = () => {
           activeTab={activeTab}
           onTabChange={setActiveTab}
           keepMounted
+          className="sf-tabs"
         />
       </Container>
     </Card>

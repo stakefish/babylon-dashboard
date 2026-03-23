@@ -1,5 +1,6 @@
 import { Hint } from "@babylonlabs-io/core-ui";
 import { useState } from "react";
+import { Icon } from "@stakefish/ui-kit";
 
 import babylon from "@/infrastructure/babylon";
 import { usePendingOperationsService } from "@/ui/baby/hooks/services/usePendingOperationsService";
@@ -156,10 +157,10 @@ export function BabyActivityList() {
   if (activityItems.length === 0) {
     return (
       <div className="flex flex-col items-center justify-center gap-4 pb-16 pt-6 text-center text-accent-primary">
-        <img
-          src="/images/mascot-upset.png"
-          alt="Empty state mascot illustration"
-          className="size-[300px]"
+         <Icon
+          iconKey="alertFilled"
+          size={20}
+          className="text-itemSecondaryDefault block mx-auto [&_svg]:size-[40px] !size-[40px]"
         />
         <h4 className="text-xl font-semibold text-accent-primary">
           No BABY Stakes

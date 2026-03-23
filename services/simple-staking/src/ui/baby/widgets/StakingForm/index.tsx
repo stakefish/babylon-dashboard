@@ -8,7 +8,7 @@ import { FeeField } from "@/ui/baby/components/FeeField";
 import { useStakingState, type FormData } from "@/ui/baby/state/StakingState";
 import { StakingModal } from "@/ui/baby/widgets/StakingModal";
 import { SubmitButton } from "@/ui/baby/widgets/SubmitButton";
-import { ValidatorField } from "@/ui/baby/widgets/ValidatorField";
+// import { ValidatorField } from "@/ui/baby/widgets/ValidatorField";
 import { FormAlert } from "@/ui/common/components/Multistaking/MultistakingForm/FormAlert";
 import { useFormPersistenceState } from "@/ui/common/state/FormPersistenceState";
 import { useCoStakingState } from "@/ui/common/state/CoStakingState";
@@ -184,7 +184,7 @@ export default function StakingForm({
       defaultValues={defaultValues}
     >
       <AmountField />
-      <ValidatorField />
+      {/* <ValidatorField /> */}
       <FeeField babyPrice={babyPrice} calculateFee={calculateFee} />
 
       <SubmitButton disabled={loading} isGeoBlocked={isGeoBlocked} />

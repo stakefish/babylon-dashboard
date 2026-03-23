@@ -180,7 +180,7 @@ export function ValidatorField() {
   return (
     <>
       <FinalityProviderSubsection
-        actionText="Select Validator"
+        actionText="Selected Validator"
         max={1}
         items={selectedValidators.map((v, index) => ({
           bsnId: v.id,

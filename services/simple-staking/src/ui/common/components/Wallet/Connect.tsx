@@ -144,7 +144,11 @@ export const Connect: React.FC<ConnectProps> = ({
           disabled={isLoading}
           data-testid="connect-wallets-button"
         >
-          <Icon iconKey="connect" size={12} />
+          <Icon
+            iconKey="connect"
+            size={20}
+            className="text-itemSecondaryDefault block mx-auto [&_svg]:size-[40px] !size-[40px]"
+          />
           <span className="hidden md:flex">{buttonContent}</span>
         </Button>
 

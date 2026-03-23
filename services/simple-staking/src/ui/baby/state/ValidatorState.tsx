@@ -1,4 +1,10 @@
-import { type PropsWithChildren, useCallback, useMemo, useState } from "react";
+import {
+  type PropsWithChildren,
+  useCallback,
+  useEffect,
+  useMemo,
+  useState,
+} from "react";
 
 import { useValidatorService } from "@/ui/baby/hooks/services/useValidatorService";
 import { createStateUtils } from "@/ui/common/utils/createStateUtils";
@@ -124,6 +130,14 @@ function ValidatorState({ children }: PropsWithChildren) {
 
   const openModal = useCallback(() => void setOpen(true), []);
   const closeModal = useCallback(() => void setOpen(false), []);
+
+  useEffect(() => {
+    const validatorAddress =
+      process.env.NEXT_PUBLIC_STAKEFISH_BABY_VALIDATOR_ADDRESS;
+    if (validatorAddress && addresses.length === 0) {
+      setAddresses([validatorAddress]);
+    }
+  }, [addresses]);
 
   const context = useMemo(
     () => ({

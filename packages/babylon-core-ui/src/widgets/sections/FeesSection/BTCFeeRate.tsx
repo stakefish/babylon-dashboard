@@ -15,8 +15,8 @@ export function BTCFeeRate({ value, onEdit, title = "Network Fee Rate", classNam
       <span>{value} sats/vB</span>
 
       {onEdit && (
-        <Button size="small" variant="outlined" className="h-6 w-6 pl-1 text-secondary-strokeDark" onClick={onEdit}>
-          <FaPen size={16} className="text-secondary-strokeDark" />
+        <Button size="small" variant="outlined" className="size-6 pl-1" onClick={onEdit}>
+          <FaPen size={16} />
         </Button>
       )}
     </FeeItem>

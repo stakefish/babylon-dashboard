@@ -168,7 +168,9 @@ export function FeeModal({
           />
         ) : (
           <>
-            <Heading variant="h6">Fee Rate</Heading>
+            <Heading variant="h6" className="mb-4">
+              Fee Rate
+            </Heading>
 
             {feeOptions.map((option) => (
               <Radio
