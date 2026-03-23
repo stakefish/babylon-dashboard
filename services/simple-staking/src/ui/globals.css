@@ -16,6 +16,9 @@ html {
   --primary: #ff7c2a;
   --secondary: "#0DB7BF";
   --toastify-toast-width: 344px;
+  --twc-accent-primary: var(--twc-itemPrimaryDefault);
+  --twc-accent-secondary: var(--twc-itemPrimaryDefault);
+  --twc-secondary-strokeDark: var(--twc-itemPrimaryMute);
 }
 
 @media screen and (min-width: 768px) {
@@ -139,4 +142,111 @@ body > .tomo-social {
 
 .bbn-card {
   @apply px-5 py-4 md:px-7 md:py-6 rounded-none border-itemPrimaryMute;
+}
+
+.bbn-list-title {
+  @apply !text-[clamp(12.6px,1rem+0.119048vmin,14px)] flounder:!text-[12px] tuna:!text-[clamp(12.6px,1rem+0.119048vmin,14px)] leading-[1.428] text-itemSecondaryDefault tuna:whitespace-nowrap;
+}
+
+.bbn-list-value {
+  @apply text-itemPrimaryDefault font-mono font-semibold text-desktopCallout leading-[1.428] whitespace-nowrap
+}
+
+.bbn-list {
+  gap: 0;
+}
+
+.bbn-list-item {
+  @apply gap-1.5 px-4 py-[9px] bg-transparent border border-itemPrimaryMute !rounded-none;
+
+  & + & {
+    @apply !border-l-0;
+  }
+}
+
+.react-tooltip {
+  @apply z-50 !rounded-none !shadow-none !bg-neutral0 px-4 py-2.5 !text-neutral90 max-w-64 relative font-medium font-sans;
+
+  p + p {
+    @apply !mt-2;
+  }
+}
+
+.sf-tabs [role="tablist"] {
+  @apply gap-0 flex items-center relative z-[2] *:inline-flex *:items-center *:justify-center *:whitespace-nowrap *:px-3.5 *:py-1.5 *:text-itemSecondaryDefault *:!text-callout *:font-semibold *:uppercase after:absolute after:z-[-1] after:border-b after:border-solid after:border-itemSecondaryMute after:bottom-0 after:inset-x-0 mb-4;
+}
+
+.sf-tabs [role="tablist"] button {
+  @apply disabled:cursor-default disabled:!text-backgroundSecondaryOnMute transition-[color,background] disabled:pointer-events-none focus:outline-none focus-visible:outline-none border-solid border border-itemSecondaryMute bg-backgroundSecondaryActive text-backgroundSecondaryOnActive hover:bg-backgroundSecondaryActive hover:text-backgroundSecondaryOnActive !px-3 !py-1.5 !normal-case mr-1;
+  @apply rounded-none;
+}
+
+.sf-tabs [role="tablist"] button[aria-selected=true] {
+  @apply border-b-transparent bg-backgroundPrimaryDefault text-backgroundPrimaryOnDefault;
+}
+
+.sf-tabs .bbn-subsection-contained {
+  @apply bg-transparent border border-itemPrimaryMute !rounded-none;
+
+}
+
+.bbn-subsection {
+  @apply text-itemPrimaryDefault;
+}
+
+.text-accent-secondary {
+  @apply text-itemSecondaryDefault;
+}
+
+.bbn-switcher-label {
+  @apply text-itemPrimaryDefault gap-2 !rounded-none border-itemSecondaryMute -mb-px;
+}
+
+.bbn-switcher:not(.bbn-switcher-disabled) {
+  @apply text-itemSecondaryHighlight;
+}
+
+.bbn-switcher svg {
+  width: 16px;
+  height: 16px;
+}
+
+.bbn-chip {
+  @apply text-callout font-medium text-itemSecondaryDefault rounded-none;
+}
+
+.bbn-input-suffix {
+  @apply text-itemSecondaryDefault;
+}
+
+.bbn-input {
+  @apply border-itemSecondaryMute text-itemPrimaryDefault;
+}
+
+.bbn-accordion {
+  @apply border border-itemSecondaryMute text-itemPrimaryDefault;
+}
+
+.bbn-accordion-summary {
+  @apply text-itemPrimaryDefault relative flex items-center justify-between w-full gap-3 p-4 font-sans font-semibold text-left text-body4 flounder:p-6 focus:outline-itemSecondaryDefault;
+}
+
+.bbn-accordion-icon {
+  @apply text-itemSecondaryDefault mr-4;
+}
+
+.bbn-accordion-content {
+  @apply text-itemSecondaryDefault overflow-hidden p-4 flounder:p-6 !pt-0;
+}
+
+.divider {
+  @apply border-itemPrimaryMute;
+}
+
+.bbn-select {
+  @apply border-itemSecondaryMute text-itemSecondaryDefault hover:text-itemPrimaryDefault rounded-none font-semibold;
+}
+
+.text-primary-light {
+  @apply text-itemSecondaryDefault;
 }

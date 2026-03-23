@@ -187,7 +187,7 @@ body {
 
 .bbn-btn-primary {
   &.bbn-btn-contained {
-    @apply font-semibold uppercase bg-backgroundInverseDefault text-backgroundInverseOnDefault hover:bg-backgroundInverseActive hover:text-backgroundInverseOnActive focus-visible:bg-backgroundInverseActive;
+    @apply font-semibold uppercase bg-backgroundInverseDefault text-backgroundInverseOnDefault hover:bg-backgroundInverseActive hover:text-backgroundInverseOnActive focus-visible:bg-backgroundInverseActive disabled:!text-backgroundInverseOnMute/100 disabled:opacity-100;
   }
   &.bbn-btn-outlined {
     @apply font-semibold uppercase bg-transparent text-itemPrimaryDefault border-itemPrimaryDefault;
@@ -197,4 +197,12 @@ body {
 .btn-lg,
 .bbn-btn-large {
   @apply text-mobileBody2 flounder:text-desktopBody2 text-body4 flounder:text-body4 text-body4 flounder:text-body4 h-auto gap-1 px-5 py-3 font-mono font-semibold tracking-normal flounder:gap-2 flounder:px-8 flounder:py-4;
+}
+
+.bbn-btn-contained.bbn-btn-primary:disabled {
+  @apply !bg-backgroundInverseMute/100 !text-backgroundInverseOnMute/100 opacity-100;
+}
+
+.bbn-btn-contained.bbn-btn-primary:hover {
+  filter: none !important;
 }

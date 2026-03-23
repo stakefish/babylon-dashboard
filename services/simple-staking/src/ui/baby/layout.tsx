@@ -89,11 +89,16 @@ function BabyLayoutContent() {
   const fallbackContent = (
     <Container
       as="main"
-      className="mx-auto flex max-w-[760px] flex-1 flex-col gap-[3rem] pb-0"
+      className="mx-auto flex max-w-[760px] flex-1 flex-col gap-6 pb-0"
     >
       <Stats />
       <CoStakingBoostSection setActiveTab={setActiveTab} />
-      <Tabs items={fallbackTabItems} defaultActiveTab="stake" keepMounted />
+      <Tabs
+        items={fallbackTabItems}
+        defaultActiveTab="stake"
+        keepMounted
+        className="sf-tabs"
+      />
     </Container>
   );
 
@@ -102,11 +107,11 @@ function BabyLayoutContent() {
       <ValidatorState>
         <DelegationState>
           <Content>
-            <Card className="container mx-auto flex max-w-[760px] flex-1 flex-col gap-[3rem] bg-surface px-4 max-md:border-0 max-md:p-0">
+            <Card className="container mx-auto flex max-w-[760px] flex-1 flex-col gap-6 bg-surface px-4 max-md:border-0 max-md:p-0">
               <AuthGuard fallback={fallbackContent} geoBlocked={isGeoBlocked}>
                 <Container
                   as="main"
-                  className="mx-auto flex max-w-[760px] flex-1 flex-col gap-4 pb-0"
+                  className="mx-auto flex max-w-[760px] flex-1 flex-col gap-6 pb-0"
                 >
                   <Stats />
                   <CoStakingBoostSection setActiveTab={setActiveTab} />
@@ -115,6 +120,7 @@ function BabyLayoutContent() {
                     defaultActiveTab="stake"
                     activeTab={activeTab}
                     onTabChange={(tabId) => setActiveTab(tabId as TabId)}
+                    className="sf-tabs"
                   />
                 </Container>
               </AuthGuard>

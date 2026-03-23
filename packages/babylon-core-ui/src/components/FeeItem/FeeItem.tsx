@@ -17,7 +17,7 @@ export function FeeItem({ title, children, className, hint }: FeeItemProps) {
         className,
       )}
     >
-      <Text as="div" variant="body1">
+      <Text as="div" variant="body1" className="!font-semibold">
         {title}
       </Text>
 

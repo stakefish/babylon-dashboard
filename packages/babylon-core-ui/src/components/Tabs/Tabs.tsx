@@ -28,9 +28,7 @@ export const Tabs = ({
   keepMounted,
   variant = "default",
 }: TabsProps) => {
-  const [internalActiveTab, setInternalActiveTab] = useState(
-    defaultActiveTab || items[0]?.id || "",
-  );
+  const [internalActiveTab, setInternalActiveTab] = useState(defaultActiveTab || items[0]?.id || "");
 
   const activeTab = controlledActiveTab ?? internalActiveTab;
 
@@ -67,16 +65,12 @@ export const Tabs = ({
               "transition-colors duration-200",
               isSimple
                 ? twMerge(
-                    "text-lg font-normal pb-4",
-                    activeTab === item.id
-                      ? "text-accent-primary"
-                      : "text-accent-secondary",
+                    "pb-4 text-lg font-normal",
+                    activeTab === item.id ? "text-accent-primary" : "text-accent-secondary",
                   )
                 : twMerge(
                     "rounded px-4 py-2 text-accent-primary",
-                    activeTab === item.id
-                      ? "bg-secondary-highlight"
-                      : "bg-transparent",
+                    activeTab === item.id ? "bg-secondary-highlight" : "bg-transparent",
                   ),
             )}
             onClick={() => handleTabClick(item.id)}
@@ -85,13 +79,11 @@ export const Tabs = ({
           </button>
         ))}
       </div>
-      
-      {isSimple && (
-        <div className="w-full h-[1px] bg-secondary-strokeDark mb-6 -mt-6 opacity-30" />
-      )}
+
+      {isSimple && <div className="-mt-6 mb-6 h-px w-full bg-secondary-strokeDark opacity-30" />}
 
       {keepMounted ? (
-        <div className="mt-6">
+        <div>
           {items.map((item) => (
             <div
               key={item.id}
@@ -105,15 +97,10 @@ export const Tabs = ({
           ))}
         </div>
       ) : (
-        <div
-          role="tabpanel"
-          id={`panel-${activeTab}`}
-          aria-labelledby={`tab-${activeTab}`}
-        >
+        <div role="tabpanel" id={`panel-${activeTab}`} aria-labelledby={`tab-${activeTab}`}>
           {activeContent}
         </div>
       )}
     </div>
   );
 };
-

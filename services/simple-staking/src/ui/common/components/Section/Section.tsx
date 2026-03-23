@@ -20,7 +20,7 @@ export function Section({
         as="h3"
         variant="h5"
         className={twMerge(
-          "mb-4 font-semibold capitalize text-accent-primary md:mb-6 md:leading-normal",
+          "mb-4 font-semibold capitalize text-accent-primary md:mb-6 md:leading-normal empty:hidden",
           titleClassName,
         )}
       >

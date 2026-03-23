@@ -1,6 +1,4 @@
-import type * as MediaQueries from "@/ui/common/types/mediaQueries";
-
-export const breakpoints: MediaQueries.Breakpoints = {
+export const breakpoints: any = {
   initial: 0,
   trout: 428,
   perch: 641,

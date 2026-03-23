@@ -23,7 +23,7 @@ export function FinalityProviderSubsection({ max, items = [], actionText, onAdd,
       <div className="flex w-full flex-col gap-4">
         <div className="flex flex-row">
           <div className="flex w-full flex-row content-center items-center justify-between font-normal">
-            <span className="text-sm sm:text-base">{actionText}</span>
+            <span className="text-sm d sm:text-base sm:text-base">{actionText}</span>
             <CounterButton counter={count} max={max} onAdd={onAdd} />
           </div>
         </div>
