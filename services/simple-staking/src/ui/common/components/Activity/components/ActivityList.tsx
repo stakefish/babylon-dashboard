@@ -73,7 +73,7 @@ export function ActivityList() {
 
   if (activityData.length === 0) {
     return (
-      <div className="flex flex-col items-center justify-center gap-4 pb-16 pt-6 text-center text-accent-primary">
+      <div className="flex flex-col items-center justify-center gap-4 py-6 text-center text-accent-primary">
         <Icon
           iconKey="alertFilled"
           size={20}
