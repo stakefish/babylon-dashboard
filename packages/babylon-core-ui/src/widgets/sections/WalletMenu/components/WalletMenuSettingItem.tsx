@@ -1,8 +1,8 @@
-import React from 'react';
-import { Text } from '../../../../components/Text';
-import { Hint } from '../../../../components/Hint';
-import { Toggle } from '../../../../components/Toggle/Toggle';
-import { twJoin } from 'tailwind-merge';
+import React from "react";
+import { Text } from "../../../../components/Text";
+import { Hint } from "../../../../components/Hint";
+import { Toggle } from "../../../../components/Toggle/Toggle";
+import { twJoin } from "tailwind-merge";
 
 export interface WalletMenuSettingItemProps {
   icon: React.ReactNode;
@@ -25,58 +25,31 @@ export const WalletMenuSettingItem: React.FC<WalletMenuSettingItemProps> = ({
   tooltip,
   infoIcon,
 }) => {
-
-
   return (
-    <div className={twJoin(
-      "flex items-center justify-between w-full p-3 md:p-0 md:mb-0",
-      className
-    )}>
+    <div className={twJoin("flex w-full items-center justify-between gap-2 p-3 md:mb-0 md:p-0", className)}>
       <div className="flex items-center gap-4">
         {icon}
         <div className="flex flex-col">
           {infoIcon && tooltip ? (
-            <Text
-              as="span"
-              variant="body2"
-              className="text-accent-primary font-medium"
-            >
+            <Text as="span" variant="body2" className="font-medium text-accent-primary">
               {title}
-              <Hint 
-                tooltip={tooltip} 
-                placement="bottom" 
-                attachToChildren={true}
-                offset={[20, 8]}
-              >
-                <span className="inline-block align-middle text-secondary-strokeDark cursor-pointer ml-1">
+              <Hint tooltip={tooltip} placement="bottom" attachToChildren={true} offset={[20, 8]}>
+                <span className="ml-1 inline-block cursor-pointer align-middle text-secondary-strokeDark">
                   {infoIcon}
                 </span>
               </Hint>
             </Text>
           ) : (
-            <Hint
-              tooltip={tooltip}
-              attachToChildren={!!tooltip}
-              placement="bottom"
-            >
-              <Text
-                as="span"
-                variant="body2"
-                className="text-accent-primary font-medium"
-              >
+            <Hint tooltip={tooltip} attachToChildren={!!tooltip} placement="bottom">
+              <Text as="span" variant="body2" className="font-medium text-accent-primary">
                 {title}
               </Text>
             </Hint>
           )}
-          <Text className="text-accent-secondary !text-xs">
-            {status}
-          </Text>
+          <Text className="!text-xs text-accent-secondary">{status}</Text>
         </div>
       </div>
-      <Toggle
-        value={value}
-        onChange={onChange}
-      />
+      <Toggle value={value} onChange={onChange} />
     </div>
   );
 };

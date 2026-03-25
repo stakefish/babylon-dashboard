@@ -15,7 +15,9 @@ export const CoStakingAmountItem = ({ title, amount, symbol, caption, className 
   return (
     <SubSection className={twJoin("bbn-co-staking-amount-item", className)}>
       <div className="bbn-co-staking-amount-item-header">
-        <Text variant="body1">{title}</Text>
+        <Text variant="body1" className="font-semibold">
+          {title}
+        </Text>
         <Text variant="body1">
           {amount} {symbol}
         </Text>

@@ -1,10 +1,10 @@
-import React from 'react';
-import { Avatar } from '../../../../components/Avatar';
-import { Text } from '../../../../components/Text';
-import { DisplayHash } from '../../../../components/DisplayHash';
-import { CopyIcon } from '../../../../components/Icons';
-import { Loader } from '../../../../components/Loader';
-import { twJoin } from 'tailwind-merge';
+import React from "react";
+import { Avatar } from "../../../../components/Avatar";
+import { Text } from "../../../../components/Text";
+import { DisplayHash } from "../../../../components/DisplayHash";
+import { CopyIcon } from "../../../../components/Icons";
+import { Loader } from "../../../../components/Loader";
+import { twJoin } from "tailwind-merge";
 
 /**
  * Balance data structure for wallet display
@@ -23,7 +23,7 @@ export interface WalletBalanceData {
 }
 
 export interface WalletMenuCardProps {
-  walletType: 'Bitcoin' | 'Babylon' | 'Ethereum';
+  walletType: "Bitcoin" | "Babylon" | "Ethereum";
   walletName?: string;
   walletIcon?: string;
   address: string;
@@ -71,11 +71,11 @@ export const WalletMenuCard: React.FC<WalletMenuCardProps> = ({
     }
 
     if (value === undefined) {
-      return <Text className="text-accent-secondary text-sm">N/A</Text>;
+      return <Text className="text-sm text-accent-secondary">N/A</Text>;
     }
 
     return (
-      <Text variant="body1" className="text-accent-primary !text-sm">
+      <Text variant="body1" className="!text-sm text-accent-primary">
         {formatBalanceFn(value)}
       </Text>
     );
@@ -86,26 +86,18 @@ export const WalletMenuCard: React.FC<WalletMenuCardProps> = ({
     <>
       {/* Staked Balance */}
       {balances?.staked !== undefined && (
-        <div className="flex flex-col mb-1">
-          <Text
-            variant="body1"
-            className="text-accent-secondary font-medium !text-xs"
-          >
+        <div className="mb-1 flex flex-col">
+          <Text variant="body1" className="!text-xs font-medium text-accent-secondary">
             Staked Balance
           </Text>
-          <div data-testid="staked-balance">
-            {renderBalanceValue(balances.staked)}
-          </div>
+          <div data-testid="staked-balance">{renderBalanceValue(balances.staked)}</div>
         </div>
       )}
 
       {/* Stakable Balance */}
       {balances?.stakable !== undefined && (
         <div className="flex flex-col">
-          <Text
-            variant="body1"
-            className="text-accent-secondary font-medium !text-xs"
-          >
+          <Text variant="body1" className="!text-xs font-medium text-accent-secondary">
             Stakable Balance
           </Text>
           <div className="flex items-center gap-2" data-testid="stakable-balance">
@@ -122,15 +114,10 @@ export const WalletMenuCard: React.FC<WalletMenuCardProps> = ({
       {/* Available Balance */}
       {balances?.available !== undefined && (
         <div className="flex flex-col">
-          <Text
-            variant="body1"
-            className="text-accent-secondary font-medium !text-xs"
-          >
+          <Text variant="body1" className="!text-xs font-medium text-accent-secondary">
             Balance
           </Text>
-          <div data-testid="babylon-balance">
-            {renderBalanceValue(balances.available)}
-          </div>
+          <div data-testid="babylon-balance">{renderBalanceValue(balances.available)}</div>
         </div>
       )}
     </>
@@ -140,58 +127,41 @@ export const WalletMenuCard: React.FC<WalletMenuCardProps> = ({
     <>
       {balances?.available !== undefined && (
         <div className="flex flex-col">
-          <Text
-            variant="body1"
-            className="text-accent-secondary font-medium !text-xs"
-          >
+          <Text variant="body1" className="!text-xs font-medium text-accent-secondary">
             Balance
           </Text>
-          <div data-testid="ethereum-balance">
-            {renderBalanceValue(balances.available)}
-          </div>
+          <div data-testid="ethereum-balance">{renderBalanceValue(balances.available)}</div>
         </div>
       )}
     </>
   );
 
   return (
-    <div className={twJoin(
-      "bg-[#F9F9F9] dark:bg-[#2F2F2F] rounded-[4px] p-3 flex-1 md:p-4",
-      className
-    )}>
-      <div className="flex flex-col w-full">
-        <div className="flex items-center gap-2.5 mb-2 md:mb-3">
+    <div className={twJoin("border-itemPrimaryMute flex-1 border-b py-3 first:pt-0 md:py-4", className)}>
+      <div className="flex w-full flex-col">
+        <div className="mb-2 flex items-center gap-2.5 md:mb-3">
           <Avatar
             alt={walletName || walletType}
-            url={walletIcon || ''}
+            url={walletIcon || ""}
             size="large"
-            className="w-8 h-8 md:w-10 md:h-10 flex-shrink-0"
+            className="size-8 shrink-0 md:size-10"
           />
 
-          <div className="flex flex-1 flex-col items-start min-w-0">
-            <Text
-              variant="body1"
-              className="text-accent-primary font-medium text-xs"
-            >
+          <div className="flex min-w-0 flex-1 flex-col items-start">
+            <Text variant="body1" className="text-xs font-medium text-accent-primary">
               {walletType} Wallet
             </Text>
             <div className="flex items-center gap-1">
               {isCopied ? (
-                <Text className="text-accent-secondary text-xs">
-                  Copied ✓
-                </Text>
+                <Text className="text-xs text-accent-secondary">Copied ✓</Text>
               ) : (
-                <DisplayHash
-                  className="text-accent-secondary text-xs"
-                  value={address}
-                  symbols={6}
-                />
+                <DisplayHash className="text-xs text-accent-secondary" value={address} symbols={6} />
               )}
               <button
                 onClick={onCopy}
-                className="flex-shrink-0 p-1 rounded hover:bg-[#d7e1e7] dark:hover:bg-[#252525] transition-colors h-6 w-6 flex items-center justify-center hover:opacity-80"
+                className="flex size-6 shrink-0 items-center justify-center rounded p-1 transition-colors hover:bg-[#d7e1e7] hover:opacity-80 dark:hover:bg-[#252525]"
               >
-                <CopyIcon size={14} className="md:w-4 md:h-4" />
+                <CopyIcon size={14} className="md:size-4" />
               </button>
             </div>
           </div>
@@ -200,9 +170,9 @@ export const WalletMenuCard: React.FC<WalletMenuCardProps> = ({
         {/* Balance Sections - only show if balances are provided */}
         {balances && coinSymbol && (
           <div className="space-y-2">
-            {walletType === 'Bitcoin' && renderBitcoinBalances()}
-            {walletType === 'Babylon' && renderBabylonBalances()}
-            {walletType === 'Ethereum' && renderEthereumBalances()}
+            {walletType === "Bitcoin" && renderBitcoinBalances()}
+            {walletType === "Babylon" && renderBabylonBalances()}
+            {walletType === "Ethereum" && renderEthereumBalances()}
           </div>
         )}
       </div>

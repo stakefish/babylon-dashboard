@@ -1,7 +1,5 @@
 export const colors = {
   tonalPalette: {
-    transparent: "transparent",
-    inherit: "inherit",
     neutral0: "#000000",
     neutral5: "#0D0D0D",
     neutral9: "#1B1D21",
@@ -66,8 +64,6 @@ export const colors = {
   },
 
   tokensLight: {
-    current: "currentColor",
-    transparent: "transparent",
     surface: "#ffffff", // backgroundPrimaryDefault
     accent: {
       primary: "#000000", // itemPrimaryDefault
@@ -208,8 +204,6 @@ export const colors = {
     mainPairedActive: "#333333",
   },
   tokensDark: {
-    current: "currentColor",
-    transparent: "transparent",
     surface: "#1B1D21", // backgroundPrimaryDefault
     accent: {
       primary: "#FFFFFF", // itemPrimaryDefault
