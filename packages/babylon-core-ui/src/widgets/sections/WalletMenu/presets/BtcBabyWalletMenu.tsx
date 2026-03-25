@@ -23,14 +23,14 @@ export interface BtcBabyWalletMenuProps extends Omit<WalletMenuProps, "settingsS
 
 /**
  * BtcBabyWalletMenu - Wallet menu preset for simple-staking (BTC + BABY)
- * 
+ *
  * Features:
  * - BTC wallet card
  * - BABY wallet card
  * - Using Inscriptions toggle
  * - Linked Wallet Stakes toggle
  * - Bitcoin Public Key display
- * 
+ *
  * Use this for BTC staking applications that need inscription and linked wallet features.
  */
 export const BtcBabyWalletMenu: React.FC<BtcBabyWalletMenuProps> = ({
@@ -48,24 +48,32 @@ export const BtcBabyWalletMenu: React.FC<BtcBabyWalletMenuProps> = ({
   const copyToClipboard = copy?.copyToClipboard ?? internalCopy;
 
   const settingsSection = (
-    <div className="flex flex-col w-full bg-neutral-100 rounded-lg md:bg-transparent md:border-none md:gap-8">
+    <div className="flex w-full flex-col rounded-lg bg-neutral-100 md:gap-6 md:border-none md:bg-transparent">
       <WalletMenuSettingItem
-        icon={<ThemedIcon variant="primary" background rounded><UsingInscriptionIcon /></ThemedIcon>}
+        icon={
+          <ThemedIcon variant="primary" background rounded>
+            <UsingInscriptionIcon />
+          </ThemedIcon>
+        }
         title="Using Inscriptions"
         status={ordinalsExcluded ? "Off" : "On"}
         value={!ordinalsExcluded}
-        onChange={(value) =>
-          value ? onIncludeOrdinals() : onExcludeOrdinals()
-        }
+        onChange={(value) => (value ? onIncludeOrdinals() : onExcludeOrdinals())}
       />
 
       <WalletMenuSettingItem
-        icon={<ThemedIcon variant="primary" background rounded><LinkWalletIcon /></ThemedIcon>}
-        title={<>
-          Linked Wallet
-          <br className="hidden md:block" />
-          <span className="md:hidden"> </span>Stakes
-        </>}
+        icon={
+          <ThemedIcon variant="primary" background rounded>
+            <LinkWalletIcon />
+          </ThemedIcon>
+        }
+        title={
+          <>
+            Linked Wallet
+            <br className="hidden md:block" />
+            <span className="md:hidden"> </span>Stakes
+          </>
+        }
         status={linkedDelegationsVisibility ? "On" : "Off"}
         value={linkedDelegationsVisibility}
         onChange={onDisplayLinkedDelegations}
@@ -78,18 +86,15 @@ export const BtcBabyWalletMenu: React.FC<BtcBabyWalletMenuProps> = ({
         value={publicKeyNoCoord}
         isCopied={isCopied("publicKey")}
         onCopy={() => copyToClipboard("publicKey", publicKeyNoCoord)}
-        icon={<ThemedIcon variant="primary" background rounded><BitcoinPublicKeyIcon /></ThemedIcon>}
+        icon={
+          <ThemedIcon variant="primary" background rounded>
+            <BitcoinPublicKeyIcon />
+          </ThemedIcon>
+        }
         className="rounded-b-lg rounded-t-none md:rounded-none"
       />
     </div>
   );
 
-  return (
-    <WalletMenu
-      {...walletMenuProps}
-      copy={copy}
-      settingsSection={settingsSection}
-    />
-  );
+  return <WalletMenu {...walletMenuProps} copy={copy} settingsSection={settingsSection} />;
 };
-

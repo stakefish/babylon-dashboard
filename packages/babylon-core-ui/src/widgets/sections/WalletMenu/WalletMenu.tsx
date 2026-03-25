@@ -69,10 +69,13 @@ export const WalletMenu: React.FC<WalletMenuProps> = ({
   const copyToClipboard = copy?.copyToClipboard ?? internalCopy;
   const [isOpen, setIsOpen] = useState(forceOpen);
 
-  const handleOpenChange = useCallback((open: boolean) => {
-    setIsOpen(open);
-    onOpenChange?.(open);
-  }, [onOpenChange]);
+  const handleOpenChange = useCallback(
+    (open: boolean) => {
+      setIsOpen(open);
+      onOpenChange?.(open);
+    },
+    [onOpenChange],
+  );
 
   const handleDisconnect = useCallback(() => {
     setIsOpen(false);
@@ -94,13 +97,10 @@ export const WalletMenu: React.FC<WalletMenuProps> = ({
       open={isOpen}
       onOpenChange={handleOpenChange}
       mobileMode={mobileMode}
-      className={twJoin(
-        "shadow-lg border border-[#38708533] bg-surface dark:border-[#404040] rounded-lg",
-        className,
-      )}
+      className={twJoin("bg-surface shadow-lg", className)}
     >
-      <div className="p-4 space-y-6 w-full text-primary-main">
-        <div className="flex flex-row gap-2 w-full md:flex-col">
+      <div className="w-full space-y-6 p-4 text-primary-main">
+        <div className="flex w-full flex-row gap-0 md:flex-col">
           {btcAddress && (
             <WalletMenuCard
               walletType="Bitcoin"
@@ -153,10 +153,7 @@ export const WalletMenu: React.FC<WalletMenuProps> = ({
 
         {/* Disconnect Button */}
         <div className="pt-2">
-          <WalletDisconnectButton
-            onClick={handleDisconnect}
-            fluid
-          >
+          <WalletDisconnectButton onClick={handleDisconnect} fluid>
             Disconnect Wallets
           </WalletDisconnectButton>
         </div>

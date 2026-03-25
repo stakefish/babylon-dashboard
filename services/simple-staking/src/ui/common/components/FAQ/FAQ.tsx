@@ -29,7 +29,7 @@ export const FAQ = ({ variant }: FAQProps) => {
 
   return (
     <SectionContainer titleClassName="md:text-[1.25rem] mt-10">
-      <Card className="flex flex-col gap-4 !border-0 !p-0">
+      <Card className="flex flex-col gap-2 !border-0 !p-0">
         {items.map((question) => (
           <Section
             key={question.title}

@@ -158,31 +158,41 @@ export const Connect: React.FC<ConnectProps> = ({
     <div className="relative flex flex-row items-center gap-4">
       <BtcBabyWalletMenu
         trigger={
-          <div className="cursor-pointer">
+          <div className="cursor-pointer btn-wallet-connected">
             <AvatarGroup max={3} variant="circular">
               {selectedWallets["BTC"] && !isBabyRoute ? (
-                <Avatar
-                  alt={selectedWallets["BTC"]?.name}
-                  url={selectedWallets["BTC"]?.icon}
-                  size="large"
-                  className={twMerge(
-                    "box-content bg-accent-contrast object-contain",
-                    isWalletMenuOpen &&
-                      "outline outline-[2px] outline-accent-primary",
-                  )}
-                />
+                <div className="flex items-center gap-1 font-semibold">
+                  <Avatar
+                    alt={selectedWallets["BTC"]?.name}
+                    url={selectedWallets["BTC"]?.icon}
+                    size="large"
+                    className={twMerge(
+                      "box-content bg-accent-contrast object-contain",
+                      isWalletMenuOpen &&
+                        "outline outline-[2px] outline-accent-primary",
+                    )}
+                  />
+                  <span className="text-accent-secondary text-xs">
+                    {btcAddress?.slice(0, 6)}…
+                  </span>
+                </div>
               ) : null}
               {selectedWallets["BBN"] ? (
-                <Avatar
-                  alt={selectedWallets["BBN"]?.name}
-                  url={selectedWallets["BBN"]?.icon}
-                  size="large"
-                  className={twMerge(
-                    "box-content bg-accent-contrast object-contain",
-                    isWalletMenuOpen &&
-                      "outline outline-[2px] outline-accent-primary",
-                  )}
-                />
+                <div className="flex items-center gap-1 font-semibold">
+                  <Avatar
+                    alt={selectedWallets["BBN"]?.name}
+                    url={selectedWallets["BBN"]?.icon}
+                    size="large"
+                    className={twMerge(
+                      "box-content bg-accent-contrast object-contain",
+                      isWalletMenuOpen &&
+                        "outline outline-[2px] outline-accent-primary",
+                    )}
+                  />
+                  <span className="text-accent-secondary text-xs">
+                    {bech32Address?.slice(0, 6)}…
+                  </span>
+                </div>
               ) : null}
             </AvatarGroup>
           </div>

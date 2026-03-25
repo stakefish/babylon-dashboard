@@ -78,8 +78,8 @@ export const AmountItem = ({
     <>
       <div className="flex w-full flex-row content-center items-center justify-between font-normal">
         <div className="flex items-center gap-2">
-          <img src={currencyIcon} alt={currencyName} className="h-10 max-h-[2.5rem] w-10 max-w-[2.5rem]" />
-          <div className="text-lg">{currencyName}</div>
+          <img src={currencyIcon} alt={currencyName} className="size-10 max-h-10 max-w-10" />
+          <div className="text-lg font-semibold">{currencyName}</div>
         </div>
         <input
           type="text"

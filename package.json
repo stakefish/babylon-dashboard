@@ -8,9 +8,9 @@
   },
   "scripts": {
     "preinstall": "node scripts/preinstall.js",
-    "build": "nx run-many --target=build --all",
-    "lint": "nx run-many --target=lint --all --verbose",
-    "test": "nx run-many --target=test --all --verbose",
+    "build": "pnpm nx build simple-staking",
+    "lint": "pnpm nx lint simple-staking",
+    "test": "pnpm nx test simple-staking",
     "nx:sync": "nx sync",
     "prepare": "husky",
     "ci:release": "nx run @internal/release:run"
