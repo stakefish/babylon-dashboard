@@ -18,6 +18,11 @@
       "outputs": ["{projectRoot}/dist"],
       "cache": true
     },
+    "build:ci": {
+      "dependsOn": ["^build:ci"],
+      "outputs": ["{projectRoot}/dist"],
+      "cache": true
+    },
     "test": {
       "dependsOn": ["^build"],
       "cache": true

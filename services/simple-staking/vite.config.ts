@@ -20,7 +20,7 @@ export default defineConfig({
   },
   build: {
     outDir: "dist",
-    sourcemap: true,
+    sourcemap: !process.env.CI,
     rollupOptions: {
       input: {
         main: resolve(__dirname, "index.html"),
