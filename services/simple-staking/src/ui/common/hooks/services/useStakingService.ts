@@ -20,6 +20,7 @@ import {
 } from "@/ui/common/types/delegationsV2";
 import { retry } from "@/ui/common/utils";
 import { btcToSatoshi } from "@/ui/common/utils/btc";
+import { Mixpanel } from "@/ui/stakefish/utils/mixpanel";
 
 import { useBbnTransaction } from "../client/rpc/mutation/useBbnTransaction";
 
@@ -169,6 +170,7 @@ export function useStakingService() {
           stakingTxHashHex,
           DelegationState.INTERMEDIATE_PENDING_BTC_CONFIRMATION,
         );
+        Mixpanel.track("Babylon | Staking Submitted");
         goToStep(StakingStep.FEEDBACK_SUCCESS);
       } catch (error: any) {
         const clientError = new ClientError(
