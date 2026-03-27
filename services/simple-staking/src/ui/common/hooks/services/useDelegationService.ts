@@ -128,6 +128,7 @@ export function useDelegationService() {
           stakingTxHashHex,
           State.INTERMEDIATE_PENDING_BTC_CONFIRMATION,
         );
+        Mixpanel.track("Babylon | Staking Submitted");
       },
 
       [ACTIONS.UNBOND]: async ({
@@ -161,6 +162,7 @@ export function useDelegationService() {
           stakingTxHashHex,
           State.INTERMEDIATE_UNBONDING_SUBMITTED,
         );
+        Mixpanel.track("Babylon | Unbonding Submitted");
       },
 
       [ACTIONS.WITHDRAW_ON_EARLY_UNBONDING]: async ({
@@ -179,6 +181,7 @@ export function useDelegationService() {
           stakingTxHashHex,
           State.INTERMEDIATE_EARLY_UNBONDING_WITHDRAWAL_SUBMITTED,
         );
+        Mixpanel.track("Babylon | Early Unbonding Withdrawal Submitted");
       },
 
       [ACTIONS.WITHDRAW_ON_EARLY_UNBONDING_SLASHING]: async ({
@@ -253,6 +256,7 @@ export function useDelegationService() {
           stakingTxHashHex,
           State.INTERMEDIATE_TIMELOCK_SLASHING_WITHDRAWAL_SUBMITTED,
         );
+        Mixpanel.track("Babylon | Timelock Slashing Withdrawal Submitted");
       },
     }),
     [
