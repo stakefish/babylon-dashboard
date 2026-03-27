@@ -7,10 +7,14 @@ import "@/ui/globals.css";
 
 import { Footer } from "../stakefish/components/Footer";
 import { Header } from "../stakefish/components/Header";
+import { ComplianceDialog } from "../stakefish/components/ComplianceDialog";
+import { useSingaporeCompliance } from "../stakefish/hooks/useSingaporeCompliance";
 
 import { CoStakingBanner } from "./components/CoStakingBanner";
 
 export default function RootLayout() {
+  const { shouldShowDialog } = useSingaporeCompliance();
+
   return (
     <div
       className={twJoin(
@@ -25,6 +29,8 @@ export default function RootLayout() {
         <Outlet />
 
         <Footer />
+
+        {!!shouldShowDialog && <ComplianceDialog />}
       </div>
     </div>
   );
