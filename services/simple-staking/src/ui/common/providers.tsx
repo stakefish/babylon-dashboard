@@ -5,6 +5,7 @@ import { ThemeProvider } from "next-themes";
 import { Suspense, useEffect, useRef, useState } from "react";
 
 import { PendingOperationsProvider } from "../baby/hooks/services/usePendingOperationsService";
+import { MixpanelTracker } from "../stakefish/components/MixpanelTracker";
 
 import { NotificationContainer } from "./components/Notification/NotificationContainer";
 import { ErrorProvider } from "./context/Error/ErrorProvider";
@@ -40,7 +41,9 @@ function Providers({ children }: React.PropsWithChildren) {
                       <BTCWalletProvider>
                         <CosmosWalletProvider>
                           <PendingOperationsProvider>
-                            <AppState>{children}</AppState>
+                            <AppState>
+                              <MixpanelTracker>{children}</MixpanelTracker>
+                            </AppState>
                           </PendingOperationsProvider>
                         </CosmosWalletProvider>
                       </BTCWalletProvider>

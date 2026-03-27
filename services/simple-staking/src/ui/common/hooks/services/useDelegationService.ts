@@ -15,6 +15,7 @@ import {
 import { FinalityProvider } from "@/ui/common/types/finalityProviders";
 import { BbnStakingParamsVersion } from "@/ui/common/types/networkInfo";
 import { getBbnParamByVersion } from "@/ui/common/utils/params";
+import { Mixpanel } from "@/ui/stakefish/utils/mixpanel";
 
 import { useStakingExpansionState } from "../../state/StakingExpansionState";
 
@@ -204,6 +205,9 @@ export function useDelegationService() {
           stakingTxHashHex,
           State.INTERMEDIATE_EARLY_UNBONDING_SLASHING_WITHDRAWAL_SUBMITTED,
         );
+        Mixpanel.track(
+          "Babylon | Early Unbonding Slashing Withdrawal Submitted",
+        );
       },
 
       [ACTIONS.WITHDRAW_ON_TIMELOCK]: async ({
@@ -222,6 +226,7 @@ export function useDelegationService() {
           stakingTxHashHex,
           State.INTERMEDIATE_TIMELOCK_WITHDRAWAL_SUBMITTED,
         );
+        Mixpanel.track("Babylon | Timelock Withdrawal Submitted");
       },
 
       [ACTIONS.WITHDRAW_ON_TIMELOCK_SLASHING]: async ({
