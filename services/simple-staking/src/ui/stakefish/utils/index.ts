@@ -28,7 +28,7 @@ export const spacingToPx = (value: number) => `${value * 8}px`;
 
 export const spacingToRem = (value: number) => pxToRem(value * 8);
 
-export { pxToFontVmin } from "./pxToFontVmin";
+export { pxToFontVmin } from "../pxToFontVmin";
 
 export const percentToHex = (p: number) => {
   const intValue = Math.round((p / 100) * 255);

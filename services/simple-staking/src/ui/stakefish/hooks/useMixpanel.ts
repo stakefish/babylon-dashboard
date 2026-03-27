@@ -1,23 +1,25 @@
-// 'use client'
+import { useLocation, useSearchParams } from "react-router";
+import { useEffect } from "react";
 
-// import { usePathname } from 'next/navigation'
-// import { useEffect } from 'react'
+import { useBTCWallet } from "@/ui/common/context/wallet/BTCWalletProvider";
 
-// import { Mixpanel } from 'utils/mixpanel'
+import { Mixpanel } from "../utils/mixpanel";
 
-// import { useWallet } from './useWallet'
+export function useMixpanelIdentify() {
+  const { address: activeAccount } = useBTCWallet();
+  useEffect(() => {
+    if (activeAccount) Mixpanel.identify(`${activeAccount}`);
+    else Mixpanel.reset();
+  }, [activeAccount]);
+}
 
-// export function useMixpanelIdentify() {
-//   const { activeAccount, activeChainId } = useWallet()
-//   useEffect(() => {
-//     if (activeAccount) Mixpanel.identify(`${activeAccount}_${activeChainId}`)
-//     else Mixpanel.reset()
-//   }, [activeAccount, activeChainId])
-// }
+export function useMixpanelPageTracker() {
+  const location = useLocation();
+  const searchParams = useSearchParams();
 
-// export function useMixpanelPageTracker() {
-//   const pathname = usePathname()
-//   useEffect(() => {
-//     if (pathname) Mixpanel.track_pageview()
-//   }, [pathname])
-// }
+  useEffect(() => {
+    if (typeof window !== "undefined") {
+      Mixpanel.track_pageview();
+    }
+  }, [location.pathname, searchParams]);
+}

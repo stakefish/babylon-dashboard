@@ -4,6 +4,7 @@ import { useError } from "@/ui/common/context/Error/ErrorProvider";
 import { useLogger } from "@/ui/common/hooks/useLogger";
 import { useRewardsState } from "@/ui/common/state/RewardState";
 import babylon from "@/infrastructure/babylon";
+import { Mixpanel } from "@/ui/stakefish/utils/mixpanel";
 
 import { useBbnTransaction } from "../client/rpc/mutation/useBbnTransaction";
 
@@ -73,6 +74,7 @@ export const useRewardsService = () => {
       if (result?.txHash) {
         setTransactionHash(result.txHash);
       }
+      Mixpanel.track("Babylon | Claim Rewards");
 
       return result;
     } catch (error: any) {

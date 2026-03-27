@@ -9,6 +9,7 @@ import { useDelegationState } from "@/ui/common/state/DelegationState";
 import { useDelegationV2State } from "@/ui/common/state/DelegationV2State";
 import { DelegationV2StakingState as DelegationState } from "@/ui/common/types/delegationsV2";
 import { retry } from "@/ui/common/utils";
+import { Mixpanel } from "@/ui/stakefish/utils/mixpanel";
 
 import { useBbnTransaction } from "../client/rpc/mutation/useBbnTransaction";
 
@@ -102,6 +103,7 @@ export function useRegistrationService() {
       );
       if (delegation) {
         setStep("registration-verified");
+        Mixpanel.track("Babylon | Registration Successful");
         // Refetch both v1 and v2 delegations to reflect the latest state
         refetchV1Delegations();
         refetchV2Delegations();
