@@ -1,8 +1,11 @@
 import { useEffect, useState } from "react";
 
-import { COMPLIANCE_CONFIG } from "./config";
-import { getComplianceCookie, setComplianceCookie } from "./cookies";
-import { detectSingaporeUser } from "./geolocationService";
+import { COMPLIANCE_CONFIG } from "../components/ComplianceDialog/config";
+import {
+  getComplianceCookie,
+  setComplianceCookie,
+} from "../components/ComplianceDialog/cookies";
+import { detectSingaporeUser } from "../components/ComplianceDialog/geolocationService";
 
 export const useSingaporeCompliance = () => {
   const [isSingaporeUser, setIsSingaporeUser] = useState<boolean | null>(null);

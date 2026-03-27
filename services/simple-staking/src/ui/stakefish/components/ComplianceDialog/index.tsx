@@ -1,7 +1,9 @@
 import { useState } from "react";
 import { Box, Button, Checkbox, Dialog } from "@stakefish/ui-kit";
 
-import { useSingaporeCompliance } from "./useSingaporeCompliance";
+import { useSingaporeCompliance } from "../../hooks/useSingaporeCompliance";
+
+const LINK = process.env.NEXT_PUBLIC_SG_COMPLIANCE_LINK;
 
 export const ComplianceDialog = () => {
   const { shouldShowDialog, approveCompliance, closeDialog, isDetecting } =
@@ -59,17 +61,15 @@ export const ComplianceDialog = () => {
                 By accessing and using our Services, you represent and warrant
                 that you are an institutional client or an accredited investor.
               </p>
-              <p>
-                More information on accredited investors can be found{" "}
-                <a
-                  href="https://stake.fish/terms-of-service"
-                  target="_blank"
-                  rel="noopener noreferrer"
-                >
-                  here
-                </a>
-                .
-              </p>
+              {LINK && (
+                <p>
+                  More information on accredited investors can be found{" "}
+                  <a href={LINK} target="_blank" rel="noopener noreferrer">
+                    here
+                  </a>
+                  .
+                </p>
+              )}
             </Box>
           </Box>
 
