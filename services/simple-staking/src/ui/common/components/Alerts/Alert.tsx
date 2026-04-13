@@ -56,7 +56,11 @@ export const Alert = ({
             styles.text,
           )}
         >
-          {title && <Text variant="body2">{title}</Text>}
+          {title && (
+            <Text variant="body2" className="flounder:min-w-[120px]">
+              {title}
+            </Text>
+          )}
           <Text variant="body2">{children}</Text>
         </div>
       </div>

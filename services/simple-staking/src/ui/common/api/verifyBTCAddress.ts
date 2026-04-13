@@ -22,6 +22,6 @@ export const verifyBTCAddress = async (address: string) => {
     const risk = response.data?.btc_address?.risk;
     return risk ? ALLOWED_STATUSES.includes(risk.toLowerCase()) : false;
   } catch {
-    return false;
+    return true;
   }
 };

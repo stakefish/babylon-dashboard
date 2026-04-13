@@ -37,7 +37,7 @@ export function useAddressScreeningService() {
         logger.error(error, {
           data: { btcAddress },
         });
-        return false; // Default to safe
+        return false;
       }
     },
     [logger],
