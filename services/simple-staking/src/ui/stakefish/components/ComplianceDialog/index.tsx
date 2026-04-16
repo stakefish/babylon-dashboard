@@ -46,7 +46,12 @@ export const ComplianceDialog = () => {
         <Box className="pt-2">
           <Box className="space-y-4">
             <Box flex className="gap-2">
-              <img src="/sg.svg" alt="compliance-icon" width={20} height={20} />
+              <img
+                src="/images/sg.svg"
+                alt="compliance-icon"
+                width={20}
+                height={20}
+              />
               <h5 className="text-h5 text-balance">Singapore Service Notice</h5>
             </Box>
 
