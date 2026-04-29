@@ -23,3 +23,8 @@ export const PENDING_COLLATERAL_KEY_PREFIX = "vault-pending-collateral";
 export const ZERO_ADDRESS =
   "0x0000000000000000000000000000000000000000" as const;
 export const MAX_UINT256 = 2n ** 256n - 1n;
+
+// Bitcoin protocol constants
+export const BTC_BLOCK_TIME_MINS = 10;
+export const MINS_PER_HOUR = 60;
+export const FALLBACK_FEE_RATE_SATS_VB = 1;
