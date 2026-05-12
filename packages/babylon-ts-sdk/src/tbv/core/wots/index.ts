@@ -1,9 +1,5 @@
-export type { WotsKeypair, WotsPublicKey, WotsKeyProvider } from "./types";
 export {
-  mnemonicToWotsSeed,
-  deriveWotsKeypair,
-  keypairToPublicKey,
-  computeWotsPkHash,
-} from "./derivation";
-export { deriveWotsPkHash } from "./deriveWotsPkHash";
+  deriveWotsBlocksFromSeed,
+  computeWotsBlockPublicKeysHash,
+} from "./blockDerivation";
 export { isWotsMismatchError } from "./errors";

@@ -8,12 +8,13 @@
  * the wagmi config to ensure compatibility.
  */
 
-import { getETHChain, getNetworkConfigBTC } from "@babylonlabs-io/config";
 import {
   initializeAppKitModal,
   type AppKitModalConfig,
 } from "@babylonlabs-io/wallet-connector";
 import { createConfig, http } from "wagmi";
+
+import { getETHChain, getNetworkConfigETH } from "@/config/network";
 
 interface WagmiInitResult {
   wagmiConfig: ReturnType<typeof createConfig>;
@@ -28,7 +29,6 @@ interface WagmiInitResult {
  */
 function initializeVaultWagmi(): WagmiInitResult {
   try {
-    const btcConfig = getNetworkConfigBTC();
     const projectId = process.env.NEXT_PUBLIC_REOWN_PROJECT_ID;
 
     if (!projectId) {
@@ -58,9 +58,6 @@ function initializeVaultWagmi(): WagmiInitResult {
       eth: {
         chain: getETHChain(),
       },
-      btc: {
-        network: btcConfig.network === "mainnet" ? "mainnet" : "signet",
-      },
     };
 
     const result = initializeAppKitModal(appKitConfig);
@@ -88,14 +85,19 @@ function initializeVaultWagmi(): WagmiInitResult {
 }
 
 /**
- * Create a minimal fallback wagmi config for error states
+ * Create a minimal fallback wagmi config for error states.
+ *
+ * Uses the env-configured RPC URL rather than viem's stock chain default,
+ * so reads/writes hit the same endpoint that can see the deployed
+ * contracts even when AppKit initialization fails.
  */
 function createFallbackConfig() {
   const chain = getETHChain();
+  const { rpcUrl } = getNetworkConfigETH();
   return createConfig({
     chains: [chain],
     transports: {
-      [chain.id]: http(),
+      [chain.id]: http(rpcUrl),
     },
   });
 }

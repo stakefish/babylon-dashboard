@@ -5,7 +5,7 @@
  * UTXO inputs and change outputs, creating a transaction ready for wallet signing.
  *
  * Transaction Flow:
- * 1. SDK buildPeginPsbt() → unfunded transaction (0 inputs, vault + depositor claim outputs)
+ * 1. SDK buildPrePeginPsbt() → unfunded Pre-PegIn tx (0 inputs, HTLC + CPFP outputs)
  * 2. selectUtxosForPegin() → select UTXOs and calculate fees
  * 3. fundPeginTransaction() → add inputs/change, create funded transaction
  *
@@ -17,7 +17,6 @@
 import * as bitcoin from "bitcoinjs-lib";
 import { Buffer } from "buffer";
 
-import { ensureEcc } from "../../primitives/utils/bitcoin";
 import { DUST_THRESHOLD } from "../fee/constants";
 import type { UTXO } from "../utxo/selectUtxos";
 
@@ -130,8 +129,6 @@ export function parseUnfundedWasmTransaction(
 export function fundPeginTransaction(
   params: FundPeginTransactionParams,
 ): string {
-  ensureEcc();
-
   const { unfundedTxHex, selectedUTXOs, changeAddress, changeAmount, network } =
     params;
 

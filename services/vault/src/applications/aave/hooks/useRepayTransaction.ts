@@ -12,6 +12,7 @@ import { parseUnits } from "viem";
 import { useAccount, useWalletClient } from "wagmi";
 
 import { ERC20 } from "@/clients/eth-contract";
+import { getETHChain } from "@/config/network";
 import { useError } from "@/context/error";
 import { logger } from "@/infrastructure";
 import {
@@ -20,7 +21,13 @@ import {
   mapViemErrorToContractError,
 } from "@/utils/errors";
 
-import { repayFull, repayPartial } from "../services";
+import { getAaveAdapterAddress } from "../config";
+import {
+  ReserveMismatchError,
+  assertReserveMatchesOnChain,
+  repayFull,
+  repayPartial,
+} from "../services";
 import type { AaveReserveConfig } from "../services/fetchConfig";
 
 export interface UseRepayTransactionProps {
@@ -34,11 +41,16 @@ export interface UseRepayTransactionResult {
    * @param repayAmount - Amount to repay in token units (e.g., 100 for 100 USDC)
    * @param reserve - Reserve config for the debt token
    * @param isFullRepayment - If true, fetches exact debt from contract and repays all
+   * @param preSignValidation - Optional callback that runs after the on-chain
+   *   reserve-mismatch check and before any repay tx. Throwing aborts the
+   *   submission. Used by the Repay UI to refetch position + split params and
+   *   recompute the projected post-repay HF against current on-chain values.
    */
   executeRepay: (
     repayAmount: number,
     reserve: AaveReserveConfig,
     isFullRepayment?: boolean,
+    preSignValidation?: () => Promise<void>,
   ) => Promise<boolean>;
   /** Whether transaction is currently processing */
   isProcessing: boolean;
@@ -57,20 +69,21 @@ export function useRepayTransaction({
   const { data: walletClient } = useWalletClient();
   const { address } = useAccount();
   const queryClient = useQueryClient();
-  const chain = walletClient?.chain;
+  const chain = getETHChain();
   const { handleError } = useError();
 
   const executeRepay = async (
     repayAmount: number,
     reserve: AaveReserveConfig,
     isFullRepayment = false,
+    preSignValidation?: () => Promise<void>,
   ) => {
     if (repayAmount <= 0) return false;
 
     setIsProcessing(true);
     try {
       // Validate prerequisites
-      if (!walletClient || !chain) {
+      if (!walletClient) {
         throw new WalletError(
           "Please connect your wallet to continue",
           ErrorCode.WALLET_NOT_CONNECTED,
@@ -82,6 +95,24 @@ export function useRepayTransaction({
           "Wallet address not available",
           ErrorCode.WALLET_NOT_CONNECTED,
         );
+      }
+
+      // Verify the indexer-supplied (reserveId, token.address) pair maps to
+      // the same reserve on-chain via the env-pinned adapter the tx will
+      // execute against. Without this, a compromised indexer could redirect
+      // a repayment to a different asset.
+      await assertReserveMatchesOnChain(
+        getAaveAdapterAddress(),
+        reserve.reserveId,
+        reserve.token.address,
+      );
+
+      // Pre-sign revalidation: refetch position + risk parameters and
+      // recheck projected post-repay HF before submitting. Throws if the
+      // on-chain risk parameters have moved since the displayed metrics
+      // were computed.
+      if (preSignValidation) {
+        await preSignValidation();
       }
 
       // Call appropriate service based on repayment type
@@ -134,11 +165,20 @@ export function useRepayTransaction({
       logger.error(error instanceof Error ? error : new Error(String(error)), {
         data: { context: "Repay failed" },
       });
+      // Surface the on-chain reserve-mismatch as its own user-facing error so
+      // the user sees an integrity warning, not a generic repay failure.
       const mappedError =
-        error instanceof Error
-          ? mapViemErrorToContractError(error, "Repay")
-          : new Error("An unexpected error occurred while repaying");
+        error instanceof ReserveMismatchError
+          ? new Error(
+              "Asset integrity check failed: the debt asset returned by the indexer does not match what's registered on-chain. Refresh and try again. If this persists, do not proceed.",
+            )
+          : error instanceof Error
+            ? mapViemErrorToContractError(error, "Repay")
+            : new Error("An unexpected error occurred while repaying");
 
+      // Repay deliberately has no `retryAction`. If one is added later, mirror
+      // the borrow hook and gate it on `!(error instanceof ReserveMismatchError)`
+      // — retrying can't help against a compromised indexer.
       handleError({
         error: mappedError,
         displayOptions: {

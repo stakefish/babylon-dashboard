@@ -38,34 +38,50 @@ Primitives are the lowest-level SDK functions. They:
 
 The full [transaction graph](https://github.com/babylonlabs-io/btc-vault/blob/main/docs/pegin.md#2-transaction-graph-and-presigning) includes additional transaction types (Claim, Assert, ChallengeAssert, NoPayout, WronglyChallenged). When the vault provider acts as claimer, most of these are generated and managed by the vault provider. The SDK provides primitives for operations the **depositor** performs: building the peg-in transaction and signing payout authorizations. When the depositor acts as claimer (depositor-as-claimer path), the SDK also provides builders for the NoPayout and ChallengeAssert PSBTs.
 
-### 1. buildPeginPsbt
+### 1. buildPrePeginPsbt + buildPeginTxFromFundedPrePegin
 
-Builds an **unfunded** [peg-in](https://github.com/babylonlabs-io/btc-vault/blob/main/docs/pegin.md) transaction hex (0 inputs, 1 BTC vault output).
+Peg-in is a **two-step flow** on Bitcoin:
+
+1. `buildPrePeginPsbt()` — build an unfunded **Pre-PegIn** tx with one HTLC output per vault (plus a CPFP anchor). No inputs yet — the caller funds it.
+2. `buildPeginTxFromFundedPrePegin()` — once the Pre-PegIn is funded and its txid is known, derive the **PegIn** tx that spends the HTLC output back to the vault connector.
+
+See the [protocol spec](https://github.com/babylonlabs-io/btc-vault/blob/main/docs/pegin.md) for why this is split.
 
 ```typescript
-import { buildPeginPsbt } from "@babylonlabs-io/ts-sdk/tbv/core/primitives";
+import {
+  buildPrePeginPsbt,
+  buildPeginTxFromFundedPrePegin,
+} from "@babylonlabs-io/ts-sdk/tbv/core/primitives";
 
-const result = await buildPeginPsbt({
-  depositorPubkey: "abc123...", // x-only, 64 hex chars, no 0x
+// Step 1: unfunded Pre-PegIn tx
+const prePegin = await buildPrePeginPsbt({
+  depositorPubkey: "abc123...",         // x-only, 64 hex chars, no 0x
   vaultProviderPubkey: "def456...",
   vaultKeeperPubkeys: ["ghi789..."],
   universalChallengerPubkeys: ["jkl012..."],
-  pegInAmount: 100000n, // satoshis
+  hashlocks: ["aabb...cc"],             // one per vault (64-char hex, no 0x prefix)
+  timelockRefund: 144,                  // CSV blocks for refund path
+  pegInAmounts: [100_000n],             // one per vault (satoshis)
+  feeRate: 10n,                         // sat/vB, from offchain params
+  numLocalChallengers: 0,
+  councilQuorum: 3,
+  councilSize: 5,
   network: "signet",
 });
+// prePegin.psbtHex is the UNFUNDED tx hex (no inputs yet).
+// Caller funds it (selectUtxosForPegin + fundPeginTransaction), then computes
+// the funded txid.
 
-// Returns:
-// {
-//   psbtHex: "...",           // Unfunded transaction hex (you add inputs via PSBT)
-//   vaultScriptPubKey: "...", // Vault output script
-//   vaultValue: 100000n,      // Vault amount
-//   txid: "...",              // Transaction ID (will change after funding)
-// }
+// Step 2: derive PegIn tx that spends a single HTLC output
+const pegin = await buildPeginTxFromFundedPrePegin({
+  prePeginParams: { /* same params as above */ },
+  timelockPegin: 144,                   // CSV blocks for the PegIn vault output
+  fundedPrePeginTxHex: "0100...",       // Funded Pre-PegIn tx hex (no 0x prefix)
+  htlcVout: 0,                          // Index of the HTLC output to spend
+});
 ```
 
-**Note:** Despite the field name `psbtHex`, this contains raw unfunded transaction hex (not PSBT format). You must construct a PSBT from it, add UTXOs as inputs, add change output, sign, and broadcast.
-
-**You then:** Add UTXOs as inputs, add change output, sign, broadcast.
+**Full parameter shapes:** see the [API Reference](../api/primitives.md) — both `PrePeginParams` and the return type `PrePeginPsbtResult` expose additional batch fields (one entry per vault).
 
 ### 2. buildPayoutPsbt
 
@@ -115,7 +131,11 @@ When the depositor acts as the claimer (instead of the vault provider), the depo
 2. **NoPayout** (1 per challenger) — covers the case where the vault expires without a successful claim
 3. **ChallengeAssert** (1 per challenger, with 3 inputs) — covers the challenge-assert spending paths
 
-The vault provider supplies the unsigned transaction hexes and prevouts. You build PSBTs, sign them, extract the Schnorr signatures, and return them.
+The vault provider supplies the unsigned transaction hexes. The depositor must
+also supply the parent transactions (peg-in tx for Payout, Assert tx for
+NoPayout / ChallengeAssert) from a trusted source — the builders cross-check
+every signed input's outpoint and prevout against those parents so a malicious
+VP cannot trick the wallet into signing over an attacker-chosen prevout.
 
 ```typescript
 import {
@@ -128,10 +148,11 @@ import {
 const depositorPubkey = "abc123..."; // x-only, 64 hex chars
 
 // 1. Payout (depositor-as-claimer variant)
-// Uses PeginPayoutConnector — input 0 spends PegIn vault UTXO
+// Uses PeginPayoutConnector — input 0 spends PegIn:0, input 1 spends Assert:0
 const payoutPsbtHex = await buildDepositorPayoutPsbt({
   payoutTxHex: "...",               // From vault provider
-  prevouts: payoutPrevouts,         // [{script_pubkey, value}] from VP
+  peginTxHex: "...",                // Authoritative (e.g. on-chain) — input 0 must spend PegIn:0
+  assertTxHex: "...",               // Authoritative — input 1 must spend Assert:0
   connectorParams: {                // PeginPayoutConnector params
     depositor: depositorPubkey,
     vaultProvider: "...",
@@ -144,11 +165,11 @@ const signedPayout = await wallet.signPsbt(payoutPsbtHex);
 const payoutSig = extractPayoutSignature(signedPayout, depositorPubkey);
 
 // 2. NoPayout (one per challenger)
-// Uses AssertPayoutNoPayoutConnector — input 0 spends Assert output 0
+// Uses AssertPayoutNoPayoutConnector — input 0 spends Assert:0
 const noPayoutPsbtHex = await buildNoPayoutPsbt({
   noPayoutTxHex: "...",             // From vault provider
+  assertTxHex: "...",               // Authoritative — input 0 must spend Assert:0
   challengerPubkey: "def456...",    // This challenger's x-only pubkey
-  prevouts: noPayoutPrevouts,       // [{script_pubkey, value}] from VP
   connectorParams: {                // AssertPayoutNoPayoutConnector params
     claimer: depositorPubkey,
     localChallengers: [],
@@ -157,15 +178,16 @@ const noPayoutPsbtHex = await buildNoPayoutPsbt({
     councilMembers: ["..."],
     councilQuorum: 3,
   },
+  // additionalPrevouts: [...]      // Required only if NoPayout has fee inputs beyond input 0
 });
 const signedNoPayout = await wallet.signPsbt(noPayoutPsbtHex);
 const noPayoutSig = extractPayoutSignature(signedNoPayout, depositorPubkey);
 
 // 3. ChallengeAssert (one PSBT per challenger, with 3 inputs)
-// Each input has its own taproot script from per-segment connector params
+// Every input must spend a distinct Assert output; prevouts are derived from assertTxHex.
 const caPsbtHex = await buildChallengeAssertPsbt({
   challengeAssertTxHex: "...",      // From vault provider
-  prevouts: challengeAssertPrevouts, // [{script_pubkey, value}] from VP (flat, 3 entries)
+  assertTxHex: "...",               // Authoritative — every input must spend an Assert output
   connectorParamsPerInput: [         // One per input (3 total)
     { claimer: depositorPubkey, challenger: "def456...", claimerWotsKeysJson: "...", gcWotsKeysJson: "..." },
     { claimer: depositorPubkey, challenger: "def456...", claimerWotsKeysJson: "...", gcWotsKeysJson: "..." },

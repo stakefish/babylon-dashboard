@@ -13,9 +13,8 @@
  * @module primitives/utils/bitcoin
  */
 
-import * as ecc from "@bitcoin-js/tiny-secp256k1-asmjs";
 import { Buffer } from "buffer";
-import { initEccLib, networks, payments } from "bitcoinjs-lib";
+import { networks, payments } from "bitcoinjs-lib";
 
 import type { Network } from "@babylonlabs-io/babylon-tbv-rust-wasm";
 import type { Hex } from "viem";
@@ -28,6 +27,29 @@ import type { Hex } from "viem";
 export const TAPSCRIPT_LEAF_VERSION = 0xc0;
 
 /**
+ * Hex-string length of a 32-byte BIP-340 x-only public key (taproot,
+ * Schnorr). Doubles the byte count: `2 * 32 = 64`.
+ */
+export const X_ONLY_PUBKEY_HEX_LEN = 64;
+
+/**
+ * Hex-string length of a 33-byte SEC1-compressed secp256k1 public key
+ * (`0x02` or `0x03` prefix + 32-byte x-coordinate). `2 * 33 = 66`.
+ */
+export const COMPRESSED_PUBKEY_HEX_LEN = 66;
+
+/**
+ * Hex-string length of a 65-byte SEC1-uncompressed secp256k1 public
+ * key (`0x04` prefix + 32-byte x + 32-byte y). `2 * 65 = 130`.
+ */
+export const UNCOMPRESSED_PUBKEY_HEX_LEN = 130;
+
+/**
+ * Hex-string length of a 64-byte BIP-340 Schnorr signature. `2 * 64 = 128`.
+ */
+export const SCHNORR_SIG_HEX_LEN = 128;
+
+/**
  * Strip "0x" prefix from hex string if present.
  *
  * Bitcoin expects plain hex (no "0x" prefix), but frontend often uses
@@ -37,7 +59,7 @@ export const TAPSCRIPT_LEAF_VERSION = 0xc0;
  * @returns Hex string without "0x" prefix
  */
 export function stripHexPrefix(hex: string): string {
-  return hex.startsWith("0x") ? hex.slice(2) : hex;
+  return hex.startsWith("0x") || hex.startsWith("0X") ? hex.slice(2) : hex;
 }
 
 /**
@@ -50,7 +72,9 @@ export function stripHexPrefix(hex: string): string {
  * @returns `0x`-prefixed hex string typed as viem Hex
  */
 export function ensureHexPrefix(hex: string): Hex {
-  return hex.startsWith("0x") ? (hex as Hex) : (`0x${hex}` as Hex);
+  if (hex.startsWith("0x")) return hex as Hex;
+  if (hex.startsWith("0X")) return `0x${hex.slice(2)}` as Hex;
+  return `0x${hex}` as Hex;
 }
 
 /**
@@ -82,6 +106,21 @@ export function uint8ArrayToHex(bytes: Uint8Array): string {
   return Array.from(bytes)
     .map((b) => b.toString(16).padStart(2, "0"))
     .join("");
+}
+
+/**
+ * Read the prevout txid (big-endian hex) from a bitcoinjs-lib transaction input.
+ *
+ * bitcoinjs-lib stores `hash` in little-endian internal byte order; txids are
+ * displayed in big-endian, so the bytes must be reversed before hex-encoding.
+ *
+ * @param input - Transaction input with a `hash` field (Buffer or Uint8Array)
+ * @returns Prevout txid as a hex string (big-endian, no 0x prefix)
+ */
+export function inputTxidHex(input: {
+  hash: Buffer | Uint8Array;
+}): string {
+  return uint8ArrayToHex(new Uint8Array(input.hash).slice().reverse());
 }
 
 /**
@@ -136,14 +175,17 @@ export function processPublicKeyToXOnly(publicKeyHex: string): string {
   }
 
   // If already 64 chars (32 bytes), it's already x-only format
-  if (cleanHex.length === 64) {
+  if (cleanHex.length === X_ONLY_PUBKEY_HEX_LEN) {
     return cleanHex;
   }
 
-  // Validate public key length (should be 66 chars for compressed or 130 for uncompressed)
-  if (cleanHex.length !== 66 && cleanHex.length !== 130) {
+  // Validate public key length (compressed SEC1 or uncompressed SEC1)
+  if (
+    cleanHex.length !== COMPRESSED_PUBKEY_HEX_LEN &&
+    cleanHex.length !== UNCOMPRESSED_PUBKEY_HEX_LEN
+  ) {
     throw new Error(
-      `Invalid public key length: ${cleanHex.length} (expected 64, 66, or 130 hex chars)`,
+      `Invalid public key length: ${cleanHex.length} (expected ${X_ONLY_PUBKEY_HEX_LEN}, ${COMPRESSED_PUBKEY_HEX_LEN}, or ${UNCOMPRESSED_PUBKEY_HEX_LEN} hex chars)`,
     );
   }
 
@@ -182,20 +224,28 @@ export interface WalletPubkeyValidationResult {
  *
  * This function:
  * 1. Converts the wallet pubkey to x-only format
- * 2. Uses the expected depositor pubkey if provided, otherwise falls back to wallet pubkey
- * 3. Validates they match (case-insensitive)
+ * 2. Validates the wallet x-only pubkey matches the expected depositor pubkey
+ *    (case-insensitive)
  *
  * @param walletPubkeyRaw - Raw public key from wallet (may be compressed 66 chars or x-only 64 chars)
- * @param expectedDepositorPubkey - Expected depositor public key (x-only, optional)
+ * @param expectedDepositorPubkey - Expected depositor public key (x-only).
+ *   Required: omitting it would degrade this check to a self-comparison.
  * @returns Validation result with both pubkey formats
+ * @throws If `expectedDepositorPubkey` is missing/empty
  * @throws If wallet pubkey doesn't match expected depositor pubkey
  */
 export function validateWalletPubkey(
   walletPubkeyRaw: string,
-  expectedDepositorPubkey?: string,
+  expectedDepositorPubkey: string,
 ): WalletPubkeyValidationResult {
+  if (!expectedDepositorPubkey) {
+    throw new Error(
+      "validateWalletPubkey requires expectedDepositorPubkey. Pass the on-chain registered depositor pubkey to avoid a self-comparison.",
+    );
+  }
+
   const walletPubkeyXOnly = processPublicKeyToXOnly(walletPubkeyRaw);
-  const depositorPubkey = expectedDepositorPubkey ?? walletPubkeyXOnly;
+  const depositorPubkey = expectedDepositorPubkey;
 
   if (walletPubkeyXOnly.toLowerCase() !== depositorPubkey.toLowerCase()) {
     throw new Error(
@@ -209,25 +259,50 @@ export function validateWalletPubkey(
 }
 
 // ============================================================================
+// BTC formatting
+// ============================================================================
+
+const SATOSHIS_PER_BTC = 100_000_000n;
+
+/**
+ * Format satoshis as a human-readable BTC string with trailing zeros removed.
+ */
+export function formatSatoshisToBtc(satoshis: bigint): string {
+  if (satoshis < 0n) {
+    return `-${formatSatoshisToBtc(-satoshis)}`;
+  }
+  const whole = satoshis / SATOSHIS_PER_BTC;
+  const fraction = satoshis % SATOSHIS_PER_BTC;
+  let fractionStr = fraction.toString().padStart(8, "0");
+  fractionStr = fractionStr.replace(/0+$/, "");
+  return fractionStr.length > 0 ? `${whole}.${fractionStr}` : whole.toString();
+}
+
+// ============================================================================
 // Address derivation and validation
 // ============================================================================
 
-let eccInitialized = false;
-
 /**
- * Lazily initialize the ECC library for bitcoinjs-lib.
+ * Assert that the ECC library has been initialized via `initEccLib(ecc)`.
  *
- * Must be called before any P2TR / Taproot address operation.
- * Safe to call multiple times — only runs verification once.
- *
- * Why lazy: module-level `initEccLib(ecc)` breaks vitest because
- * `vi.mock()` hoists above imports, so the mocked bitcoinjs-lib
- * hasn't loaded the real ECC backend when the module evaluates.
+ * The consuming application must call `initEccLib(ecc)` from `bitcoinjs-lib`
+ * once at startup before using any SDK function that involves Taproot / P2TR
+ * operations. This guard provides a clear error message when that step was
+ * missed, instead of letting bitcoinjs-lib throw its generic
+ * "No ECC Library provided" error deep in a call stack.
  */
-export function ensureEcc(): void {
-  if (!eccInitialized) {
-    initEccLib(ecc);
-    eccInitialized = true;
+function assertEccInitialized(): void {
+  try {
+    payments.p2tr({ internalPubkey: Buffer.alloc(32, 1) });
+  } catch (e) {
+    if (e instanceof Error && e.message.includes("No ECC Library provided")) {
+      throw new Error(
+        "ECC library not initialized. " +
+          'You must call initEccLib(ecc) from "bitcoinjs-lib" before using the SDK. ' +
+          "See the ts-sdk README for setup instructions.",
+      );
+    }
+    // Any other error means ECC is loaded (e.g. invalid key is fine — ECC worked).
   }
 }
 
@@ -262,7 +337,7 @@ export function deriveTaprootAddress(
   publicKeyHex: string,
   network: Network,
 ): string {
-  ensureEcc();
+  assertEccInitialized();
   const xOnly = hexToUint8Array(processPublicKeyToXOnly(publicKeyHex));
   const { address } = payments.p2tr({
     internalPubkey: Buffer.from(xOnly),
@@ -337,9 +412,9 @@ export function isAddressFromPublicKey(
 
   // Build the list of compressed keys to try for P2WPKH
   const compressedKeys: string[] = [];
-  if (cleanHex.length === 66) {
+  if (cleanHex.length === COMPRESSED_PUBKEY_HEX_LEN) {
     compressedKeys.push(cleanHex);
-  } else if (cleanHex.length === 64) {
+  } else if (cleanHex.length === X_ONLY_PUBKEY_HEX_LEN) {
     // x-only key — try both even (02) and odd (03) y-parity
     compressedKeys.push(`02${cleanHex}`, `03${cleanHex}`);
   }

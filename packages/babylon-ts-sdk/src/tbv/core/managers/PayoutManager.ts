@@ -7,16 +7,12 @@
  *
  * The Payout transaction references the Assert transaction (input 1).
  *
- * @see {@link PeginManager} - For Steps 1, 2, and 4 of peg-in flow
+ * @see {@link PeginManager} - For Steps 1–4 of the peg-in flow
  * @see {@link buildPayoutPsbt} - Lower-level primitive for custom implementations
  * @see {@link extractPayoutSignature} - Extract signatures from signed PSBTs
  *
  * @module managers/PayoutManager
  */
-
-import { Buffer } from "buffer";
-
-import { Transaction } from "bitcoinjs-lib";
 
 import type {
   BitcoinWallet,
@@ -24,10 +20,9 @@ import type {
 } from "../../../shared/wallets";
 import { createTaprootScriptPathSignOptions } from "../utils/signing";
 import {
+  assertPayoutOutputMatchesRegistered,
   buildPayoutPsbt,
   extractPayoutSignature,
-  isValidHex,
-  stripHexPrefix,
   validateWalletPubkey,
   type Network,
 } from "../primitives";
@@ -78,11 +73,15 @@ interface SignPayoutBaseParams {
   timelockPegin: number;
 
   /**
-   * Depositor's BTC public key (x-only, 64-char hex).
-   * This should be the public key that was used when creating the vault,
-   * as stored on-chain. If not provided, will be fetched from the wallet.
+   * Depositor's BTC public key (x-only, 64-char hex). This MUST be the
+   * key registered on-chain for the vault — typically read from
+   * `BTCVaultRegistry.getBtcVaultBasicInfo(...).depositorBtcPubKey`.
+   *
+   * Required: omitting it would degrade `validateWalletPubkey` to a
+   * self-comparison, allowing the wrong wallet to produce a signature
+   * over a script tree that doesn't match the on-chain UTXO.
    */
-  depositorBtcPubkey?: string;
+  depositorBtcPubkey: string;
 
   /**
    * The on-chain registered depositor payout scriptPubKey (hex, with or without 0x prefix).
@@ -131,7 +130,7 @@ export interface PayoutSignatureResult {
  * High-level manager for payout transaction signing.
  *
  * @remarks
- * After registering your peg-in on Ethereum (Step 2), the vault provider prepares
+ * After registering your peg-in on Ethereum (Step 3), the vault provider prepares
  * claim/payout transaction pairs. You must sign each payout transaction using this
  * manager and submit the signatures to the vault provider's RPC API.
  *
@@ -358,32 +357,9 @@ export class PayoutManager {
     payoutTxHex: string,
     registeredPayoutScriptPubKey: string,
   ): void {
-    if (!isValidHex(registeredPayoutScriptPubKey)) {
-      throw new Error(
-        "Invalid registeredPayoutScriptPubKey: not valid hex",
-      );
-    }
-
-    const expectedScript = Buffer.from(
-      stripHexPrefix(registeredPayoutScriptPubKey),
-      "hex",
+    assertPayoutOutputMatchesRegistered(
+      payoutTxHex,
+      registeredPayoutScriptPubKey,
     );
-    const payoutTx = Transaction.fromHex(stripHexPrefix(payoutTxHex));
-
-    if (payoutTx.outs.length === 0) {
-      throw new Error("Payout transaction has no outputs");
-    }
-
-    // Find the largest output by value — this must pay to the registered address.
-    // A dust output to the correct address with funds routed elsewhere is rejected.
-    const largestOutput = payoutTx.outs.reduce((max, output) =>
-      output.value > max.value ? output : max,
-    );
-
-    if (!largestOutput.script.equals(expectedScript)) {
-      throw new Error(
-        "Payout transaction does not pay to the registered depositor payout address",
-      );
-    }
   }
 }

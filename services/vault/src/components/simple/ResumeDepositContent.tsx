@@ -8,32 +8,38 @@
  * Used by SimpleDeposit when opened in resume mode.
  */
 
-import { Button, Input } from "@babylonlabs-io/core-ui";
-import { useCallback, useMemo, useState } from "react";
-import type { Hex } from "viem";
-
-import type { DepositorGraphTransactions } from "@/clients/vault-provider-rpc/types";
+import type { BitcoinWallet } from "@babylonlabs-io/ts-sdk/shared";
 import {
-  computeDepositDerivedState,
-  DepositFlowStep,
-} from "@/components/deposit/DepositSignModal/depositStepHelpers";
-import { MnemonicModal } from "@/components/deposit/MnemonicModal";
+  computeWotsBlockPublicKeysHash,
+  deriveVaultRoot,
+  deriveWotsBlocksFromSeed,
+  expandAuthAnchor,
+  expandHashlockSecret,
+  expandWotsSeed,
+  hexToUint8Array,
+  isWotsMismatchError,
+  parseFundingOutpointsFromTx,
+  uint8ArrayToHex,
+} from "@babylonlabs-io/ts-sdk/tbv/core";
+import { primeVpTokenRegistry } from "@babylonlabs-io/ts-sdk/tbv/core/clients";
+import { calculateBtcTxHash } from "@babylonlabs-io/ts-sdk/tbv/core/utils";
+import { useChainConnector } from "@babylonlabs-io/wallet-connector";
+import { useCallback, useState } from "react";
+import type { Address, Hex } from "viem";
+
+import { getVaultRegistryReader } from "@/clients/eth-contract/sdk-readers";
+import { computeDepositDerivedState } from "@/components/deposit/DepositSignModal/depositStepHelpers";
 import { usePayoutSigningState } from "@/components/deposit/PayoutSignModal/usePayoutSigningState";
-import { useETHWallet } from "@/context/wallet";
+import { DepositFlowStep } from "@/hooks/deposit/depositFlowSteps";
 import { submitWotsPublicKey } from "@/hooks/deposit/depositFlowSteps/wotsSubmission";
 import { useActivationState } from "@/hooks/deposit/useActivationState";
 import { useBroadcastState } from "@/hooks/deposit/useBroadcastState";
-import { useRefundState } from "@/hooks/deposit/useRefundState";
+import { useReleaseVpTokenOnUnmount } from "@/hooks/deposit/useReleaseVpTokenOnUnmount";
 import { useRunOnce } from "@/hooks/useRunOnce";
-import { fetchVaultById } from "@/services/vault/fetchVaults";
-import {
-  getMnemonicIdForPegin,
-  hasMnemonicEntry,
-  isWotsMismatchError,
-  linkPeginToMnemonic,
-} from "@/services/wots";
+import { logger } from "@/infrastructure";
 import type { VaultActivity } from "@/types/activity";
-import type { ClaimerTransactions } from "@/types/rpc";
+import { stripHexPrefix } from "@/utils/btc";
+import { getVpProxyUrl } from "@/utils/rpc";
 
 import { DepositProgressView } from "./DepositProgressView";
 
@@ -43,8 +49,6 @@ import { DepositProgressView } from "./DepositProgressView";
 
 export interface ResumeSignContentProps {
   activity: VaultActivity;
-  transactions: ClaimerTransactions[] | null;
-  depositorGraph: DepositorGraphTransactions;
   btcPublicKey: string;
   depositorEthAddress: Hex;
   onClose: () => void;
@@ -53,8 +57,6 @@ export interface ResumeSignContentProps {
 
 export function ResumeSignContent({
   activity,
-  transactions,
-  depositorGraph,
   btcPublicKey,
   depositorEthAddress,
   onClose,
@@ -63,8 +65,6 @@ export function ResumeSignContent({
   const { signing, progress, error, isComplete, handleSign } =
     usePayoutSigningState({
       activity,
-      transactions,
-      depositorGraph,
       btcPublicKey,
       depositorEthAddress,
       onSuccess,
@@ -72,19 +72,20 @@ export function ResumeSignContent({
 
   useRunOnce(handleSign);
 
+  const renderStep = isComplete
+    ? DepositFlowStep.ARTIFACT_DOWNLOAD
+    : DepositFlowStep.SIGN_PAYOUTS;
+  const renderIsWaiting = isComplete;
   const derived = computeDepositDerivedState(
-    isComplete ? DepositFlowStep.COMPLETED : DepositFlowStep.SIGN_PAYOUTS,
+    renderStep,
     signing,
-    false,
+    renderIsWaiting,
     error?.message ?? null,
   );
 
   return (
     <DepositProgressView
-      currentStep={
-        isComplete ? DepositFlowStep.COMPLETED : DepositFlowStep.SIGN_PAYOUTS
-      }
-      isWaiting={false}
+      currentStep={renderStep}
       error={error?.message ?? null}
       isComplete={derived.isComplete}
       isProcessing={derived.isProcessing}
@@ -92,14 +93,13 @@ export function ResumeSignContent({
       canContinueInBackground={derived.canContinueInBackground}
       payoutSigningProgress={signing ? progress : null}
       onClose={onClose}
-      successMessage="Your payout transactions have been signed and submitted successfully. Your deposit is now being processed."
       onRetry={error ? handleSign : undefined}
     />
   );
 }
 
 // ---------------------------------------------------------------------------
-// Broadcast BTC Content
+// Broadcast Pre-PegIn Content
 // ---------------------------------------------------------------------------
 
 export interface ResumeBroadcastContentProps {
@@ -133,7 +133,6 @@ export function ResumeBroadcastContent({
   return (
     <DepositProgressView
       currentStep={DepositFlowStep.BROADCAST_PRE_PEGIN}
-      isWaiting={false}
       error={error}
       isComplete={derived.isComplete}
       isProcessing={derived.isProcessing}
@@ -157,141 +156,187 @@ export interface ResumeWotsContentProps {
   onSuccess: () => void;
 }
 
-function resolveProviderAddress(activity: VaultActivity): string | null {
-  return activity.providers[0]?.id ?? null;
-}
-
 export function ResumeWotsContent({
   activity,
   onClose,
   onSuccess,
 }: ResumeWotsContentProps) {
-  const { address: ethAddress } = useETHWallet();
-  const [submitting, setSubmitting] = useState(false);
+  const btcConnector = useChainConnector("BTC");
+  const btcWalletProvider =
+    (btcConnector?.connectedWallet?.provider as BitcoinWallet | undefined) ??
+    null;
+
+  // Starts true: useRunOnce auto-fires handleSubmit on mount, so the
+  // first render must show processing — not a false-success banner from
+  // `isComplete = !loading && !error`.
+  const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [showMnemonic, setShowMnemonic] = useState(true);
-  const [storedFailed, setStoredFailed] = useState(false);
 
-  const mappedMnemonicId = useMemo(
-    () =>
-      activity.peginTxHash && ethAddress
-        ? getMnemonicIdForPegin(activity.peginTxHash, ethAddress)
-        : null,
-    [activity.peginTxHash, ethAddress],
-  );
+  // Release the primed registry entry on unmount if activation didn't
+  // happen (the normal release point in `useVaultActions`). Bounds
+  // `authAnchorHex` lifetime when the user abandons the resume flow.
+  const trackPrimedTxid = useReleaseVpTokenOnUnmount();
 
-  const canUseStoredMnemonic =
-    !storedFailed &&
-    !!mappedMnemonicId &&
-    !!ethAddress &&
-    hasMnemonicEntry(mappedMnemonicId, ethAddress);
+  const handleSubmit = useCallback(async () => {
+    if (!btcWalletProvider) {
+      setError("BTC wallet is not connected");
+      setLoading(false);
+      return;
+    }
+    setLoading(true);
+    setError(null);
 
-  const handleMnemonicComplete = useCallback(
-    async (mnemonic?: string, mnemonicId?: string) => {
-      if (!mnemonic) return;
+    let root: Uint8Array | null = null;
+    try {
+      const peginTxHash = activity.peginTxHash ?? null;
+      if (!peginTxHash) {
+        throw new Error("Missing pegin transaction hash");
+      }
+      if (!activity.unsignedPrePeginTx) {
+        throw new Error(
+          "Missing pre-pegin transaction; cannot recover WOTS seed inputs",
+        );
+      }
 
-      setShowMnemonic(false);
-      setSubmitting(true);
-      setError(null);
+      // Read signing-critical inputs (depositor pubkey, htlcVout,
+      // depositorWotsPkHash, vault provider address) directly from the
+      // registry. The activity row's providers[]/depositorBtcPubkey are
+      // localStorage-backed and untrusted for routing decisions.
+      const reader = getVaultRegistryReader();
+      const { basic, protocol } = await reader.getVaultData(activity.id as Hex);
+      const providerAddress = basic.vaultProvider;
+      const depositorBtcPubkey = basic.depositorBtcPubKey;
+      const htlcVout = protocol.htlcVout;
+      const onChainWotsPkHash = protocol.depositorWotsPkHash;
+      const onChainPrePeginTxHash = protocol.prePeginTxHash;
 
-      try {
-        const providerAddress = resolveProviderAddress(activity);
-        if (!providerAddress) {
-          throw new Error("Could not resolve vault provider address");
-        }
-
-        const peginTxHash = activity.peginTxHash ?? null;
-        if (!peginTxHash) {
-          throw new Error("Missing pegin transaction hash");
-        }
-
-        // Resolve depositorBtcPubkey — available on confirmed vaults from indexer,
-        // but may be missing on pending (localStorage-only) activities.
-        let depositorBtcPubkey = activity.depositorBtcPubkey;
-        if (!depositorBtcPubkey) {
-          const vault = await fetchVaultById(activity.id);
-          depositorBtcPubkey = vault?.depositorBtcPubkey;
-        }
-        if (!depositorBtcPubkey) {
-          throw new Error(
-            "Missing depositor BTC public key; vault may not be indexed yet. Please try again shortly.",
-          );
-        }
-        if (!activity.applicationEntryPoint) {
-          throw new Error(
-            "Missing application controller address on activity; cannot derive WOTS keypair",
-          );
-        }
-
-        await submitWotsPublicKey({
-          peginTxHash,
-          depositorBtcPubkey,
-          appContractAddress: activity.applicationEntryPoint,
-          providerAddress,
-          getMnemonic: () => Promise.resolve(mnemonic),
+      // Best-effort priming: VP pubkey fetch can fail without blocking the
+      // resume flow because submitWotsPublicKey re-derives on cache miss.
+      const pinnedServerPubkeyPromise = reader
+        .getVaultProviderBtcPubKey(providerAddress as Address)
+        .catch((err: unknown) => {
+          logger.warn("Failed to fetch VP pubkey for registry priming", {
+            peginTxHash,
+            error: err instanceof Error ? err.message : String(err),
+          });
+          return null;
         });
 
-        if (mnemonicId && ethAddress) {
-          linkPeginToMnemonic(peginTxHash, mnemonicId, ethAddress);
-        }
+      // Indexer-supplied tx is untrusted. Verify against on-chain
+      // prePeginTxHash before deriveVaultRoot fires the wallet popup.
+      const computedTxHash = calculateBtcTxHash(activity.unsignedPrePeginTx);
+      if (
+        computedTxHash.toLowerCase() !== onChainPrePeginTxHash.toLowerCase()
+      ) {
+        throw new Error(
+          `Pre-PegIn transaction hash mismatch: computed ${computedTxHash} from indexer tx, ` +
+            `but on-chain contract has ${onChainPrePeginTxHash}. ` +
+            `Aborting to prevent potential attack.`,
+        );
+      }
 
-        setSubmitting(false);
-        onSuccess();
-      } catch (err) {
-        const msg =
-          err instanceof Error ? err.message : "Failed to submit WOTS key";
+      const fundingOutpoints = parseFundingOutpointsFromTx(
+        activity.unsignedPrePeginTx,
+      );
 
-        // Only invalidate the stored mnemonic when the VP explicitly
-        // reports a WOTS hash mismatch (wrong mnemonic). Network
-        // errors, missing fields, etc. should not discard a potentially
-        // valid stored mnemonic.
-        if (isWotsMismatchError(err)) {
-          setStoredFailed(true);
-        }
+      root = await deriveVaultRoot(btcWalletProvider, {
+        depositorBtcPubkey: hexToUint8Array(depositorBtcPubkey),
+        fundingOutpoints,
+      });
 
-        setSubmitting(false);
+      // Reuse the derived root for the auth anchor so submitWotsPublicKey
+      // doesn't trigger a second wallet popup.
+      const authAnchorBytes = expandAuthAnchor(root);
+      let authAnchorHex: string;
+      try {
+        authAnchorHex = uint8ArrayToHex(authAnchorBytes);
+      } finally {
+        authAnchorBytes.fill(0);
+      }
+
+      const seed = expandWotsSeed(root, htlcVout);
+      let wotsPublicKeys;
+      try {
+        wotsPublicKeys = await deriveWotsBlocksFromSeed(seed);
+      } finally {
+        seed.fill(0);
+      }
+
+      const computedHash = computeWotsBlockPublicKeysHash(wotsPublicKeys);
+      if (computedHash.toLowerCase() !== onChainWotsPkHash.toLowerCase()) {
+        throw new Error(
+          "WOTS public key hash does not match the on-chain commitment — the wrong wallet is connected.",
+        );
+      }
+
+      // Best-effort: if the parallel pubkey fetch failed, skip
+      // priming — submitWotsPublicKey re-derives on cache miss.
+      const pinnedServerPubkey = await pinnedServerPubkeyPromise;
+      if (pinnedServerPubkey) {
+        const primedTxid = stripHexPrefix(peginTxHash);
+        primeVpTokenRegistry({
+          baseUrl: getVpProxyUrl(providerAddress),
+          peginTxid: primedTxid,
+          authAnchorHex,
+          pinnedServerPubkey,
+        });
+        trackPrimedTxid(primedTxid);
+      }
+
+      await submitWotsPublicKey({
+        vaultId: activity.id,
+        peginTxHash,
+        depositorBtcPubkey,
+        providerAddress,
+        wotsPublicKeys,
+        btcWallet: btcWalletProvider,
+        unsignedPrePeginTxHex: activity.unsignedPrePeginTx,
+      });
+
+      setLoading(false);
+      // Refetch dashboard activities so the next action surfaces while
+      // the modal stays parked on "Close & continue later".
+      onSuccess();
+    } catch (err) {
+      const msg =
+        err instanceof Error ? err.message : "Failed to submit WOTS key";
+      // VP-side mismatch gets the same wording as the local pre-flight
+      // so the user can act on either path.
+      if (isWotsMismatchError(err)) {
+        setError(
+          "WOTS public key hash does not match the on-chain commitment — the wrong wallet is connected.",
+        );
+      } else {
         setError(msg);
       }
-    },
-    [activity, ethAddress, onSuccess],
+      setLoading(false);
+    } finally {
+      root?.fill(0);
+    }
+  }, [activity, btcWalletProvider, trackPrimedTxid, onSuccess]);
+
+  useRunOnce(handleSubmit);
+
+  const isSuccess = !loading && !error;
+  const renderIsWaiting = isSuccess;
+  const derived = computeDepositDerivedState(
+    DepositFlowStep.SUBMIT_WOTS_KEYS,
+    loading,
+    renderIsWaiting,
+    error,
   );
-
-  const handleRetry = useCallback(() => {
-    setError(null);
-    setShowMnemonic(true);
-  }, []);
-
-  if (showMnemonic) {
-    return (
-      <MnemonicModal
-        open
-        onClose={onClose}
-        onComplete={handleMnemonicComplete}
-        // canUseStoredMnemonic doubles as hasExistingVaults here because
-        // when it is false, importMode is set to true which overrides
-        // the hasExistingVaults behaviour inside MnemonicModal.
-        hasExistingVaults={canUseStoredMnemonic}
-        scope={ethAddress}
-        mnemonicId={canUseStoredMnemonic ? mappedMnemonicId : undefined}
-        importMode={!canUseStoredMnemonic}
-        allowCreateNewMnemonic={false}
-      />
-    );
-  }
 
   return (
     <DepositProgressView
-      currentStep={DepositFlowStep.SIGN_PAYOUTS}
-      isWaiting={false}
+      currentStep={DepositFlowStep.SUBMIT_WOTS_KEYS}
       error={error}
-      isComplete={!submitting && !error}
-      isProcessing={submitting}
-      canClose={!submitting}
-      canContinueInBackground={false}
+      isComplete={derived.isComplete}
+      isProcessing={derived.isProcessing}
+      canClose={derived.canClose}
+      canContinueInBackground={derived.canContinueInBackground}
       payoutSigningProgress={null}
       onClose={onClose}
-      successMessage="Your WOTS public key has been submitted. The deposit will continue processing."
-      onRetry={error ? handleRetry : undefined}
+      onRetry={error ? handleSubmit : undefined}
     />
   );
 }
@@ -313,157 +358,128 @@ export function ResumeActivationContent({
   onClose,
   onSuccess,
 }: ResumeActivationContentProps) {
-  const [secretHex, setSecretHex] = useState("");
-  const [submitted, setSubmitted] = useState(false);
+  const btcConnector = useChainConnector("BTC");
+  const btcWalletProvider =
+    (btcConnector?.connectedWallet?.provider as BitcoinWallet | undefined) ??
+    null;
 
-  const { activating, error, handleActivation } = useActivationState({
+  // Starts true: useRunOnce auto-fires handleSubmit on mount, so the
+  // first render must show processing.
+  const [loading, setLoading] = useState(true);
+  const [localError, setLocalError] = useState<string | null>(null);
+
+  const {
+    activating,
+    activated,
+    error: activationError,
+    handleActivation,
+  } = useActivationState({
     activity,
     depositorEthAddress,
-    onSuccess,
   });
-
-  const cleanSecret = secretHex.trim().replace(/^0x/, "");
-  const isValidFormat = /^[0-9a-fA-F]{64}$/.test(cleanSecret);
 
   const handleSubmit = useCallback(async () => {
-    setSubmitted(true);
-    await handleActivation(cleanSecret);
-  }, [cleanSecret, handleActivation]);
-
-  const handleRetry = useCallback(() => {
-    setSubmitted(false);
-    setSecretHex("");
-  }, []);
-
-  // After submission, show progress view
-  if (submitted) {
-    const derived = computeDepositDerivedState(
-      DepositFlowStep.ACTIVATE_VAULT,
-      activating,
-      false,
-      error,
-    );
-
-    return (
-      <DepositProgressView
-        currentStep={DepositFlowStep.ACTIVATE_VAULT}
-        isWaiting={false}
-        error={error}
-        isComplete={derived.isComplete}
-        isProcessing={derived.isProcessing}
-        canClose={derived.canClose}
-        canContinueInBackground={false}
-        payoutSigningProgress={null}
-        onClose={onClose}
-        successMessage="Your vault has been activated. The vault provider can now claim the HTLC on Bitcoin."
-        onRetry={error ? handleRetry : undefined}
-      />
-    );
-  }
-
-  // Secret input form
-  return (
-    <div className="flex flex-col gap-6 rounded-2xl bg-surface p-6">
-      <div className="flex flex-col gap-2">
-        <h3 className="text-lg font-semibold text-accent-primary">
-          Activate Vault
-        </h3>
-        <p className="text-tertiary text-sm">
-          Enter the HTLC secret you saved during the deposit to activate this
-          vault on Ethereum.
-        </p>
-      </div>
-
-      <div className="flex flex-col gap-1">
-        <Input
-          placeholder="Enter secret (64 hex characters)"
-          value={secretHex}
-          onChange={(e) => setSecretHex(e.target.value)}
-          className="font-mono text-sm"
-        />
-        {secretHex.length > 0 && !isValidFormat && (
-          <p className="text-xs text-error-main">
-            Secret must be exactly 64 hex characters (32 bytes)
-          </p>
-        )}
-      </div>
-
-      <div className="flex gap-3">
-        <Button
-          variant="outlined"
-          color="primary"
-          className="flex-1"
-          onClick={onClose}
-        >
-          Cancel
-        </Button>
-        <Button
-          variant="contained"
-          color="primary"
-          className="flex-1"
-          disabled={!isValidFormat}
-          onClick={handleSubmit}
-        >
-          Activate
-        </Button>
-      </div>
-    </div>
-  );
-}
-
-// ---------------------------------------------------------------------------
-// Refund HTLC Content
-// ---------------------------------------------------------------------------
-
-export interface ResumeRefundContentProps {
-  activity: VaultActivity;
-  onClose: () => void;
-  onSuccess: () => void;
-}
-
-export function ResumeRefundContent({
-  activity,
-  onClose,
-  onSuccess,
-}: ResumeRefundContentProps) {
-  const { refunding, refundTxId, error, handleRefund } = useRefundState({
-    activity,
-  });
-
-  useRunOnce(handleRefund);
-
-  const hasSucceeded = !!refundTxId && !refunding;
-  const isComplete = hasSucceeded;
-  const canClose = hasSucceeded || !!error;
-  const isProcessing = refunding && !error;
-
-  // When the refund succeeds, the user closes the dialog themselves after
-  // seeing the confirmation. We call onSuccess() at that point so the parent
-  // refetches activities only after the user has acknowledged the result.
-  const handleClose = () => {
-    if (isComplete) {
-      onSuccess();
+    if (!btcWalletProvider) {
+      setLocalError("BTC wallet is not connected");
+      setLoading(false);
+      return;
     }
-    onClose();
-  };
+    if (!activity.unsignedPrePeginTx) {
+      setLocalError(
+        "Missing pre-pegin transaction; cannot recover HTLC secret",
+      );
+      setLoading(false);
+      return;
+    }
+    setLoading(true);
+    setLocalError(null);
+
+    let root: Uint8Array | null = null;
+    let secretBytes: Uint8Array | null = null;
+    try {
+      // Read signing-critical inputs (depositor pubkey, htlcVout) directly
+      // from the registry. Indexer data is untrusted for derivation domain
+      // separators.
+      const reader = getVaultRegistryReader();
+      const { basic, protocol } = await reader.getVaultData(activity.id as Hex);
+      const depositorBtcPubkey = basic.depositorBtcPubKey;
+      const htlcVout = protocol.htlcVout;
+      const onChainPrePeginTxHash = protocol.prePeginTxHash;
+
+      // Indexer-supplied tx is untrusted. Verify against on-chain
+      // prePeginTxHash before deriveVaultRoot fires the wallet popup.
+      const computedTxHash = calculateBtcTxHash(activity.unsignedPrePeginTx);
+      if (
+        computedTxHash.toLowerCase() !== onChainPrePeginTxHash.toLowerCase()
+      ) {
+        throw new Error(
+          `Pre-PegIn transaction hash mismatch: computed ${computedTxHash} from indexer tx, ` +
+            `but on-chain contract has ${onChainPrePeginTxHash}. ` +
+            `Aborting to prevent potential attack.`,
+        );
+      }
+
+      const fundingOutpoints = parseFundingOutpointsFromTx(
+        activity.unsignedPrePeginTx,
+      );
+
+      root = await deriveVaultRoot(btcWalletProvider, {
+        depositorBtcPubkey: hexToUint8Array(depositorBtcPubkey),
+        fundingOutpoints,
+      });
+
+      secretBytes = expandHashlockSecret(root, htlcVout);
+      const secretHex = uint8ArrayToHex(secretBytes);
+
+      // Hand off to the existing activation state machine. It fetches
+      // the canonical hashlock from the on-chain registry and rejects
+      // any mismatch — wrong-wallet derivation surfaces as a structured
+      // error there, not a silent submission.
+      await handleActivation(secretHex);
+    } catch (err) {
+      const msg =
+        err instanceof Error ? err.message : "Failed to activate vault";
+      setLocalError(msg);
+    } finally {
+      root?.fill(0);
+      secretBytes?.fill(0);
+      setLoading(false);
+    }
+  }, [activity, btcWalletProvider, handleActivation]);
+
+  useRunOnce(handleSubmit);
+
+  const error = localError ?? activationError;
+  const derived = computeDepositDerivedState(
+    DepositFlowStep.ACTIVATE_VAULT,
+    activating || loading,
+    false,
+    error,
+  );
+
+  // After the on-chain activation lands, hold the modal open so the user
+  // sees the success banner. The Done button (onClose path of the view)
+  // routes to the parent's success handler, which dismisses + refetches.
+  const handleDone = useCallback(() => {
+    if (activated) {
+      onSuccess();
+    } else {
+      onClose();
+    }
+  }, [activated, onSuccess, onClose]);
 
   return (
     <DepositProgressView
-      currentStep={DepositFlowStep.BROADCAST_PRE_PEGIN}
-      isWaiting={false}
+      currentStep={DepositFlowStep.ACTIVATE_VAULT}
       error={error}
-      isComplete={isComplete}
-      isProcessing={isProcessing}
-      canClose={canClose}
+      isComplete={activated}
+      isProcessing={derived.isProcessing}
+      canClose={activated || derived.canClose}
       canContinueInBackground={false}
       payoutSigningProgress={null}
-      onClose={handleClose}
-      successMessage={
-        refundTxId
-          ? `Refund transaction broadcast successfully. Transaction ID: ${refundTxId}`
-          : "Your refund transaction has been broadcast to Bitcoin."
-      }
-      onRetry={error ? handleRefund : undefined}
+      onClose={handleDone}
+      successMessage="Your vault has been activated. The vault provider can now claim the HTLC on Bitcoin."
+      onRetry={error ? handleSubmit : undefined}
     />
   );
 }

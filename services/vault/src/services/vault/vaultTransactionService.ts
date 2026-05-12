@@ -5,16 +5,20 @@
  * or fetching data before executing transactions.
  */
 
-import { getETHChain } from "@babylonlabs-io/config";
 import type { BitcoinWallet } from "@babylonlabs-io/ts-sdk/shared";
 import type {
   BatchPeginRequestItem,
+  PopSignature,
   UTXO as SDKUtxo,
+  WotsBlockPublicKey,
 } from "@babylonlabs-io/ts-sdk/tbv/core";
 import { ensureHexPrefix, PeginManager } from "@babylonlabs-io/ts-sdk/tbv/core";
 import type { Address, Hex, WalletClient } from "viem";
 
+import { getETHChain } from "@/config/network";
+
 import { getMempoolApiUrl } from "../../clients/btc/config";
+import { ethClient } from "../../clients/eth-contract/client";
 import { CONTRACTS } from "../../config/contracts";
 import { getBTCNetworkForWASM } from "../../config/pegin";
 
@@ -36,7 +40,10 @@ export type UTXO = SDKUtxo;
 
 /**
  * Parameters for preparing a pegin transaction (always batch-shaped).
- * Single-vault callers pass single-element arrays for pegInAmounts and hashlocks.
+ * Single-vault callers pass a single-element `pegInAmounts` array.
+ *
+ * Hashlocks are NOT a caller input — the SDK derives them from the
+ * wallet root via `expandHashlockSecret`.
  */
 export interface PreparePeginParams {
   /** Amounts to peg in per vault (satoshis), one per HTLC output */
@@ -53,8 +60,6 @@ export interface PreparePeginParams {
   timelockPegin: number;
   /** CSV timelock in blocks for the Pre-PegIn HTLC refund path */
   timelockRefund: number;
-  /** SHA256 hash commitments, one per vault (64 hex chars each, no 0x prefix) */
-  hashlocks: readonly string[];
   /** M in M-of-N council multisig */
   councilQuorum: number;
   /** N in M-of-N council multisig */
@@ -83,15 +88,31 @@ export interface PeginVaultResult {
  * Always batch-shaped — single vault is perVault with one element.
  */
 export interface PreparePeginResult {
-  /** Funded Pre-PegIn tx hex (shared across all vaults) */
+  /** Funded, pre-witness Pre-PegIn tx hex (shared across all vaults). */
   fundedPrePeginTxHex: string;
-  /** Unfunded Pre-PegIn tx hex (for contract DA submission) */
-  unsignedPrePeginTxHex: string;
   /** Per-vault results (one per HTLC output) */
   perVault: PeginVaultResult[];
   selectedUTXOs: UTXO[];
   fee: bigint;
+  /** x-only depositor pubkey snapshot used end-to-end across both passes. */
   depositorBtcPubkey: string;
+  /** Per-vault WOTS public keys derived from the wallet root. */
+  perVaultWotsKeys: WotsBlockPublicKey[][];
+  /** Per-vault keccak256 of WOTS keys (for `depositorWotsPkHash`). */
+  wotsPkHashes: Hex[];
+  /** Per-vault HTLC preimage hex (no 0x prefix). Sensitive — do not log. */
+  htlcSecretHexes: string[];
+  /**
+   * Raw 32-byte auth-anchor preimage as 64-char lowercase hex (no 0x).
+   * Sent to the VP via `auth_createDepositorToken`. Sensitive — do
+   * not log; do not persist.
+   *
+   * Known limitation: JS strings can't be wiped, so this value is
+   * visible in any closure that captures it (incl. React DevTools)
+   * until GC. Lifetime is bounded by `vpTokenRegistry.release` on
+   * terminal flow paths.
+   */
+  authAnchorHex: string;
 }
 
 /**
@@ -100,12 +121,12 @@ export interface PreparePeginResult {
 export interface RegisterPeginBatchOnChainParams {
   /** Vault provider address (shared across all vaults) */
   vaultProviderAddress: Address;
+  /** Shared Pre-PegIn tx hex for the whole batch */
+  unsignedPrePeginTx: string;
   /** Per-vault registration data */
   requests: BatchPeginRequestItem[];
-  /** Pre-signed BTC PoP signature (signed once, reused for all) */
-  preSignedBtcPopSignature?: Hex;
-  /** Called after PoP is signed (before ETH tx) */
-  onPopSigned?: () => void | Promise<void>;
+  /** Proof of possession from signProofOfPossession(). */
+  popSignature: PopSignature;
 }
 
 /**
@@ -119,8 +140,6 @@ export interface RegisterPeginBatchResult {
     vaultId: Hex;
     peginTxHash: Hex;
   }>;
-  /** The BTC PoP signature used */
-  btcPopSignature: Hex;
 }
 
 function createPeginManager(
@@ -136,6 +155,7 @@ function createPeginManager(
     btcWallet,
     ethWallet,
     ethChain: getETHChain(),
+    publicClient: ethClient.getPublicClient(),
     vaultContracts: {
       btcVaultRegistry: CONTRACTS.BTC_VAULT_REGISTRY,
     },
@@ -147,7 +167,8 @@ function createPeginManager(
  * Build and fund the pegin transactions without submitting to Ethereum.
  *
  * Creates ONE Pre-PegIn tx with N HTLC outputs (one per vault), derives N PegIn txs,
- * and signs each PegIn input. Single-vault deposits pass single-element arrays.
+ * signs each PegIn input, and derives per-vault WOTS keys + HTLC secrets from the
+ * wallet root. Single-vault deposits pass a single-element `pegInAmounts` array.
  */
 export async function preparePeginTransaction(
   btcWallet: BitcoinWallet,
@@ -156,49 +177,52 @@ export async function preparePeginTransaction(
 ): Promise<PreparePeginResult> {
   const peginManager = createPeginManager(btcWallet, ethWallet);
 
-  const result = await peginManager.preparePegin({
-    amounts: params.pegInAmounts,
-    vaultProviderBtcPubkey: params.vaultProviderBtcPubkey,
-    vaultKeeperBtcPubkeys: params.vaultKeeperBtcPubkeys,
-    universalChallengerBtcPubkeys: params.universalChallengerBtcPubkeys,
-    timelockPegin: params.timelockPegin,
-    timelockRefund: params.timelockRefund,
-    hashlocks: params.hashlocks,
-    protocolFeeRate: params.protocolFeeRate,
-    mempoolFeeRate: params.mempoolFeeRate,
-    councilQuorum: params.councilQuorum,
-    councilSize: params.councilSize,
-    availableUTXOs: params.availableUTXOs,
-    changeAddress: params.changeAddress,
-  });
-
-  const depositorBtcPubkeyRaw = await btcWallet.getPublicKeyHex();
-  const depositorBtcPubkey =
-    depositorBtcPubkeyRaw.length === 66
-      ? depositorBtcPubkeyRaw.slice(2)
-      : depositorBtcPubkeyRaw;
+  const { transaction, depositorBtcPubkey, derivedSecrets } =
+    await peginManager.preparePegin({
+      amounts: params.pegInAmounts,
+      vaultProviderBtcPubkey: params.vaultProviderBtcPubkey,
+      vaultKeeperBtcPubkeys: params.vaultKeeperBtcPubkeys,
+      universalChallengerBtcPubkeys: params.universalChallengerBtcPubkeys,
+      timelockPegin: params.timelockPegin,
+      timelockRefund: params.timelockRefund,
+      protocolFeeRate: params.protocolFeeRate,
+      mempoolFeeRate: params.mempoolFeeRate,
+      councilQuorum: params.councilQuorum,
+      councilSize: params.councilSize,
+      availableUTXOs: params.availableUTXOs,
+      changeAddress: params.changeAddress,
+    });
 
   return {
-    fundedPrePeginTxHex: result.fundedPrePeginTxHex,
-    unsignedPrePeginTxHex: result.unsignedPrePeginTxHex,
-    perVault: result.perVault.map((v) => ({
+    fundedPrePeginTxHex: transaction.fundedPrePeginTxHex,
+    perVault: transaction.perVault.map((v) => ({
       htlcVout: v.htlcVout,
       peginTxHash: ensureHexPrefix(v.peginTxid),
       peginTxHex: v.peginTxHex,
       peginTxid: v.peginTxid,
       peginInputSignature: v.peginInputSignature,
     })),
-    selectedUTXOs: result.selectedUTXOs,
-    fee: result.fee,
+    selectedUTXOs: transaction.selectedUTXOs,
+    fee: transaction.fee,
     depositorBtcPubkey,
+    perVaultWotsKeys: derivedSecrets.perVaultWotsKeys,
+    wotsPkHashes: derivedSecrets.wotsPkHashes,
+    htlcSecretHexes: derivedSecrets.htlcSecretHexes,
+    authAnchorHex: derivedSecrets.authAnchorHex,
   };
+}
+
+export async function signProofOfPossession(
+  btcWallet: BitcoinWallet,
+  ethWallet: WalletClient,
+): Promise<PopSignature> {
+  const peginManager = createPeginManager(btcWallet, ethWallet);
+  return peginManager.signProofOfPossession();
 }
 
 /**
  * Batch-register multiple prepared pegins on Ethereum in a single transaction.
- *
  * Uses submitPeginRequestBatch() so users only sign one ETH tx for N vaults.
- * The PoP signature is signed once and included in each request.
  */
 export async function registerPeginBatchOnChain(
   btcWallet: BitcoinWallet,
@@ -209,14 +233,13 @@ export async function registerPeginBatchOnChain(
 
   const result = await peginManager.registerPeginBatchOnChain({
     vaultProvider: params.vaultProviderAddress,
+    unsignedPrePeginTx: params.unsignedPrePeginTx,
     requests: params.requests,
-    preSignedBtcPopSignature: params.preSignedBtcPopSignature,
-    onPopSigned: params.onPopSigned,
+    popSignature: params.popSignature,
   });
 
   return {
     ethTxHash: result.ethTxHash,
     vaults: result.vaults,
-    btcPopSignature: result.btcPopSignature,
   };
 }

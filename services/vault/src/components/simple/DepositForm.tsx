@@ -4,10 +4,12 @@ import {
   AccordionSummary,
   AmountSlider,
   Card,
+  Checkbox,
   Loader,
   Select,
+  Warning,
 } from "@babylonlabs-io/core-ui";
-import { useMemo } from "react";
+import { useMemo, useState } from "react";
 import { IoCheckmark, IoChevronUp } from "react-icons/io5";
 
 import { ApplicationLogo } from "@/components/ApplicationLogo";
@@ -16,11 +18,18 @@ import { getNetworkConfigBTC } from "@/config";
 import { useBtcFeeDisplay } from "@/hooks/deposit/useBtcFeeDisplay";
 import { depositService } from "@/services/deposit";
 
+import { CollateralFactorRow } from "./CollateralFactorRow";
+import { FeesSection, type FeeRow } from "./FeesSection";
+
 const btcConfig = getNetworkConfigBTC();
 
 interface Provider {
   id: string;
   name: string;
+  /** When true, the provider renders disabled in the picker and is not selectable. */
+  unavailable?: boolean;
+  /** Tooltip text shown on hover when the provider is unavailable. */
+  unavailableReason?: string;
 }
 
 interface Application {
@@ -64,9 +73,27 @@ interface DepositFormProps {
   depositorClaimValue?: bigint;
   isDepositDisabled: boolean;
   isGeoBlocked: boolean;
+  isAddressBlocked: boolean;
   onDeposit: () => void;
 
   partialLiquidation?: PartialLiquidationProps;
+
+  collateralFactor?: number | null;
+
+  feeRows?: FeeRow[];
+
+  /**
+   * True when the inscription (ordinals) check could not complete. Surfaces a
+   * warning so the user knows inscription UTXOs may be included in the deposit.
+   */
+  ordinalsCheckUnavailable?: boolean;
+
+  /**
+   * True while the inscription (ordinals) check is still in flight. Blocks
+   * submission so the user cannot deposit before the spendable set has been
+   * filtered against inscriptions.
+   */
+  ordinalsCheckPending?: boolean;
 }
 
 export function DepositForm({
@@ -93,12 +120,19 @@ export function DepositForm({
   depositorClaimValue,
   isDepositDisabled,
   isGeoBlocked,
+  isAddressBlocked,
   onDeposit,
   partialLiquidation,
+  collateralFactor = null,
+  feeRows,
+  ordinalsCheckUnavailable = false,
+  ordinalsCheckPending = false,
 }: DepositFormProps) {
+  const [ordinalsWarningAcknowledged, setOrdinalsWarningAcknowledged] =
+    useState(false);
   const btcBalanceFormatted = useMemo(() => {
     if (!btcBalance) return 0;
-    return Number(depositService.formatSatoshisToBtc(btcBalance, 8));
+    return Number(depositService.formatSatoshisToBtc(btcBalance));
   }, [btcBalance]);
 
   const sliderMax = btcBalanceFormatted || 1;
@@ -119,6 +153,8 @@ export function DepositForm({
   const providerOptions = providers.map((p) => ({
     value: p.id,
     label: p.name,
+    disabled: p.unavailable,
+    tooltip: p.unavailableReason,
   }));
 
   const {
@@ -166,6 +202,7 @@ export function DepositForm({
     depositorClaimValue,
     isDepositDisabled,
     isGeoBlocked,
+    isAddressBlocked,
     isWalletConnected,
     hasApplication: !!selectedApplication,
     hasProvider: !!selectedProvider,
@@ -173,10 +210,35 @@ export function DepositForm({
     isFeeError,
     feeError,
     feeDisabled,
+    ordinalsCheckPending,
+    ordinalsWarningUnacknowledged:
+      ordinalsCheckUnavailable && !ordinalsWarningAcknowledged,
   });
 
   return (
     <div className="flex w-full flex-col gap-4">
+      {ordinalsCheckUnavailable && (
+        <Warning className="items-start" messageClassName="flex flex-col gap-3">
+          <span>
+            Inscription check unavailable. We couldn&apos;t verify whether your
+            UTXOs contain Ordinals/inscriptions. If you proceed, any inscription
+            UTXOs may be spent as part of this deposit.
+          </span>
+          <label className="flex cursor-pointer items-center gap-3">
+            <Checkbox
+              checked={ordinalsWarningAcknowledged}
+              onChange={() => setOrdinalsWarningAcknowledged((v) => !v)}
+              variant="default"
+              showLabel={false}
+            />
+            <span>
+              I understand that inscription UTXOs may be spent as part of this
+              deposit.
+            </span>
+          </label>
+        </Warning>
+      )}
+
       <Card variant="filled" className="flex flex-col gap-4">
         {/* Amount input with slider */}
         <AmountSlider
@@ -194,6 +256,12 @@ export function DepositForm({
           leftField={{ label: "Max", value: `${btcBalanceFormatted} BTC` }}
           rightField={{ value: usdValue }}
           onMaxClick={onMaxClick}
+        />
+        <CollateralFactorRow
+          collateralFactor={collateralFactor}
+          amountBtc={amount}
+          btcPrice={btcPrice}
+          hasPriceFetchError={hasPriceFetchError}
         />
       </Card>
 
@@ -323,6 +391,9 @@ export function DepositForm({
           <span className="text-accent-secondary">{feePrice}</span>
         </span>
       </div>
+
+      {/* Protocol & risk parameters */}
+      {feeRows && feeRows.length > 0 && <FeesSection rows={feeRows} />}
     </div>
   );
 }

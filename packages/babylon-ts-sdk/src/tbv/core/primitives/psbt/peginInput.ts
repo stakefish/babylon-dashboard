@@ -166,7 +166,13 @@ export async function buildPeginInputPsbt(
 /**
  * Extract the depositor's Schnorr signature from a signed PegIn input PSBT.
  *
- * Supports both non-finalized PSBTs (tapScriptSig) and finalized PSBTs (witness).
+ * Supports non-finalized PSBTs with tapScriptSig entries. Finalized PSBTs are
+ * rejected because the witness stack does not reliably identify the depositor
+ * signature by public key.
+ *
+ * PegIn input signatures must use implicit Taproot SIGHASH_DEFAULT, which is
+ * encoded by omitting the sighash byte. Signatures with an appended sighash byte
+ * are rejected rather than stripped.
  *
  * @param signedPsbtHex - Signed PSBT hex
  * @param depositorPubkey - Depositor's x-only public key (64-char hex)
@@ -248,14 +254,22 @@ export function finalizePeginInputPsbt(signedPsbtHex: string): string {
   return psbt.extractTransaction().toHex();
 }
 
-/** Extract and validate a 64-byte Schnorr signature, stripping sighash flag if present. */
-function extractSchnorrSig(sig: Uint8Array): string {
+/**
+ * Extract and validate a 64-byte Schnorr signature.
+ * PegIn input signatures must use implicit Taproot SIGHASH_DEFAULT, which is
+ * encoded by omitting the sighash byte. Reject 65-byte signatures instead of
+ * stripping the sighash byte because it changes the signed Taproot message.
+ * @internal
+ */
+export function extractSchnorrSig(sig: Uint8Array): string {
   if (sig.length === 64) {
     return uint8ArrayToHex(new Uint8Array(sig));
   }
   if (sig.length === 65) {
-    return uint8ArrayToHex(new Uint8Array(sig.subarray(0, 64)));
+    throw new Error(
+      `Unexpected sighash byte 0x${sig[64].toString(16).padStart(2, "0")} in PegIn input signature. ` +
+        "Expected implicit SIGHASH_DEFAULT as a 64-byte signature.",
+    );
   }
   throw new Error(`Unexpected PegIn input signature length: ${sig.length}`);
 }
-

@@ -11,9 +11,15 @@ import { useBtcPublicKey } from "@/hooks/useBtcPublicKey";
 
 import { useAaveConfig } from "../../applications/aave/context";
 import { useProtocolParamsContext } from "../../context/ProtocolParamsContext";
-import { useBTCWallet, useConnection } from "../../context/wallet";
+import {
+  useBTCWallet,
+  useConnection,
+  useETHWallet,
+} from "../../context/wallet";
 import { depositService } from "../../services/deposit";
 import { formatProviderDisplayName } from "../../utils/formatting";
+import { vaultProviderUnavailableReason } from "../../utils/vaultProviderStatus";
+import { useApplicationCap } from "../useApplicationCap";
 import { useApplications } from "../useApplications";
 import { usePrice, usePrices } from "../usePrices";
 import { calculateBalance, useUTXOs } from "../useUTXOs";
@@ -62,6 +68,10 @@ export interface UseDepositPageFormResult {
     name: string;
     btcPubkey: string;
     iconUrl?: string;
+    /** True when the provider's registered rpcUrl was rejected by the indexer. */
+    unavailable?: boolean;
+    /** Tooltip explaining why the provider is unavailable. */
+    unavailableReason?: string;
   }>;
   isLoadingProviders: boolean;
 
@@ -74,6 +84,20 @@ export interface UseDepositPageFormResult {
   isLoadingFee: boolean;
   feeError: string | null;
   maxDepositSats: bigint | null;
+
+  /**
+   * True when the ordinals check failed or timed out AND the user has
+   * inscription-exclusion enabled. In that state, inscription UTXOs may be
+   * spent unintentionally, so the UI should surface a warning.
+   */
+  ordinalsCheckUnavailable: boolean;
+
+  /**
+   * True when the ordinals check is still in flight AND the user has
+   * inscription-exclusion enabled. Consumers should block submission until
+   * the check resolves.
+   */
+  ordinalsCheckPending: boolean;
 
   // Partial liquidation (multi-vault)
   isPartialLiquidation: boolean;
@@ -129,12 +153,17 @@ export function useDepositPageForm(): UseDepositPageFormResult {
     loading: isLoadingProviders,
   } = useVaultProviders(effectiveSelectedApplication || undefined);
   const providers = useMemo(() => {
-    return rawProviders.map((p) => ({
-      id: p.id,
-      name: formatProviderDisplayName(p.name, p.id),
-      btcPubkey: p.btcPubKey || "",
-      iconUrl: p.iconUrl,
-    }));
+    return rawProviders.map((p) => {
+      const unavailableReason = vaultProviderUnavailableReason(p);
+      return {
+        id: p.id,
+        name: formatProviderDisplayName(p.name, p.id),
+        btcPubkey: p.btcPubKey || "",
+        iconUrl: p.iconUrl,
+        unavailable: unavailableReason !== undefined,
+        unavailableReason,
+      };
+    });
   }, [rawProviders]);
 
   // Derive selected VP's BTC pubkey and VK BTC pubkeys for challenger count
@@ -151,17 +180,38 @@ export function useDepositPageForm(): UseDepositPageFormResult {
     () => providers.map((p: { id: string }) => p.id),
     [providers],
   );
-  const validation = useDepositValidation(providerIds);
+  const { address: ethAddress } = useETHWallet();
+  const { snapshot: capSnapshot, error: capError } = useApplicationCap(
+    isWalletConnected ? ethAddress : undefined,
+  );
+  // Only block validation when the on-chain cap read has explicitly errored.
+  // During the initial load `capSnapshot` is null but `capError` is not set —
+  // in that window the validator skips the cap check so the user can still
+  // interact with the form. The contract still enforces the cap at submit.
+  const validation = useDepositValidation({
+    availableProviders: providerIds,
+    effectiveRemaining: capSnapshot?.effectiveRemaining ?? null,
+    capUnavailable: capError !== null,
+  });
 
-  // Get UTXOs for balance calculation (already respects inscription preference)
-  const { spendableUTXOs, spendableMempoolUTXOs } = useUTXOs(btcAddress);
+  // Display balance uses `availableUTXOs` so the user sees their real funds
+  // even while the ordinals classifier is loading or has errored. Actual
+  // spending uses `spendableMempoolUTXOs` (fee estimation) and the fail-closed
+  // gate inside `useDepositFlow`, which refuses to submit while classification
+  // is unavailable.
+  const {
+    availableUTXOs,
+    spendableMempoolUTXOs,
+    ordinalsCheckUnavailable,
+    ordinalsCheckPending,
+  } = useUTXOs(btcAddress);
   const btcBalance = useMemo(() => {
-    return BigInt(calculateBalance(spendableUTXOs || []));
-  }, [spendableUTXOs]);
+    return BigInt(calculateBalance(availableUTXOs || []));
+  }, [availableUTXOs]);
 
   const btcBalanceFormatted = useMemo(() => {
     if (!btcBalance) return 0;
-    return Number(depositService.formatSatoshisToBtc(btcBalance, 8));
+    return Number(depositService.formatSatoshisToBtc(btcBalance));
   }, [btcBalance]);
 
   const { errors, setErrors, clearFieldError, resetErrors } =
@@ -327,6 +377,8 @@ export function useDepositPageForm(): UseDepositPageFormResult {
     isLoadingFee,
     feeError,
     maxDepositSats: adjustedMaxDepositSats,
+    ordinalsCheckUnavailable,
+    ordinalsCheckPending,
     isPartialLiquidation,
     setIsPartialLiquidation,
     canSplit,

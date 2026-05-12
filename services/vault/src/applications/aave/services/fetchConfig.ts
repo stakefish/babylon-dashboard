@@ -9,6 +9,8 @@ import { gql } from "graphql-request";
 import type { Address } from "viem";
 
 import { graphqlClient } from "../../../clients/graphql";
+import { getCoreSpokeAddress } from "../clients/transaction";
+import { getAaveAdapterAddress } from "../config";
 
 /**
  * Aave configuration from GraphQL indexer
@@ -21,8 +23,8 @@ export interface AaveConfig {
   vaultBtcAddress: string;
   /** BTCVaultRegistry contract address */
   btcVaultRegistryAddress: string;
-  /** Core Spoke contract address (for user lending positions) */
-  btcVaultCoreSpokeAddress: string;
+  /** Core Spoke contract address (resolved on-chain from adapter) */
+  coreSpokeAddress: Address;
   /** vBTC reserve ID on Core Spoke */
   btcVaultCoreVbtcReserveId: bigint;
 }
@@ -64,8 +66,15 @@ export interface AaveAppConfig {
   config: AaveConfig;
   /** vBTC reserve configuration (collateral reserve) */
   vbtcReserve: AaveReserveConfig | null;
-  /** List of reserves that can be borrowed */
+  /** Reserves available for new borrows (filtered by borrowable/paused/frozen) */
   borrowableReserves: AaveReserveConfig[];
+  /**
+   * All non-vBTC reserves regardless of borrowable/paused/frozen flags.
+   * Used for resolving existing debt positions: a user can have debt in a
+   * reserve that has since been frozen/paused/un-borrowable, and still needs
+   * to repay it.
+   */
+  allBorrowReserves: AaveReserveConfig[];
 }
 
 /**
@@ -102,7 +111,6 @@ interface GraphQLAaveAppConfigResponse {
     adapterAddress: string;
     vaultBtcAddress: string;
     btcVaultRegistryAddress: string;
-    btcVaultCoreSpokeAddress: string;
     btcVaultCoreVbtcReserveId: string;
   } | null;
   /** All reserves (we filter for vBTC and borrowable in code) */
@@ -123,7 +131,6 @@ const GET_AAVE_APP_CONFIG = gql`
       adapterAddress
       vaultBtcAddress
       btcVaultRegistryAddress
-      btcVaultCoreSpokeAddress
       btcVaultCoreVbtcReserveId
     }
     aaveReserves {
@@ -203,11 +210,31 @@ export async function fetchAaveAppConfig(): Promise<AaveAppConfig | null> {
 
   const vbtcReserveId = BigInt(response.aaveConfig.btcVaultCoreVbtcReserveId);
 
+  const adapterAddress = getAaveAdapterAddress();
+  const indexedAdapterAddress = response.aaveConfig.adapterAddress as Address;
+  if (indexedAdapterAddress.toLowerCase() !== adapterAddress.toLowerCase()) {
+    throw new Error(
+      `Aave adapter mismatch: indexer returned ${indexedAdapterAddress}, expected ${adapterAddress}`,
+    );
+  }
+
+  // Resolve spoke address on-chain from the env-pinned adapter contract,
+  // rather than trusting a GraphQL-supplied adapter.
+  let coreSpokeAddress: Address;
+  try {
+    coreSpokeAddress = await getCoreSpokeAddress(adapterAddress);
+  } catch (error) {
+    throw new Error(
+      `Failed to resolve Core Spoke address from adapter ${adapterAddress}`,
+      { cause: error },
+    );
+  }
+
   const config: AaveConfig = {
-    adapterAddress: response.aaveConfig.adapterAddress,
+    adapterAddress,
     vaultBtcAddress: response.aaveConfig.vaultBtcAddress,
     btcVaultRegistryAddress: response.aaveConfig.btcVaultRegistryAddress,
-    btcVaultCoreSpokeAddress: response.aaveConfig.btcVaultCoreSpokeAddress,
+    coreSpokeAddress,
     btcVaultCoreVbtcReserveId: vbtcReserveId,
   };
 
@@ -220,68 +247,24 @@ export async function fetchAaveAppConfig(): Promise<AaveAppConfig | null> {
   const vbtcReserve =
     allReserves.find((r) => r.reserveId === vbtcReserveId) ?? null;
 
+  // All non-vBTC reserves (no flag filters). Used for resolving existing debt
+  // positions in reserves that may have since been frozen/paused/un-borrowable.
+  const allBorrowReserves = allReserves.filter(
+    (r) => r.reserveId !== vbtcReserveId,
+  );
+
   // Filter borrowable reserves:
   // - borrowable flag is true
   // - not paused or frozen
   // - NOT the vBTC reserve (vBTC is collateral-only, users deposit it but can't borrow it)
-  const borrowableReserves = allReserves.filter(
-    (r) =>
-      r.reserve.borrowable &&
-      !r.reserve.paused &&
-      !r.reserve.frozen &&
-      r.reserveId !== vbtcReserveId,
+  const borrowableReserves = allBorrowReserves.filter(
+    (r) => r.reserve.borrowable && !r.reserve.paused && !r.reserve.frozen,
   );
 
   return {
     config,
     vbtcReserve,
     borrowableReserves,
-  };
-}
-
-/** GraphQL response shape for config only */
-interface GraphQLAaveConfigResponse {
-  aaveConfig: {
-    id: number;
-    adapterAddress: string;
-    vaultBtcAddress: string;
-    btcVaultRegistryAddress: string;
-    btcVaultCoreSpokeAddress: string;
-    btcVaultCoreVbtcReserveId: string;
-  } | null;
-}
-
-const GET_AAVE_CONFIG = gql`
-  query GetAaveConfig {
-    aaveConfig(id: ${AAVE_CONFIG_ID}) {
-      id
-      adapterAddress
-      vaultBtcAddress
-      btcVaultRegistryAddress
-      btcVaultCoreSpokeAddress
-      btcVaultCoreVbtcReserveId
-    }
-  }
-`;
-
-/**
- * Fetches Aave configuration from the GraphQL indexer.
- */
-export async function fetchAaveConfig(): Promise<AaveConfig | null> {
-  const response =
-    await graphqlClient.request<GraphQLAaveConfigResponse>(GET_AAVE_CONFIG);
-
-  if (!response.aaveConfig) {
-    return null;
-  }
-
-  return {
-    adapterAddress: response.aaveConfig.adapterAddress,
-    vaultBtcAddress: response.aaveConfig.vaultBtcAddress,
-    btcVaultRegistryAddress: response.aaveConfig.btcVaultRegistryAddress,
-    btcVaultCoreSpokeAddress: response.aaveConfig.btcVaultCoreSpokeAddress,
-    btcVaultCoreVbtcReserveId: BigInt(
-      response.aaveConfig.btcVaultCoreVbtcReserveId,
-    ),
+    allBorrowReserves,
   };
 }

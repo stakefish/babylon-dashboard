@@ -20,9 +20,21 @@ import { createPayoutScript } from "../scripts/payout";
 import {
   TAPSCRIPT_LEAF_VERSION,
   hexToUint8Array,
+  isValidHex,
   stripHexPrefix,
   uint8ArrayToHex,
 } from "../utils/bitcoin";
+
+/**
+ * Number of items in a Taproot script-path spend witness stack for a
+ * single-signature script: [signature, script, controlBlock].
+ *
+ * The current payout script requires exactly one depositor signature. If the
+ * protocol evolves to require multiple signatures in the payout script, this
+ * invariant and the finalized-PSBT extraction path must be revisited because
+ * the first witness item would no longer necessarily be the depositor's.
+ */
+const TAPROOT_SINGLE_SIG_WITNESS_STACK_SIZE = 3;
 
 /**
  * Parameters for building an unsigned Payout PSBT
@@ -249,14 +261,58 @@ export async function buildPayoutPsbt(
 }
 
 /**
+ * Validate that a payout transaction's largest output pays to the registered
+ * depositor payout scriptPubKey.
+ *
+ * Prevents a malicious vault provider from substituting the payout destination
+ * (or routing funds through a dust output to the correct address while sending
+ * the actual value to an attacker-controlled script).
+ *
+ * @param payoutTxHex - Raw payout transaction hex
+ * @param registeredPayoutScriptPubKey - On-chain registered scriptPubKey (hex, with or without 0x prefix)
+ * @throws If scriptPubKey is invalid hex
+ * @throws If the transaction has no outputs
+ * @throws If the largest output does not pay to the registered scriptPubKey
+ */
+export function assertPayoutOutputMatchesRegistered(
+  payoutTxHex: string,
+  registeredPayoutScriptPubKey: string,
+): void {
+  if (!isValidHex(registeredPayoutScriptPubKey)) {
+    throw new Error("Invalid registeredPayoutScriptPubKey: not valid hex");
+  }
+
+  const expectedScript = Buffer.from(
+    stripHexPrefix(registeredPayoutScriptPubKey),
+    "hex",
+  );
+  const payoutTx = Transaction.fromHex(stripHexPrefix(payoutTxHex));
+
+  if (payoutTx.outs.length === 0) {
+    throw new Error("Payout transaction has no outputs");
+  }
+
+  const largestOutput = payoutTx.outs.reduce((max, output) =>
+    output.value > max.value ? output : max,
+  );
+
+  if (!largestOutput.script.equals(expectedScript)) {
+    throw new Error(
+      "Payout transaction does not pay to the registered depositor payout address",
+    );
+  }
+}
+
+/**
  * Extract Schnorr signature from signed payout PSBT.
  *
  * This function supports two cases:
  * 1. Non-finalized PSBT: Extracts from tapScriptSig field
  * 2. Finalized PSBT: Extracts from witness data
  *
- * The signature is returned as a 64-byte hex string (128 hex characters)
- * with any sighash flag byte removed if present.
+ * The signature is returned as a 64-byte hex string (128 hex characters).
+ * Payout signatures must use implicit Taproot SIGHASH_DEFAULT, which is
+ * encoded by omitting the sighash byte.
  *
  * @param signedPsbtHex - Signed PSBT hex
  * @param depositorPubkey - Depositor's public key (x-only, 64-char hex)
@@ -297,12 +353,21 @@ export function extractPayoutSignature(
   }
 
   // Case 2: Finalized PSBT — extract from finalScriptWitness
-  // Taproot script-path witness: [signature, script, controlBlock]
+  // Taproot single-signature script-path witness: [signature, script, controlBlock].
+  // Enforce the exact stack size so that if a wallet produces an unexpected
+  // finalization (e.g. a multi-signature stack, an annex, or malformed data),
+  // we fail loudly instead of silently returning witnessStack[0] which may
+  // not be the depositor's signature.
   if (input.finalScriptWitness && input.finalScriptWitness.length > 0) {
     const witnessStack = parseWitnessStack(input.finalScriptWitness);
-    if (witnessStack.length >= 1) {
-      return extractSchnorrSig(witnessStack[0], inputIndex);
+    if (witnessStack.length !== TAPROOT_SINGLE_SIG_WITNESS_STACK_SIZE) {
+      throw new Error(
+        `Unexpected finalized witness stack size at input ${inputIndex}: ` +
+          `expected ${TAPROOT_SINGLE_SIG_WITNESS_STACK_SIZE} items (signature, script, controlBlock), ` +
+          `got ${witnessStack.length}`,
+      );
     }
+    return extractSchnorrSig(witnessStack[0], inputIndex);
   }
 
   throw new Error(
@@ -311,22 +376,21 @@ export function extractPayoutSignature(
 }
 
 /**
- * Extract and validate a 64-byte Schnorr signature, stripping sighash flag if present.
- * Rejects signatures with sighash types other than SIGHASH_ALL (0x01) to prevent
- * acceptance of signatures that don't commit to all outputs (e.g. SIGHASH_NONE).
+ * Extract and validate a 64-byte Schnorr signature.
+ * Rejects 65-byte signatures because the appended sighash byte changes the
+ * Taproot message being signed; stripping it would produce an unverifiable
+ * SIGHASH_DEFAULT signature.
  * @internal
  */
 function extractSchnorrSig(sig: Uint8Array, inputIndex: number): string {
   if (sig.length === 64) {
     return uint8ArrayToHex(new Uint8Array(sig));
-  } else if (sig.length === 65) {
-    const sighashByte = sig[64];
-    if (sighashByte !== Transaction.SIGHASH_ALL) {
-      throw new Error(
-        `Unexpected sighash type 0x${sighashByte.toString(16).padStart(2, "0")} at input ${inputIndex}. Expected SIGHASH_ALL (0x01).`,
-      );
-    }
-    return uint8ArrayToHex(new Uint8Array(sig.subarray(0, 64)));
+  }
+  if (sig.length === 65) {
+    throw new Error(
+      `Unexpected sighash byte 0x${sig[64].toString(16).padStart(2, "0")} at input ${inputIndex}. ` +
+        "Expected implicit SIGHASH_DEFAULT as a 64-byte signature.",
+    );
   }
   throw new Error(
     `Unexpected signature length at input ${inputIndex}: ${sig.length}`,
@@ -336,39 +400,64 @@ function extractSchnorrSig(sig: Uint8Array, inputIndex: number): string {
 /**
  * Parse a BIP-141 serialized witness stack into individual stack items.
  * Format: [varint item_count] [varint len, data]...
+ *
+ * Throws on malformed input (truncated buffer, 8-byte varints, or trailing
+ * bytes) so callers never receive silently-corrupted witness items.
  * @internal
  */
 function parseWitnessStack(witness: Buffer): Buffer[] {
   const items: Buffer[] = [];
   let offset = 0;
 
+  const requireBytes = (n: number): void => {
+    if (offset + n > witness.length) {
+      throw new Error(
+        `Malformed witness data: need ${n} byte(s) at offset ${offset}, only ${witness.length - offset} remaining`,
+      );
+    }
+  };
+
   const readVarInt = (): number => {
+    requireBytes(1);
     const first = witness[offset++];
     if (first < 0xfd) return first;
     if (first === 0xfd) {
-      const val = witness[offset] | (witness[offset + 1] << 8);
+      requireBytes(2);
+      const val = (witness[offset] | (witness[offset + 1] << 8)) >>> 0;
       offset += 2;
       return val;
     }
     if (first === 0xfe) {
+      requireBytes(4);
       const val =
-        witness[offset] |
-        (witness[offset + 1] << 8) |
-        (witness[offset + 2] << 16) |
-        (witness[offset + 3] << 24);
+        (witness[offset] |
+          (witness[offset + 1] << 8) |
+          (witness[offset + 2] << 16) |
+          (witness[offset + 3] << 24)) >>>
+        0;
       offset += 4;
       return val;
     }
-    // 0xff — 8-byte, won't happen for witness data
-    offset += 8;
-    return 0;
+    // 0xff — 8-byte varint. Not used for witness sizes in practice and JS
+    // numbers cannot represent all 64-bit values exactly, so reject rather
+    // than risk silent truncation.
+    throw new Error(
+      `Malformed witness data: 8-byte varint (0xff) not supported at offset ${offset - 1}`,
+    );
   };
 
   const count = readVarInt();
   for (let i = 0; i < count; i++) {
     const len = readVarInt();
-    items.push(witness.subarray(offset, offset + len) as Buffer);
+    requireBytes(len);
+    items.push(Buffer.from(witness.subarray(offset, offset + len)));
     offset += len;
+  }
+
+  if (offset !== witness.length) {
+    throw new Error(
+      `Malformed witness data: ${witness.length - offset} trailing byte(s) after parsing ${count} item(s)`,
+    );
   }
 
   return items;

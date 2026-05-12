@@ -30,6 +30,7 @@ import { BorrowDetailsCard } from "./BorrowDetailsCard";
 import { useBorrowMetrics } from "./hooks/useBorrowMetrics";
 import { useBorrowState } from "./hooks/useBorrowState";
 import { validateBorrowAction } from "./hooks/validateBorrowAction";
+import { validateBorrowPreSign } from "./hooks/validateBorrowPreSign";
 
 export function Borrow() {
   const {
@@ -40,6 +41,9 @@ export function Borrow() {
     selectedReserve,
     assetConfig,
     tokenPriceUsd,
+    isPositionDataStale,
+    refetchPosition,
+    refetchSplitParams,
     onBorrowSuccess,
   } = useLoanContext();
 
@@ -66,12 +70,21 @@ export function Borrow() {
     borrowAmount,
     metrics.healthFactorValue,
     maxBorrowAmount,
+    isPositionDataStale,
   );
 
   const sliderMaxBorrow = Math.max(maxBorrowAmount, MIN_SLIDER_MAX);
 
   const handleBorrow = async () => {
-    const success = await executeBorrow(borrowAmount, selectedReserve);
+    const success = await executeBorrow(borrowAmount, selectedReserve, () =>
+      validateBorrowPreSign({
+        borrowAmount,
+        tokenPriceUsd,
+        liquidationThresholdBps,
+        refetchSplitParams,
+        refetchPosition,
+      }),
+    );
     if (success) {
       resetBorrowAmount();
       onBorrowSuccess(borrowAmount);
@@ -120,7 +133,10 @@ export function Borrow() {
             }}
             onMaxClick={() => setBorrowAmount(sliderMaxBorrow)}
             rightField={{
-              value: formatUsdValue(borrowAmount * tokenPriceUsd),
+              value:
+                tokenPriceUsd != null
+                  ? formatUsdValue(borrowAmount * tokenPriceUsd)
+                  : "–",
             }}
             sliderActiveColor={getTokenBrandColor(assetConfig.symbol)}
             inputClassName={AMOUNT_INPUT_CLASS_NAME}
@@ -142,10 +158,15 @@ export function Borrow() {
           <p className="text-sm text-error-main">{errorMessage}</p>
         )}
 
-        {/* Borrow Unavailable Message */}
+        {/* Borrow Unavailable Messages */}
         {FeatureFlags.isBorrowDisabled && (
           <Text variant="body2" className="text-center text-warning-main">
             Borrowing is temporarily unavailable. Please check back later.
+          </Text>
+        )}
+        {tokenPriceUsd == null && !FeatureFlags.isBorrowDisabled && (
+          <Text variant="body2" className="text-center text-warning-main">
+            Price data unavailable. Borrowing is temporarily disabled.
           </Text>
         )}
       </div>
@@ -156,7 +177,12 @@ export function Borrow() {
         color="secondary"
         size="large"
         fluid
-        disabled={isDisabled || isProcessing || FeatureFlags.isBorrowDisabled}
+        disabled={
+          isDisabled ||
+          isProcessing ||
+          FeatureFlags.isBorrowDisabled ||
+          tokenPriceUsd == null
+        }
         onClick={handleBorrow}
         className="mt-6"
       >

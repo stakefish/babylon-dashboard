@@ -3,13 +3,11 @@
  */
 
 import type { BitcoinWallet } from "@babylonlabs-io/ts-sdk/shared";
-import type { Hex, WalletClient } from "viem";
-
-import type { DepositorGraphTransactions } from "@/clients/vault-provider-rpc/types";
 import type {
-  PreparedTransaction,
-  SigningContext,
-} from "@/services/vault/vaultPayoutSignatureService";
+  PopSignature,
+  WotsBlockPublicKey,
+} from "@babylonlabs-io/ts-sdk/tbv/core";
+import type { Hex, WalletClient } from "viem";
 
 // ============================================================================
 // Deposit Flow Steps
@@ -21,20 +19,40 @@ import type {
  * Numeric values enable ordered comparisons (e.g. `currentStep >= SIGN_PAYOUTS`).
  */
 export enum DepositFlowStep {
-  /** Step 1: Sign proof of possession in BTC wallet */
-  SIGN_POP = 1,
-  /** Step 2: Submit peg-in to Ethereum (registers vault on-chain) */
-  SUBMIT_PEGIN = 2,
-  /** Step 3: Sign and broadcast Pre-PegIn transaction to Bitcoin */
-  BROADCAST_PRE_PEGIN = 3,
-  /** Step 4: Sign payout transactions in BTC wallet */
-  SIGN_PAYOUTS = 4,
-  /** Step 5: Download vault artifacts */
-  ARTIFACT_DOWNLOAD = 5,
-  /** Step 6: Reveal HTLC secret on Ethereum to activate the vault */
-  ACTIVATE_VAULT = 6,
-  /** Step 7: Deposit completed */
-  COMPLETED = 7,
+  /** Step 1: Derive vault secret in BTC wallet (deriveContextHash popup) */
+  DERIVE_VAULT_SECRET = 1,
+  /** Step 2: Sign the per-vault peg-in BTC PSBT (does NOT broadcast) */
+  SIGN_PEGIN_BTC = 2,
+  /** Step 3: Sign proof of possession in BTC wallet */
+  SIGN_POP = 3,
+  /** Step 4: Submit peg-in to Ethereum (registers vault on-chain) */
+  SUBMIT_PEGIN = 4,
+  /** Step 5: Sign and broadcast Pre-PegIn transaction to Bitcoin */
+  BROADCAST_PRE_PEGIN = 5,
+  /**
+   * Step 6: Awaiting Bitcoin confirmation of the Pre-PegIn tx before the
+   * Vault Provider will accept WOTS keys / return payout PSBTs.
+   */
+  AWAIT_BTC_CONFIRMATION = 6,
+  /** Step 7: Submit WOTS public key to the Vault Provider. */
+  SUBMIT_WOTS_KEYS = 7,
+  /**
+   * Step 8: `deriveContextHash` for the VP auth anchor during payout
+   * signing. Fires whenever the per-pegin VP-token cache misses inside
+   * `signAndSubmitPayouts`. (Cache misses inside `submitWotsPublicKey`
+   * still surface a wallet popup, but the stepper stays on
+   * SUBMIT_WOTS_KEYS for that path.) The wallet popup is identical to
+   * step 1 but binds a different context (auth anchor vs. vault root).
+   */
+  SIGN_AUTH_ANCHOR = 8,
+  /** Step 9: Sign payout transactions in BTC wallet */
+  SIGN_PAYOUTS = 9,
+  /** Step 10: Download vault artifacts */
+  ARTIFACT_DOWNLOAD = 10,
+  /** Step 11: Reveal HTLC secret on Ethereum to activate the vault */
+  ACTIVATE_VAULT = 11,
+  /** Step 12: Deposit completed */
+  COMPLETED = 12,
 }
 
 // ============================================================================
@@ -56,7 +74,9 @@ export interface UtxoRef {
 }
 
 // ============================================================================
-// Steps 1-2: Pegin Submit
+// DepositFlowStep.SIGN_POP + SUBMIT_PEGIN — shared params for PoP signing
+// and the batch ETH tx (both operations reuse the same PopSignature and
+// Pre-PegIn tx, so the fields live on the batch params, not per-request).
 // ============================================================================
 
 export interface PeginBatchRegisterParams {
@@ -64,20 +84,18 @@ export interface PeginBatchRegisterParams {
   walletClient: WalletClient;
   /** Vault provider ETH address (shared for all vaults in batch) */
   vaultProviderAddress: string;
+  /** Shared Pre-PegIn tx hex for the whole batch */
+  unsignedPrePeginTx: string;
   /** Per-vault registration data */
   requests: Array<{
-    depositorBtcPubkey: string;
-    unsignedPrePeginTx: string;
     depositorSignedPeginTx: string;
     hashlock: Hex;
     htlcVout: number;
     depositorPayoutBtcAddress: string;
     depositorWotsPkHash: Hex;
   }>;
-  /** Pre-signed BTC PoP signature (signed once, reused for all) */
-  preSignedBtcPopSignature?: Hex;
-  /** Called after PoP is signed (before ETH tx) */
-  onPopSigned?: () => void;
+  /** Proof of possession from signProofOfPossession. */
+  popSignature: PopSignature;
 }
 
 export interface PeginBatchRegisterResult {
@@ -86,7 +104,6 @@ export interface PeginBatchRegisterResult {
     vaultId: Hex;
     peginTxHash: Hex;
   }>;
-  btcPopSignature: Hex;
 }
 
 // ============================================================================
@@ -94,46 +111,19 @@ export interface PeginBatchRegisterResult {
 // ============================================================================
 
 export interface WotsSubmissionParams {
-  /** Raw BTC pegin transaction hash (for VP RPC pegin_txid) */
+  /** On-chain vault id — needed to validate `unsignedPrePeginTxHex` against `prePeginTxHash` on the cold-cache VP-auth path. */
+  vaultId: Hex;
   peginTxHash: string;
   depositorBtcPubkey: string;
-  appContractAddress: string;
   providerAddress: string;
-  getMnemonic: () => Promise<string>;
+  wotsPublicKeys: WotsBlockPublicKey[];
+  btcWallet: BitcoinWallet;
+  unsignedPrePeginTxHex: string;
   signal?: AbortSignal;
 }
 
 // ============================================================================
-// Step 3: Payout Signing
-// ============================================================================
-
-export interface PayoutSigningParams {
-  /** Derived vault ID (for contract operations in signing context) */
-  vaultId: string;
-  /** Raw BTC pegin transaction hash (for VP RPC operations) */
-  peginTxHash: string;
-  /** The pegin transaction hex from step 2 - used for signing context */
-  btcTxHex: string;
-  depositorBtcPubkey: string;
-  providerAddress: string;
-  providerBtcPubKey: string;
-  vaultKeepers: Array<{ btcPubKey: string }>;
-  universalChallengers: Array<{ btcPubKey: string }>;
-  /** Depositor's registered payout scriptPubKey (hex) — converted from BTC address before passing */
-  registeredPayoutScriptPubKey: string;
-  /** Optional AbortSignal for cancellation */
-  signal?: AbortSignal;
-}
-
-export interface PayoutSigningContext {
-  context: SigningContext;
-  vaultProviderAddress: string;
-  preparedTransactions: PreparedTransaction[];
-  depositorGraph: DepositorGraphTransactions;
-}
-
-// ============================================================================
-// Step 4: Broadcast
+// Step 3: Broadcast
 // ============================================================================
 
 export interface BroadcastParams {

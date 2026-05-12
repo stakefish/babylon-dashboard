@@ -99,6 +99,19 @@ export function formatUsdValue(usdValue: number): string {
 }
 
 /**
+ * Format USD value without the "USD" suffix.
+ * Always renders two fractional digits (e.g., "$1,234.56" or "$0.00").
+ * Use this when the currency is clear from context and the bare "$…" form
+ * reads better than formatUsdValue's suffixed variant.
+ */
+export function formatUsd(usd: number): string {
+  return `$${usd.toLocaleString("en-US", {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  })}`;
+}
+
+/**
  * Format price in USD for compact display (without suffix)
  * Uses no decimals for values >= 1000, 2 decimals otherwise
  * @param priceUsd - Price in USD
@@ -109,6 +122,22 @@ export function formatPriceUsd(priceUsd: number): string {
     return `$${priceUsd.toLocaleString("en-US", { maximumFractionDigits: 0 })}`;
   }
   return `$${priceUsd.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+}
+
+/**
+ * Format a USD value in compact notation (e.g., "$63.6k", "$1.2M").
+ * Uses one fractional digit for k/M/B magnitudes; for values below 1000
+ * falls back to the same formatting as `formatPriceUsd` for consistency.
+ * Returns `$0` for zero or negative input.
+ */
+export function formatCompactUsd(usd: number): string {
+  if (usd <= 0) return "$0";
+  if (usd < 1000) return formatPriceUsd(usd);
+  const compact = new Intl.NumberFormat("en-US", {
+    notation: "compact",
+    maximumFractionDigits: 1,
+  }).format(usd);
+  return `$${compact.toLowerCase()}`;
 }
 
 /**

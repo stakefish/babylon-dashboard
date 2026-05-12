@@ -26,6 +26,7 @@ import { BorrowDetailsCard } from "../Borrow/BorrowDetailsCard";
 import { useRepayMetrics } from "./hooks/useRepayMetrics";
 import { useRepayState } from "./hooks/useRepayState";
 import { validateRepayAction } from "./hooks/validateRepayAction";
+import { validateRepayPreSign } from "./hooks/validateRepayPreSign";
 
 export function Repay() {
   const {
@@ -38,6 +39,7 @@ export function Repay() {
     assetConfig,
     proxyContract,
     tokenPriceUsd,
+    refetchSplitParams,
     onRepaySuccess,
   } = useLoanContext();
 
@@ -57,6 +59,7 @@ export function Repay() {
   const {
     repayAmount,
     setRepayAmount,
+    setRepayAmountWithMode,
     resetRepayAmount,
     maxRepayAmount,
     isFullRepayment,
@@ -88,6 +91,11 @@ export function Repay() {
       repayAmount,
       selectedReserve,
       isFullRepayment,
+      () =>
+        validateRepayPreSign({
+          liquidationThresholdBps,
+          refetchSplitParams,
+        }),
     );
     if (success) {
       resetRepayAmount();
@@ -129,9 +137,18 @@ export function Repay() {
               label: "Max",
               value: `${formatTokenAmount(sliderMaxRepay)} ${assetConfig.symbol}`,
             }}
-            onMaxClick={() => setRepayAmount(sliderMaxRepay)}
+            onMaxClick={() => {
+              const canCoverFullDebt = maxRepayAmount >= currentDebtAmount;
+              setRepayAmountWithMode(
+                maxRepayAmount,
+                canCoverFullDebt ? "full" : "partial",
+              );
+            }}
             rightField={{
-              value: formatUsdValue(repayAmount * tokenPriceUsd),
+              value:
+                tokenPriceUsd != null
+                  ? formatUsdValue(repayAmount * tokenPriceUsd)
+                  : "–",
             }}
             sliderActiveColor={getTokenBrandColor(assetConfig.symbol)}
             inputClassName={AMOUNT_INPUT_CLASS_NAME}

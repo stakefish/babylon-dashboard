@@ -12,8 +12,9 @@ vi.mock("@/config/env", () => ({
   },
 }));
 
-// Mock babylon-config to avoid env var requirements
-vi.mock("@babylonlabs-io/config", () => ({
+// Mock the vault network config runtime to avoid requiring env vars / a
+// `configureBabylonConfig` call in tests.
+vi.mock("@/config/network", () => ({
   getNetworkConfigETH: vi.fn(() => ({
     chainId: 11155111,
     name: "sepolia",
@@ -36,6 +37,29 @@ vi.mock("@/clients/eth-contract", () => ({
   },
 }));
 
+// useDepositPageForm now pulls in useApplicationCap. The form-level test does
+// not care about cap state — stub the hook to a loaded uncapped snapshot so
+// validation isn't blocked as "cap unknown" and the test's focus stays on
+// form logic (without dragging in the viem public client).
+vi.mock("../../useApplicationCap", () => ({
+  useApplicationCap: vi.fn(() => ({
+    snapshot: {
+      totalCapBTC: 0n,
+      perAddressCapBTC: 0n,
+      totalBTC: 0n,
+      userBTC: null,
+      hasTotalCap: false,
+      hasPerAddressCap: false,
+      remainingTotal: null,
+      remainingForUser: null,
+      effectiveRemaining: null,
+    },
+    isLoading: false,
+    error: null,
+    refetch: vi.fn(),
+  })),
+}));
+
 vi.mock("../../../applications/aave/context", () => ({
   useAaveConfig: vi.fn(() => ({
     config: { adapterAddress: "0xAaveAdapter" },
@@ -45,6 +69,7 @@ vi.mock("../../../applications/aave/context", () => ({
 }));
 
 import { useApplications } from "../../useApplications";
+import { useUTXOs } from "../../useUTXOs";
 import { useDepositPageForm } from "../useDepositPageForm";
 import { useEstimatedBtcFee } from "../useEstimatedBtcFee";
 
@@ -166,6 +191,8 @@ vi.mock("../../useUTXOs", () => ({
     isLoadingOrdinals: false,
     error: null,
     ordinalsError: null,
+    ordinalsCheckUnavailable: false,
+    ordinalsCheckPending: false,
     refetch: vi.fn(),
   })),
   calculateBalance: vi.fn((utxos) => {
@@ -245,8 +272,8 @@ vi.mock("../../../services/deposit", () => ({
       if (isNaN(num) || num <= 0) return 0n;
       return BigInt(Math.floor(num * 100000000));
     }),
-    formatSatoshisToBtc: vi.fn((sats: bigint, decimals: number) => {
-      return (Number(sats) / 100000000).toFixed(decimals);
+    formatSatoshisToBtc: vi.fn((sats: bigint) => {
+      return (Number(sats) / 100000000).toString();
     }),
     isDepositAmountValid: vi.fn(
       (params: {
@@ -775,6 +802,28 @@ describe("useDepositPageForm", () => {
       const { result } = renderHook(() => useDepositPageForm(), { wrapper });
 
       expect(result.current.isLoadingProviders).toBe(false);
+    });
+  });
+
+  describe("ordinalsCheckUnavailable", () => {
+    it("should be false when the ordinals check succeeded", () => {
+      const { result } = renderHook(() => useDepositPageForm(), { wrapper });
+
+      expect(result.current.ordinalsCheckUnavailable).toBe(false);
+    });
+
+    it("should propagate ordinalsCheckUnavailable from useUTXOs", () => {
+      const defaultReturn = vi.mocked(useUTXOs).getMockImplementation()!(
+        "bc1qtest123",
+      );
+      vi.mocked(useUTXOs).mockReturnValueOnce({
+        ...defaultReturn,
+        ordinalsCheckUnavailable: true,
+      });
+
+      const { result } = renderHook(() => useDepositPageForm(), { wrapper });
+
+      expect(result.current.ordinalsCheckUnavailable).toBe(true);
     });
   });
 });

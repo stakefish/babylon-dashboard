@@ -1,8 +1,4 @@
 import {
-  getNetworkConfigBTC,
-  getNetworkConfigETH,
-} from "@babylonlabs-io/config";
-import {
   APPKIT_BTC_CONNECTOR_ID,
   BTCWalletProvider,
   ETHWalletProvider,
@@ -13,19 +9,30 @@ import {
 import { useTheme } from "next-themes";
 import { useCallback, useMemo, useRef, type PropsWithChildren } from "react";
 
+import { getNetworkConfigBTC } from "@/config";
 import featureFlags from "@/config/featureFlags";
+import { getNetworkConfigETH } from "@/config/network";
 import { logger } from "@/infrastructure";
 
-const context = typeof window !== "undefined" ? window : {};
-
-const SUPPORTED_EXTERNAL_WALLETS = [
-  "bitcoin_okx",
-  "bitcoin_unisat",
-  "bitcoin_keplr",
-  "cosmos_okx",
-  "cosmos_unisat",
-  "cosmos_keplr",
+// Vault deposits require the connected BTC wallet to implement the
+// `deriveContextHash` API (see docs/specs/derive-context-hash.md). Only
+// UniSat exposes a conformant implementation today, so every other BTC
+// adapter is gated off here. Re-enable an entry as soon as its wallet
+// vendor ships `deriveContextHash`. Each non-conforming adapter still
+// throws `WALLET_METHOD_NOT_SUPPORTED` at the connector layer; this
+// list just keeps them out of the connection UI in the first place so
+// users don't pick something that can't complete a deposit.
+const DISABLED_WALLETS: string[] = [
+  APPKIT_BTC_CONNECTOR_ID,
+  "injectable",
+  "keystone",
+  "ledger_btc",
+  "ledger_btc_v2",
+  "okx",
+  "onekey",
 ];
+
+const context = typeof window !== "undefined" ? window : {};
 
 /**
  * Component that provides wallet-specific providers with cross-disconnect logic
@@ -79,19 +86,6 @@ function WalletProviders({ children }: PropsWithChildren) {
 export const WalletConnectionProvider = ({ children }: PropsWithChildren) => {
   const { theme } = useTheme();
 
-  const disabledWallets = useMemo(() => {
-    const disabled: string[] = ["ledger_btc", "ledger_btc_v2"];
-
-    const isMainnet = process.env.NEXT_PUBLIC_BTC_NETWORK === "mainnet";
-
-    // Disable AppKit BTC on mainnet
-    if (isMainnet) {
-      disabled.push(APPKIT_BTC_CONNECTOR_ID);
-    }
-
-    return disabled;
-  }, []);
-
   const config = useMemo(
     () =>
       createWalletConfig({
@@ -100,7 +94,7 @@ export const WalletConnectionProvider = ({ children }: PropsWithChildren) => {
           BTC: getNetworkConfigBTC(),
           ETH: getNetworkConfigETH(),
         },
-        supportedWallets: SUPPORTED_EXTERNAL_WALLETS,
+        disableTomo: true,
       }),
     [],
   );
@@ -120,9 +114,10 @@ export const WalletConnectionProvider = ({ children }: PropsWithChildren) => {
       config={config}
       context={context}
       onError={onError}
-      disabledWallets={disabledWallets}
+      disabledWallets={DISABLED_WALLETS}
       requiredChains={["BTC", "ETH"]}
       simplifiedTerms={featureFlags.isSimplifiedTermsEnabled}
+      disableTomo
     >
       <WalletProviders>{children}</WalletProviders>
     </WalletProvider>

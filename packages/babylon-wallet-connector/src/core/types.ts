@@ -303,7 +303,23 @@ export interface SignInputOptions {
   publicKey?: string;
   /** Sighash types (optional) */
   sighashTypes?: number[];
-  /** Disable tweak signer for Taproot script path spend (optional) */
+  /**
+   * Whether the wallet should sign with the tweaked (key-path) signer.
+   * Set `false` for Taproot script-path spends, where signing uses the
+   * untweaked internal key. If omitted, the wallet's default behavior
+   * applies.
+   */
+  useTweakedSigner?: boolean;
+  /**
+   * @deprecated Use `useTweakedSigner` instead. `disableTweakSigner: true`
+   * is equivalent to `useTweakedSigner: false`; `useTweakedSigner` takes
+   * precedence when both are set.
+   *
+   * `useTweakedSigner` is the canonical field used by UniSat and newer OKX
+   * wallet versions. Migrating aligns our interface with the wallet-side
+   * convention and avoids the historical divergence in OKX's
+   * `disableTweakSigner` implementation.
+   */
   disableTweakSigner?: boolean;
 }
 
@@ -388,6 +404,32 @@ export interface IBTCProvider extends IProvider {
    * @returns A promise that resolves to the version of the wallet provider.
    */
   getVersion?(): Promise<string>;
+
+  /**
+   * Derives a deterministic 32-byte value from the wallet's key material,
+   * an application name, and an application-provided context string.
+   *
+   * Conforms to the `deriveContextHash` wallet API specification
+   * (`docs/specs/derive-context-hash.md`, revision 1.0). Implementations
+   * that do not support this method MUST throw a {@link WalletError}
+   * with code {@link ERROR_CODES.WALLET_METHOD_NOT_SUPPORTED} so the
+   * caller can branch deterministically on capability.
+   *
+   * The wallet itself enforces the spec's input/output validation
+   * (`appName` charset and length, `context` even-length lowercase hex,
+   * 64-char hex output). Adapters forward without re-validating.
+   *
+   * @param appName - Application identifier (1-64 bytes, `[a-z0-9\-]`).
+   *                  Displayed by the wallet in its approval dialog.
+   * @param context - Application-specific context, hex-encoded
+   *                  (even-length, lowercase, no `0x` prefix, non-empty,
+   *                  ≤ 2048 hex chars / 1024 bytes).
+   * @returns 64-char lowercase hex string (32 bytes).
+   * @throws {@link WalletError} with code
+   *   {@link ERROR_CODES.WALLET_METHOD_NOT_SUPPORTED} when the wallet
+   *   does not implement the spec.
+   */
+  deriveContextHash(appName: string, context: string): Promise<string>;
 }
 
 export interface IBBNProvider extends IProvider {

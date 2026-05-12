@@ -7,10 +7,6 @@
 
 import { Button } from "@babylonlabs-io/core-ui";
 
-import type {
-  ClaimerTransactions,
-  DepositorGraphTransactions,
-} from "@/clients/vault-provider-rpc/types";
 import {
   getActionStatus,
   isArtifactDownloadAvailable,
@@ -28,14 +24,10 @@ interface PendingDepositCardProps {
   amount: string;
   /** Milliseconds since epoch */
   timestamp?: number;
-  txHash: string;
+  txHash?: string;
   providerId: string;
   vaultProviders: VaultProvider[];
-  onSignClick: (
-    depositId: string,
-    transactions: ClaimerTransactions[],
-    depositorGraph: DepositorGraphTransactions,
-  ) => void;
+  onSignClick: (depositId: string) => void;
   onBroadcastClick: (depositId: string) => void;
   onWotsKeyClick: (depositId: string) => void;
   onActivationClick: (depositId: string) => void;
@@ -61,7 +53,7 @@ export function PendingDepositCard({
 
   if (!pollingResult) return null;
 
-  const { loading, transactions, depositorGraph, peginState } = pollingResult;
+  const { loading, peginState } = pollingResult;
   const status = getActionStatus(pollingResult);
   const isActionable = status.type === "available";
   const showArtifactDownload =
@@ -74,9 +66,7 @@ export function PendingDepositCard({
     if (action === PeginAction.SUBMIT_WOTS_KEY) {
       onWotsKeyClick(depositId);
     } else if (action === PeginAction.SIGN_PAYOUT_TRANSACTIONS) {
-      if (transactions && depositorGraph) {
-        onSignClick(depositId, transactions, depositorGraph);
-      }
+      onSignClick(depositId);
     } else if (action === PeginAction.SIGN_AND_BROADCAST_TO_BITCOIN) {
       onBroadcastClick(depositId);
     } else if (action === PeginAction.ACTIVATE_VAULT) {
@@ -88,8 +78,11 @@ export function PendingDepositCard({
 
   const actionLabel =
     status.type === "available" ? status.action.label : peginState.displayLabel;
-  const label = loading && !transactions ? "Loading..." : actionLabel;
-  const buttonDisabled = !isActionable || (loading && !transactions);
+  // `loading` is React Query's `isLoading` — true only on the very first fetch,
+  // not on subsequent polling refetches — so this gives a one-shot "Loading..."
+  // on initial mount without flickering on every poll cycle.
+  const label = loading ? "Loading..." : actionLabel;
+  const buttonDisabled = !isActionable || loading;
   const dotColor = STATUS_DOT_COLORS[peginState.displayVariant];
 
   // Resolve provider name
@@ -104,6 +97,7 @@ export function PendingDepositCard({
       txHash={txHash}
       providerName={providerName}
       providerIconUrl={provider?.iconUrl}
+      providerAddress={providerId}
       statusContent={
         <VaultStatusBadge
           dotColor={dotColor}

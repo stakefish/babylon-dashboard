@@ -19,6 +19,7 @@ import { BorrowSuccessModal } from "../LoanCard/Borrow/SuccessModal";
 import { RepaySuccessModal } from "../LoanCard/Repay/SuccessModal";
 
 import { useAaveReserveDetail, useBorrowRepayModals } from "./hooks";
+import { PositionGate } from "./PositionGate";
 
 const btcConfig = getNetworkConfigBTC();
 
@@ -48,6 +49,11 @@ export function AaveReserveDetail() {
     totalDebtValueUsd,
     healthFactor,
     tokenPriceUsd,
+    positionError,
+    ancillaryError,
+    isPositionDataStale,
+    refetchPosition,
+    refetchSplitParams,
   } = useAaveReserveDetail({ reserveId, address });
 
   // Modal state management
@@ -107,13 +113,8 @@ export function AaveReserveDetail() {
     );
   }
 
-  // Reserve not found or price unavailable
-  if (
-    !selectedReserve ||
-    !assetConfig ||
-    !vbtcReserve ||
-    tokenPriceUsd == null
-  ) {
+  // Reserve not found
+  if (!selectedReserve || !assetConfig || !vbtcReserve) {
     return (
       <Container className="pb-6">
         <div className="space-y-6">
@@ -137,6 +138,9 @@ export function AaveReserveDetail() {
     assetConfig,
     proxyContract,
     tokenPriceUsd,
+    isPositionDataStale,
+    refetchPosition,
+    refetchSplitParams,
     onBorrowSuccess: openBorrowSuccess,
     onRepaySuccess: openRepaySuccess,
   };
@@ -146,7 +150,13 @@ export function AaveReserveDetail() {
       <Container className="pb-6">
         <div className="space-y-6">
           <BackButton label="Home" onClick={handleBack} />
-          <LoanCard defaultTab={defaultTab} />
+          <PositionGate
+            positionError={positionError}
+            ancillaryError={ancillaryError}
+            refetchPosition={refetchPosition}
+          >
+            <LoanCard defaultTab={defaultTab} />
+          </PositionGate>
         </div>
       </Container>
 

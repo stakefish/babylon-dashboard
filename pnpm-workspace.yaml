@@ -14,3 +14,7 @@ onlyBuiltDependencies:
   - secp256k1
   - sharp
   - unrs-resolver
+
+minimumReleaseAge: 20160
+minimumReleaseAgeExclude:
+- '@stakefish/*'

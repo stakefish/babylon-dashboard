@@ -1,30 +1,34 @@
 import {
   DEFAULT_SOCIAL_LINKS,
   Footer,
+  FullScreenDialog,
   Header,
   Nav,
   StandardSettingsMenu,
   TestingBanner,
+  Text,
 } from "@babylonlabs-io/core-ui";
 import { useTheme } from "next-themes";
-import { useState } from "react";
+import { useCallback, useState } from "react";
 import { NavLink, Outlet } from "react-router";
 import { twJoin } from "tailwind-merge";
 
 import { DepositButton } from "@/components/shared";
 import { getNetworkConfigBTC, shouldDisplayTestingMsg } from "@/config";
+import { useAddressScreening } from "@/context/addressScreening";
 import { useAddressType } from "@/context/addressType";
 import { useGeoFencing } from "@/context/geofencing";
 
 import { AaveConfigProvider } from "../../applications/aave/context";
 import { useBTCWallet, useETHWallet } from "../../context/wallet";
+import { AddressScreeningBanner } from "../shared/AddressScreeningBanner";
 import { AddressTypeBanner } from "../shared/AddressTypeBanner";
 import { GeoBlockBanner } from "../shared/GeoBlockBanner";
 import SimpleDeposit from "../simple/SimpleDeposit";
 import { Connect } from "../Wallet";
 
 export interface RootLayoutContext {
-  openDeposit: () => void;
+  openDeposit: (initialAmountBtc?: string) => void;
 }
 
 const btcConfig = getNetworkConfigBTC();
@@ -81,17 +85,34 @@ export default function RootLayout() {
   const { connected: btcConnected } = useBTCWallet();
   const { connected: ethConnected } = useETHWallet();
   const { isGeoBlocked } = useGeoFencing();
+  const { isBlocked: isAddressBlocked } = useAddressScreening();
   const { isSupportedAddress } = useAddressType();
 
   const isWalletConnected = btcConnected && ethConnected;
   const showAddressTypeBanner = isWalletConnected && !isSupportedAddress;
   const [isDepositOpen, setIsDepositOpen] = useState(false);
+  const [initialDepositAmountBtc, setInitialDepositAmountBtc] = useState<
+    string | undefined
+  >();
+
+  const openDeposit = useCallback((initialAmountBtc?: string) => {
+    setInitialDepositAmountBtc(initialAmountBtc);
+    setIsDepositOpen(true);
+  }, []);
+
+  const closeDeposit = useCallback(() => {
+    setIsDepositOpen(false);
+    setInitialDepositAmountBtc(undefined);
+  }, []);
 
   return (
     <div className="relative h-full min-h-svh w-full bg-surface">
       <div className="flex min-h-svh flex-col">
         <TestingBanner visible={shouldDisplayTestingMsg()} />
         <GeoBlockBanner visible={isGeoBlocked} />
+        <AddressScreeningBanner
+          visible={isWalletConnected && isAddressBlocked}
+        />
         <AddressTypeBanner visible={showAddressTypeBanner} />
         <Header
           size="sm"
@@ -99,15 +120,18 @@ export default function RootLayout() {
           mobileNavigation={<MobileNavigation />}
           rightActions={
             <div className="flex items-center gap-4">
-              {isWalletConnected && !isDepositOpen && !isGeoBlocked && (
-                <DepositButton
-                  variant="outlined"
-                  rounded
-                  onClick={() => setIsDepositOpen(true)}
-                >
-                  Deposit {btcConfig.coinSymbol}
-                </DepositButton>
-              )}
+              {isWalletConnected &&
+                !isDepositOpen &&
+                !isGeoBlocked &&
+                !isAddressBlocked && (
+                  <DepositButton
+                    variant="outlined"
+                    rounded
+                    onClick={() => openDeposit()}
+                  >
+                    Deposit {btcConfig.coinSymbol}
+                  </DepositButton>
+                )}
               <Connect />
               <StandardSettingsMenu theme={theme} setTheme={setTheme} />
             </div>
@@ -116,14 +140,36 @@ export default function RootLayout() {
         <Outlet
           context={
             {
-              openDeposit: () => setIsDepositOpen(true),
+              openDeposit,
             } satisfies RootLayoutContext
           }
         />
-        <AaveConfigProvider>
+        {/* On config failure, suppress the default panel (would leak
+            into page chrome) and instead surface an error modal only
+            when the user has actually opened the deposit dialog, so
+            the click has a visible recovery path. */}
+        <AaveConfigProvider
+          errorFallback={
+            <FullScreenDialog
+              open={isDepositOpen}
+              onClose={closeDeposit}
+              className="items-center justify-center p-6"
+            >
+              <div className="mx-auto flex w-full max-w-[520px] flex-col items-center gap-3 text-center">
+                <Text variant="body1" className="font-medium">
+                  Something went wrong
+                </Text>
+                <Text variant="body2" className="text-accent-secondary">
+                  Please close this and try again in a moment.
+                </Text>
+              </div>
+            </FullScreenDialog>
+          }
+        >
           <SimpleDeposit
             open={isDepositOpen}
-            onClose={() => setIsDepositOpen(false)}
+            onClose={closeDeposit}
+            initialAmountBtc={initialDepositAmountBtc}
           />
         </AaveConfigProvider>
         <div className="mt-auto">

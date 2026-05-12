@@ -1,12 +1,19 @@
 import { gql } from "graphql-request";
 
+import { logger } from "@/infrastructure";
+
 import { graphqlClient } from "../../clients/graphql";
 import type {
   AppProvidersResponse,
   VaultKeeper,
   VaultKeeperItem,
   VaultProvider,
+  VaultProviderMetadataStatus,
 } from "../../types/vaultProvider";
+import {
+  BTC_PUBKEY_HEX_PATTERN,
+  ETH_ADDRESS_PATTERN,
+} from "../../utils/validation";
 
 /** GraphQL response for app-specific providers and keepers */
 interface GraphQLAppProvidersResponse {
@@ -16,21 +23,10 @@ interface GraphQLAppProvidersResponse {
       btcPubKey: string;
       name: string | null;
       rpcUrl: string | null;
+      metadataStatus: string | null;
+      metadataRejectionReason: string | null;
     }>;
   };
-  vaultKeeperApplications: {
-    items: Array<{
-      vaultKeeper: string;
-      version: number;
-      vaultKeeperInfo: {
-        btcPubKey: string;
-      };
-    }>;
-  };
-}
-
-/** GraphQL response for versioned keepers-only query */
-interface VersionedKeepersResponse {
   vaultKeeperApplications: {
     items: Array<{
       vaultKeeper: string;
@@ -50,6 +46,8 @@ const GET_APP_PROVIDERS = gql`
         btcPubKey
         name
         rpcUrl
+        metadataStatus
+        metadataRejectionReason
       }
     }
     vaultKeeperApplications(where: { applicationEntryPoint: $appController }) {
@@ -64,22 +62,76 @@ const GET_APP_PROVIDERS = gql`
   }
 `;
 
-/** GraphQL query to fetch vault keepers by exact version */
-const GET_KEEPERS_BY_VERSION = gql`
-  query GetKeepersByVersion($appController: String!, $keepersVersion: Int!) {
-    vaultKeeperApplications(
-      where: { applicationEntryPoint: $appController, version: $keepersVersion }
-    ) {
-      items {
-        vaultKeeper
-        version
-        vaultKeeperInfo {
-          btcPubKey
-        }
-      }
-    }
+const KNOWN_METADATA_STATUSES: ReadonlySet<VaultProviderMetadataStatus> =
+  new Set([
+    "ok",
+    "missing",
+    "invalid_url",
+    "unsupported_scheme",
+    "private_host",
+    "ipv6_literal_unsupported",
+  ]);
+
+/**
+ * Map an indexer-provided metadataStatus string to the typed union.
+ * Unknown / null values fall back to "ok" so legacy rows (or temporary
+ * indexer drift) don't accidentally hide working providers from the UI.
+ */
+function normalizeMetadataStatus(
+  status: string | null | undefined,
+): VaultProviderMetadataStatus {
+  if (
+    status != null &&
+    KNOWN_METADATA_STATUSES.has(status as VaultProviderMetadataStatus)
+  ) {
+    return status as VaultProviderMetadataStatus;
   }
-`;
+  return "ok";
+}
+
+/**
+ * Validate critical fields on an app provider from GraphQL.
+ * Returns null (with a warning) if validation fails.
+ */
+function validateAppProvider(
+  item: GraphQLAppProvidersResponse["vaultProviders"]["items"][number],
+): typeof item | null {
+  if (!ETH_ADDRESS_PATTERN.test(item.id)) {
+    logger.warn(
+      `[fetchAppProviders] Skipping provider with invalid id: "${String(item.id).slice(0, 20)}"`,
+    );
+    return null;
+  }
+  if (!BTC_PUBKEY_HEX_PATTERN.test(item.btcPubKey)) {
+    logger.warn(
+      `[fetchAppProviders] Skipping provider ${item.id}: invalid btcPubKey format`,
+    );
+    return null;
+  }
+  return item;
+}
+
+/**
+ * Validate critical fields on a vault keeper item from GraphQL.
+ * Returns null (with a warning) if validation fails.
+ */
+function validateVaultKeeperItem(
+  item: GraphQLAppProvidersResponse["vaultKeeperApplications"]["items"][number],
+): typeof item | null {
+  if (!ETH_ADDRESS_PATTERN.test(item.vaultKeeper)) {
+    logger.warn(
+      `[fetchAppProviders] Skipping keeper with invalid id: "${String(item.vaultKeeper).slice(0, 20)}"`,
+    );
+    return null;
+  }
+  if (!BTC_PUBKEY_HEX_PATTERN.test(item.vaultKeeperInfo.btcPubKey)) {
+    logger.warn(
+      `[fetchAppProviders] Skipping keeper ${item.vaultKeeper}: invalid btcPubKey format`,
+    );
+    return null;
+  }
+  return item;
+}
 
 /**
  * Filters keeper items to the latest version and deduplicates.
@@ -101,33 +153,6 @@ export function getLatestVersionKeepers(
   }
 
   return result;
-}
-
-/**
- * Fetches vault keepers by version for a specific application.
- * Used for payout signing where we need the keepers that were locked
- * when the vault was created.
- *
- * @param applicationEntryPoint - The application controller address
- * @param appVaultKeepersVersion - The vault keepers version locked at vault creation
- * @returns Array of vault keepers for that version
- */
-export async function fetchVaultKeepersByVersion(
-  applicationEntryPoint: string,
-  appVaultKeepersVersion: number,
-): Promise<VaultKeeper[]> {
-  const response = await graphqlClient.request<VersionedKeepersResponse>(
-    GET_KEEPERS_BY_VERSION,
-    {
-      appController: applicationEntryPoint.toLowerCase(),
-      keepersVersion: appVaultKeepersVersion,
-    },
-  );
-
-  return response.vaultKeeperApplications.items.map((item) => ({
-    id: item.vaultKeeper,
-    btcPubKey: item.vaultKeeperInfo.btcPubKey,
-  }));
 }
 
 /**
@@ -155,19 +180,24 @@ export async function fetchAppProviders(
       (provider): provider is typeof provider & { rpcUrl: string } =>
         provider.rpcUrl !== null,
     )
+    .filter((provider) => validateAppProvider(provider) !== null)
     .map((provider) => ({
       id: provider.id,
       btcPubKey: provider.btcPubKey,
       name: provider.name ?? undefined,
       url: provider.rpcUrl,
+      metadataStatus: normalizeMetadataStatus(provider.metadataStatus),
+      metadataRejectionReason: provider.metadataRejectionReason ?? undefined,
     }));
 
   const vaultKeeperItems: VaultKeeperItem[] =
-    response.vaultKeeperApplications.items.map((item) => ({
-      id: item.vaultKeeper,
-      btcPubKey: item.vaultKeeperInfo.btcPubKey,
-      version: item.version,
-    }));
+    response.vaultKeeperApplications.items
+      .filter((item) => validateVaultKeeperItem(item) !== null)
+      .map((item) => ({
+        id: item.vaultKeeper,
+        btcPubKey: item.vaultKeeperInfo.btcPubKey,
+        version: item.version,
+      }));
 
   return {
     vaultProviders,

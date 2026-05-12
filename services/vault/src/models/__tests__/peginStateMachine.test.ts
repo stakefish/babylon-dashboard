@@ -48,6 +48,18 @@ describe("peginStateMachine", () => {
       expect(state.message).toContain("prepare Claim and Payout");
     });
 
+    it("shows signing required when CONFIRMING and transactions are ready", () => {
+      const state = getPeginState(ContractStatus.PENDING, {
+        localStatus: LocalStorageStatus.CONFIRMING,
+        pendingIngestion: false,
+        transactionsReady: true,
+      });
+      expect(state.displayLabel).toBe(PEGIN_DISPLAY_LABELS.SIGNING_REQUIRED);
+      expect(state.availableActions).toContain(
+        PeginAction.SIGN_PAYOUT_TRANSACTIONS,
+      );
+    });
+
     it("shows pending ingestion when no polling response yet (undefined)", () => {
       const state = getPeginState(ContractStatus.PENDING, {});
       expect(state.displayLabel).toBe(PEGIN_DISPLAY_LABELS.PENDING);
@@ -89,19 +101,49 @@ describe("peginStateMachine", () => {
       expect(state.displayLabel).toBe(PEGIN_DISPLAY_LABELS.PROCESSING);
       expect(state.message).toContain("verifying and collecting");
     });
+
+    it("ignores stale PAYOUT_SIGNED when VP still needs WOTS key", () => {
+      const state = getPeginState(ContractStatus.PENDING, {
+        localStatus: LocalStorageStatus.PAYOUT_SIGNED,
+        needsWotsKey: true,
+      });
+      expect(state.availableActions).toContain(PeginAction.SUBMIT_WOTS_KEY);
+      expect(state.displayLabel).toBe(PEGIN_DISPLAY_LABELS.AWAITING_KEY);
+    });
+
+    it("ignores stale PAYOUT_SIGNED when VP has transactions ready", () => {
+      const state = getPeginState(ContractStatus.PENDING, {
+        localStatus: LocalStorageStatus.PAYOUT_SIGNED,
+        transactionsReady: true,
+        pendingIngestion: false,
+      });
+      expect(state.availableActions).toContain(
+        PeginAction.SIGN_PAYOUT_TRANSACTIONS,
+      );
+      expect(state.displayLabel).toBe(PEGIN_DISPLAY_LABELS.SIGNING_REQUIRED);
+    });
+
+    it("ignores stale PAYOUT_SIGNED when VP reports pending ingestion", () => {
+      const state = getPeginState(ContractStatus.PENDING, {
+        localStatus: LocalStorageStatus.PAYOUT_SIGNED,
+        pendingIngestion: true,
+      });
+      expect(state.availableActions).toContain(
+        PeginAction.SIGN_AND_BROADCAST_TO_BITCOIN,
+      );
+      expect(state.displayLabel).toBe(PEGIN_DISPLAY_LABELS.PENDING);
+    });
   });
 
   // ==========================================================================
   // getPeginState — VERIFIED contract status
   // ==========================================================================
   describe("getPeginState - VERIFIED", () => {
-    it("shows verified (ready to broadcast)", () => {
+    it("shows ready to activate by default (pre-pegin guaranteed on-chain at VERIFIED)", () => {
       const state = getPeginState(ContractStatus.VERIFIED);
-      expect(state.displayLabel).toBe(PEGIN_DISPLAY_LABELS.VERIFIED);
-      expect(state.availableActions).toContain(
-        PeginAction.SIGN_AND_BROADCAST_TO_BITCOIN,
-      );
-      expect(state.message).toContain("Broadcast the Pre-PegIn transaction");
+      expect(state.displayLabel).toBe(PEGIN_DISPLAY_LABELS.READY_TO_ACTIVATE);
+      expect(state.availableActions).toContain(PeginAction.ACTIVATE_VAULT);
+      expect(state.message).toContain("Reveal your HTLC secret");
     });
 
     it("shows ready to activate when BTC tx is broadcast", () => {
@@ -272,6 +314,40 @@ describe("peginStateMachine", () => {
       const state = getPeginState(ContractStatus.EXPIRED);
       expect(state.availableActions).toEqual([PeginAction.NONE]);
     });
+
+    it("hides refund action and flips label to Refunding after the user has broadcast a refund", () => {
+      const now = 1_700_000_000_000;
+      const state = getPeginState(ContractStatus.EXPIRED, {
+        canRefund: true,
+        localStatus: LocalStorageStatus.REFUND_BROADCAST,
+        refundBroadcastAt: now - 60_000,
+        now,
+      });
+      expect(state.availableActions).toEqual([PeginAction.NONE]);
+      expect(state.displayLabel).toBe(PEGIN_DISPLAY_LABELS.REFUNDING);
+      expect(state.displayVariant).toBe("pending");
+    });
+
+    it("re-exposes refund action once the broadcast TTL has elapsed (dropped tx)", () => {
+      const now = 1_700_000_000_000;
+      const state = getPeginState(ContractStatus.EXPIRED, {
+        canRefund: true,
+        localStatus: LocalStorageStatus.REFUND_BROADCAST,
+        refundBroadcastAt: now - 7 * 60 * 60 * 1000,
+        now,
+      });
+      expect(state.availableActions).toEqual([PeginAction.REFUND_HTLC]);
+      expect(state.displayLabel).toBe(PEGIN_DISPLAY_LABELS.EXPIRED);
+    });
+
+    it("treats legacy REFUND_BROADCAST without timestamp as expired (allows retry)", () => {
+      const state = getPeginState(ContractStatus.EXPIRED, {
+        canRefund: true,
+        localStatus: LocalStorageStatus.REFUND_BROADCAST,
+      });
+      expect(state.availableActions).toEqual([PeginAction.REFUND_HTLC]);
+      expect(state.displayLabel).toBe(PEGIN_DISPLAY_LABELS.EXPIRED);
+    });
   });
 
   // ==========================================================================
@@ -308,24 +384,24 @@ describe("peginStateMachine", () => {
       });
     });
 
-    it("returns Sign for payout transactions", () => {
+    it("returns Sign Payouts for payout transactions", () => {
       const state = getPeginState(ContractStatus.PENDING, {
         pendingIngestion: false,
         transactionsReady: true,
       });
       const button = getPrimaryActionButton(state);
       expect(button).toEqual({
-        label: "Sign",
+        label: "Sign Payouts",
         action: PeginAction.SIGN_PAYOUT_TRANSACTIONS,
       });
     });
 
-    it("returns Broadcast for verified", () => {
+    it("returns Activate for verified (pre-pegin guaranteed on-chain)", () => {
       const state = getPeginState(ContractStatus.VERIFIED);
       const button = getPrimaryActionButton(state);
       expect(button).toEqual({
-        label: "Broadcast BTC",
-        action: PeginAction.SIGN_AND_BROADCAST_TO_BITCOIN,
+        label: "Activate",
+        action: PeginAction.ACTIVATE_VAULT,
       });
     });
 
@@ -406,6 +482,48 @@ describe("peginStateMachine", () => {
           LocalStorageStatus.CONFIRMING,
         ),
       ).toBe(false);
+    });
+
+    it("keeps REFUND_BROADCAST while contract is still EXPIRED and within TTL", () => {
+      const now = 1_700_000_000_000;
+      expect(
+        shouldRemoveFromLocalStorage(
+          ContractStatus.EXPIRED,
+          LocalStorageStatus.REFUND_BROADCAST,
+          now - 60_000,
+          now,
+        ),
+      ).toBe(false);
+    });
+
+    it("clears stale REFUND_BROADCAST past the TTL so the user can retry", () => {
+      const now = 1_700_000_000_000;
+      expect(
+        shouldRemoveFromLocalStorage(
+          ContractStatus.EXPIRED,
+          LocalStorageStatus.REFUND_BROADCAST,
+          now - 7 * 60 * 60 * 1000,
+          now,
+        ),
+      ).toBe(true);
+    });
+
+    it("clears legacy REFUND_BROADCAST without a broadcast timestamp", () => {
+      expect(
+        shouldRemoveFromLocalStorage(
+          ContractStatus.EXPIRED,
+          LocalStorageStatus.REFUND_BROADCAST,
+        ),
+      ).toBe(true);
+    });
+
+    it("removes REFUND_BROADCAST once contract reaches DEPOSITOR_WITHDRAWN", () => {
+      expect(
+        shouldRemoveFromLocalStorage(
+          ContractStatus.DEPOSITOR_WITHDRAWN,
+          LocalStorageStatus.REFUND_BROADCAST,
+        ),
+      ).toBe(true);
     });
   });
 });

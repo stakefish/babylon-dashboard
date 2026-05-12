@@ -1,4 +1,6 @@
+export { AddressScreeningBanner } from "./AddressScreeningBanner";
 export { BackButton } from "./BackButton";
+export { CopyableHash } from "./CopyableHash";
 export { DepositButton } from "./DepositButton";
 export { DetailsCard, type DetailRow } from "./DetailsCard";
 export { EmptyState } from "./EmptyState";
@@ -10,4 +12,3 @@ export { MenuButton } from "./MenuButton";
 export { NotificationContainer } from "./NotificationContainer";
 export { PriceWarningBanner } from "./PriceWarningBanner";
 export { SubmitModal } from "./SubmitModal";
-export { VaultDetailRows } from "./VaultDetailRows";

@@ -3,7 +3,28 @@
  * Transform errors to user-friendly messages
  */
 
-import { JSON_RPC_ERROR_CODES, JsonRpcError } from "../rpc";
+import {
+  JSON_RPC_ERROR_CODES,
+  JsonRpcError,
+} from "@babylonlabs-io/ts-sdk/tbv/core/clients";
+
+/**
+ * Wallet-connector error code emitted by BTC providers when the user rejects
+ * a signing prompt. Mirrors `ERROR_CODES.CONNECTION_REJECTED` from
+ * `@babylonlabs-io/wallet-connector`. Inlined to avoid pulling the full
+ * wallet-connector bundle into this file (and its test transform); the
+ * constant is the public contract - if it ever changes upstream, this string
+ * must change too.
+ */
+const WALLET_CONNECTION_REJECTED_CODE = "CONNECTION_REJECTED";
+
+function isWalletRejectionError(error: unknown): boolean {
+  return (
+    error instanceof Error &&
+    "code" in error &&
+    (error as { code: unknown }).code === WALLET_CONNECTION_REJECTED_CODE
+  );
+}
 
 /**
  * Extract a safe error message from an unknown error value.
@@ -76,7 +97,7 @@ export function formatPayoutSignatureError(error: unknown): {
       };
     }
     // Proxy-specific: VP request timed out at the proxy level
-    if (error.code === -32002) {
+    if (error.code === JSON_RPC_ERROR_CODES.PROXY_TIMEOUT) {
       return {
         title: "Provider Timeout",
         message:
@@ -84,7 +105,7 @@ export function formatPayoutSignatureError(error: unknown): {
       };
     }
     // Proxy-specific: VP unreachable, DNS failure, or response too large
-    if (error.code === -32003) {
+    if (error.code === JSON_RPC_ERROR_CODES.PROXY_UNAVAILABLE) {
       return {
         title: "Provider Unavailable",
         message:
@@ -94,6 +115,14 @@ export function formatPayoutSignatureError(error: unknown): {
     return {
       title: "Signature Submission Failed",
       message: `The vault provider rejected the request (error code: ${error.code}). Please try again or contact support.`,
+    };
+  }
+
+  if (isWalletRejectionError(error)) {
+    return {
+      title: "Signing Rejected",
+      message:
+        "You rejected the signing request in your wallet. Approve the request to continue, or click Retry to try again.",
     };
   }
 
@@ -111,7 +140,10 @@ export function formatPayoutSignatureError(error: unknown): {
         message: "Please reconnect your Bitcoin wallet to continue.",
       };
     }
-    if (error.message.includes("Vault or pegin transaction not found")) {
+    if (
+      error.message.includes("Vault or pegin transaction not found") ||
+      error.message.includes("not found on-chain")
+    ) {
       return {
         title: "Deposit Not Found",
         message:
@@ -132,6 +164,15 @@ export function formatPayoutSignatureError(error: unknown): {
           "Failed to sign payout transactions. Please try again or reconnect your wallet.",
       };
     }
+    // Contract call errors (viem) — surface a meaningful message instead of swallowing
+    if (error.message.includes("reverted")) {
+      return {
+        title: "Contract Call Failed",
+        message:
+          "A contract call failed during payout signing. The on-chain vault data may be unavailable. Please try again or contact support.",
+      };
+    }
+
     return {
       title: "Payout Signing Error",
       message:

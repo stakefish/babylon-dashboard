@@ -197,6 +197,7 @@ describe("PayoutManager", () => {
         getAddress: vi.fn(),
         signMessage: vi.fn(),
         getNetwork: vi.fn().mockResolvedValue("signet"),
+        deriveContextHash: vi.fn().mockResolvedValue("0".repeat(64)),
       };
 
       const manager = new PayoutManager({
@@ -213,6 +214,7 @@ describe("PayoutManager", () => {
           vaultKeeperBtcPubkeys: [TEST_KEYS.VAULT_KEEPER_1],
           universalChallengerBtcPubkeys: [TEST_KEYS.UNIVERSAL_CHALLENGER_1],
           timelockPegin: 100,
+          depositorBtcPubkey: TEST_KEYS.DEPOSITOR,
           registeredPayoutScriptPubKey: TEST_PAYOUT_SCRIPT_PUBKEY,
         },
         {
@@ -223,6 +225,7 @@ describe("PayoutManager", () => {
           vaultKeeperBtcPubkeys: [TEST_KEYS.VAULT_KEEPER_1],
           universalChallengerBtcPubkeys: [TEST_KEYS.UNIVERSAL_CHALLENGER_1],
           timelockPegin: 100,
+          depositorBtcPubkey: TEST_KEYS.DEPOSITOR,
           registeredPayoutScriptPubKey: TEST_PAYOUT_SCRIPT_PUBKEY,
         },
       ]);
@@ -268,6 +271,7 @@ describe("PayoutManager", () => {
             vaultKeeperBtcPubkeys: [TEST_KEYS.VAULT_KEEPER_1],
             universalChallengerBtcPubkeys: [TEST_KEYS.UNIVERSAL_CHALLENGER_1],
             timelockPegin: 100,
+            depositorBtcPubkey: TEST_KEYS.DEPOSITOR,
             registeredPayoutScriptPubKey: TEST_PAYOUT_SCRIPT_PUBKEY,
           },
         ]),
@@ -292,6 +296,7 @@ describe("PayoutManager", () => {
         getAddress: vi.fn(),
         signMessage: vi.fn(),
         getNetwork: vi.fn().mockResolvedValue("signet"),
+        deriveContextHash: vi.fn().mockResolvedValue("0".repeat(64)),
       };
 
       const manager = new PayoutManager({
@@ -309,6 +314,7 @@ describe("PayoutManager", () => {
             vaultKeeperBtcPubkeys: [TEST_KEYS.VAULT_KEEPER_1],
             universalChallengerBtcPubkeys: [TEST_KEYS.UNIVERSAL_CHALLENGER_1],
             timelockPegin: 100,
+            depositorBtcPubkey: TEST_KEYS.DEPOSITOR,
             registeredPayoutScriptPubKey: TEST_PAYOUT_SCRIPT_PUBKEY,
           },
         ]),
@@ -348,6 +354,7 @@ describe("PayoutManager", () => {
         getAddress: vi.fn(),
         signMessage: vi.fn(),
         getNetwork: vi.fn().mockResolvedValue("signet"),
+        deriveContextHash: vi.fn().mockResolvedValue("0".repeat(64)),
       };
 
       const manager = new PayoutManager({
@@ -365,6 +372,7 @@ describe("PayoutManager", () => {
             vaultKeeperBtcPubkeys: [TEST_KEYS.VAULT_KEEPER_1],
             universalChallengerBtcPubkeys: [TEST_KEYS.UNIVERSAL_CHALLENGER_1],
             timelockPegin: 100,
+            depositorBtcPubkey: TEST_KEYS.DEPOSITOR,
             registeredPayoutScriptPubKey: TEST_PAYOUT_SCRIPT_PUBKEY,
           },
           {
@@ -375,6 +383,7 @@ describe("PayoutManager", () => {
             vaultKeeperBtcPubkeys: [TEST_KEYS.VAULT_KEEPER_1],
             universalChallengerBtcPubkeys: [TEST_KEYS.UNIVERSAL_CHALLENGER_1],
             timelockPegin: 100,
+            depositorBtcPubkey: TEST_KEYS.DEPOSITOR,
             registeredPayoutScriptPubKey: TEST_PAYOUT_SCRIPT_PUBKEY,
           },
         ]),
@@ -418,6 +427,7 @@ describe("PayoutManager", () => {
         getAddress: vi.fn(),
         signMessage: vi.fn(),
         getNetwork: vi.fn().mockResolvedValue("signet"),
+        deriveContextHash: vi.fn().mockResolvedValue("0".repeat(64)),
       };
 
       const manager = new PayoutManager({
@@ -435,6 +445,7 @@ describe("PayoutManager", () => {
             vaultKeeperBtcPubkeys: [TEST_KEYS.VAULT_KEEPER_1],
             universalChallengerBtcPubkeys: [TEST_KEYS.UNIVERSAL_CHALLENGER_1],
             timelockPegin: 100,
+            depositorBtcPubkey: TEST_KEYS.DEPOSITOR,
             registeredPayoutScriptPubKey: TEST_PAYOUT_SCRIPT_PUBKEY,
           },
           {
@@ -445,6 +456,7 @@ describe("PayoutManager", () => {
             vaultKeeperBtcPubkeys: [TEST_KEYS.VAULT_KEEPER_1],
             universalChallengerBtcPubkeys: [TEST_KEYS.UNIVERSAL_CHALLENGER_1],
             timelockPegin: 100,
+            depositorBtcPubkey: TEST_KEYS.DEPOSITOR,
             registeredPayoutScriptPubKey: TEST_PAYOUT_SCRIPT_PUBKEY,
           },
         ]),
@@ -517,6 +529,7 @@ describe("PayoutManager", () => {
           vaultKeeperBtcPubkeys: [TEST_KEYS.VAULT_KEEPER_1],
           universalChallengerBtcPubkeys: [TEST_KEYS.UNIVERSAL_CHALLENGER_1],
           timelockPegin: 100,
+          depositorBtcPubkey: TEST_KEYS.DEPOSITOR,
           registeredPayoutScriptPubKey: wrongScriptPubKey,
         }),
       ).rejects.toThrow(
@@ -552,6 +565,7 @@ describe("PayoutManager", () => {
           vaultKeeperBtcPubkeys: [TEST_KEYS.VAULT_KEEPER_1],
           universalChallengerBtcPubkeys: [TEST_KEYS.UNIVERSAL_CHALLENGER_1],
           timelockPegin: 100,
+          depositorBtcPubkey: TEST_KEYS.DEPOSITOR,
           registeredPayoutScriptPubKey: prefixedScriptPubKey,
         }),
       ).rejects.not.toThrow(
@@ -582,6 +596,7 @@ describe("PayoutManager", () => {
           vaultKeeperBtcPubkeys: [TEST_KEYS.VAULT_KEEPER_1],
           universalChallengerBtcPubkeys: [TEST_KEYS.UNIVERSAL_CHALLENGER_1],
           timelockPegin: 100,
+          depositorBtcPubkey: TEST_KEYS.DEPOSITOR,
           registeredPayoutScriptPubKey: "not-valid-hex",
         }),
       ).rejects.toThrow("Invalid registeredPayoutScriptPubKey: not valid hex");
@@ -629,6 +644,7 @@ describe("PayoutManager", () => {
           vaultKeeperBtcPubkeys: [TEST_KEYS.VAULT_KEEPER_1],
           universalChallengerBtcPubkeys: [TEST_KEYS.UNIVERSAL_CHALLENGER_1],
           timelockPegin: 100,
+          depositorBtcPubkey: TEST_KEYS.DEPOSITOR,
           registeredPayoutScriptPubKey: TEST_PAYOUT_SCRIPT_PUBKEY,
         }),
       ).rejects.toThrow(
@@ -663,6 +679,7 @@ describe("PayoutManager", () => {
             vaultKeeperBtcPubkeys: [TEST_KEYS.VAULT_KEEPER_1],
             universalChallengerBtcPubkeys: [TEST_KEYS.UNIVERSAL_CHALLENGER_1],
             timelockPegin: 100,
+            depositorBtcPubkey: TEST_KEYS.DEPOSITOR,
             registeredPayoutScriptPubKey: wrongScriptPubKey,
           },
         ]),

@@ -18,7 +18,12 @@ import type { Hex } from "viem";
 
 import { logger } from "@/infrastructure";
 
-import { STORAGE_KEY_PREFIX, STORAGE_UPDATE_EVENT } from "../constants";
+import {
+  STORAGE_KEY_PREFIX,
+  STORAGE_UPDATE_EVENT,
+  UTXO_RESERVATION_KEY_PREFIX,
+  UTXO_RESERVATION_TTL,
+} from "../constants";
 import {
   LocalStorageStatus,
   shouldRemoveFromLocalStorage,
@@ -34,6 +39,10 @@ export interface PendingPeginRequest {
   status: LocalStorageStatus; // Track user actions (required, defaults to PENDING)
   peginTxHash: Hex; // Raw BTC pegin transaction hash
   depositorBtcPubkey?: string; // Depositor's BTC public key (x-only, for WOTS derivation in resume flow)
+  // Anchor for the REFUND_BROADCAST optimistic suppression TTL: a broadcast tx
+  // can be evicted from the mempool and never confirm, so the suppression must
+  // expire to let the user retry instead of permanently hiding the action.
+  refundBroadcastAt?: number;
   // Fields for cross-device broadcasting support
   unsignedTxHex: string; // Funded Pre-PegIn tx hex (for broadcasting later)
   selectedUTXOs?: Array<{
@@ -47,6 +56,127 @@ export interface PendingPeginRequest {
   batchId?: string; // UUID linking vaults created together
   batchIndex?: number; // Position in batch (1-based: 1 or 2)
   batchTotal?: number; // Total vaults in batch (1 or 2)
+}
+
+// Hex with optional 0x prefix and at least one byte (even-length).
+// Matches `0x<even-hex>` or `<even-hex>`; rejects bare `0x` and odd lengths.
+const NON_EMPTY_HEX_RE = /^(0x)?([0-9a-fA-F]{2})+$/;
+// Bitcoin txids are always 32 bytes = exactly 64 hex chars.
+const TXID_HEX_RE = /^[0-9a-fA-F]{64}$/;
+// scriptPubKey is variable-length but must be an even number of hex chars.
+// Intentionally distinct from NON_EMPTY_HEX_RE: raw Bitcoin script is never
+// 0x-prefixed, so the prefix option is disallowed here. Do not "dedupe" these.
+const SCRIPT_PUBKEY_HEX_RE = /^([0-9a-fA-F]{2})+$/;
+// Valid LocalStorageStatus string values. Kept in lock-step with
+// OffChainTrackingStatus in models/peginStateMachine.ts.
+const VALID_LOCAL_STORAGE_STATUSES: ReadonlySet<string> = new Set([
+  "pending",
+  "payout_signed",
+  "confirming",
+  "confirmed",
+  "refund_broadcast",
+]);
+// Vault `id` is keccak256(abi.encode(peginTxHash, depositor)) — always 32 bytes.
+// `peginTxHash` is a Bitcoin tx hash — also 32 bytes. Accept the legacy form
+// without `0x` prefix (normalizeTransactionId canonicalizes downstream).
+const BYTES32_HEX_RE = /^(0x)?[0-9a-fA-F]{64}$/;
+
+/**
+ * Validate the security-critical fields of a pending peg-in read from
+ * localStorage.
+ *
+ * localStorage is an untrusted boundary: entries can be tampered by XSS,
+ * browser extensions, or a user manually editing devtools. Every field used in
+ * a security-relevant code path (UTXO reservation, on-chain vault matching,
+ * PSBT construction, or ID normalization) must pass a strict shape check. A
+ * non-string `id`, for example, would otherwise throw inside
+ * `normalizeTransactionId`, fall into the outer catch block, and wipe the
+ * whole storage key — a DoS from a single tampered entry.
+ */
+function hasValidSecurityFields(entry: unknown): entry is PendingPeginRequest {
+  if (!entry || typeof entry !== "object") return false;
+  const pegin = entry as Record<string, unknown>;
+
+  if (typeof pegin.id !== "string" || !BYTES32_HEX_RE.test(pegin.id)) {
+    return false;
+  }
+  if (
+    typeof pegin.peginTxHash !== "string" ||
+    !BYTES32_HEX_RE.test(pegin.peginTxHash)
+  ) {
+    return false;
+  }
+  if (
+    typeof pegin.timestamp !== "number" ||
+    !Number.isFinite(pegin.timestamp) ||
+    pegin.timestamp < 0
+  ) {
+    return false;
+  }
+
+  // `status` may be missing (legacy entries — line 200 back-fills to PENDING),
+  // but if present it must be one of the known enum string values. A tampered
+  // status (e.g. a number, or a non-enum string) could otherwise slip past
+  // the `pegin.status || ...` fallback and confuse the state machine.
+  if (pegin.status !== undefined) {
+    if (
+      typeof pegin.status !== "string" ||
+      !VALID_LOCAL_STORAGE_STATUSES.has(pegin.status)
+    ) {
+      return false;
+    }
+  }
+
+  if (pegin.refundBroadcastAt !== undefined) {
+    if (
+      typeof pegin.refundBroadcastAt !== "number" ||
+      !Number.isFinite(pegin.refundBroadcastAt) ||
+      pegin.refundBroadcastAt < 0
+    ) {
+      return false;
+    }
+  }
+
+  if (typeof pegin.unsignedTxHex !== "string") return false;
+  // Empty string is the explicit cross-device "no local data" marker; anything
+  // else must be non-empty, even-length hex bytes (`0x` prefix optional).
+  if (
+    pegin.unsignedTxHex !== "" &&
+    !NON_EMPTY_HEX_RE.test(pegin.unsignedTxHex)
+  ) {
+    return false;
+  }
+
+  if (pegin.selectedUTXOs !== undefined) {
+    if (!Array.isArray(pegin.selectedUTXOs)) return false;
+    for (const candidate of pegin.selectedUTXOs) {
+      if (!candidate || typeof candidate !== "object") return false;
+      const utxo = candidate as Record<string, unknown>;
+      if (typeof utxo.txid !== "string" || !TXID_HEX_RE.test(utxo.txid)) {
+        return false;
+      }
+      if (
+        typeof utxo.vout !== "number" ||
+        !Number.isInteger(utxo.vout) ||
+        utxo.vout < 0
+      ) {
+        return false;
+      }
+      if (typeof utxo.value !== "string") return false;
+      const numValue = Number(utxo.value);
+      // Bitcoin outputs must carry value — a zero-sat UTXO is not a valid
+      // spendable output (dust rules aside, the protocol requires value > 0).
+      if (!Number.isSafeInteger(numValue) || numValue <= 0) return false;
+      if (
+        typeof utxo.scriptPubKey !== "string" ||
+        !SCRIPT_PUBKEY_HEX_RE.test(utxo.scriptPubKey)
+      ) {
+        return false;
+      }
+    }
+  }
+
+  return true;
 }
 
 /**
@@ -87,11 +217,28 @@ export function getPendingPegins(ethAddress: string): PendingPeginRequest[] {
     const stored = localStorage.getItem(key);
     if (!stored) return [];
 
-    const parsed: PendingPeginRequest[] = JSON.parse(stored);
+    const parsed: unknown = JSON.parse(stored);
+    if (!Array.isArray(parsed)) return [];
+
+    // Filter out entries whose security-critical fields (unsignedTxHex,
+    // selectedUTXOs) fail a strict format check. A tampered entry would
+    // otherwise feed malformed hex into downstream consumers.
+    const validated = parsed.filter((entry): entry is PendingPeginRequest => {
+      if (hasValidSecurityFields(entry)) return true;
+      const maybeId =
+        entry && typeof entry === "object" && "id" in entry
+          ? String((entry as { id: unknown }).id)
+          : "unknown";
+      logger.warn("[peginStorage] Skipping corrupted pending pegin entry", {
+        category: "peginStorage",
+        vaultId: maybeId,
+      });
+      return false;
+    });
 
     // Normalize IDs to ensure they all have 0x prefix (handles legacy data)
     // Note: We do NOT save back to localStorage here to avoid side effects
-    const normalized = parsed.map((pegin) => ({
+    const normalized = validated.map((pegin) => ({
       ...pegin,
       id: normalizeTransactionId(pegin.id),
       // Ensure status field exists (backward compatibility)
@@ -207,6 +354,31 @@ export function updatePendingPeginStatus(
 }
 
 /**
+ * Mark a pending peg-in as having broadcast its refund tx, anchoring the
+ * timestamp used by the optimistic-suppression TTL.
+ */
+export function markRefundBroadcast(
+  ethAddress: string,
+  vaultId: string,
+  refundBroadcastAt: number,
+): void {
+  const existingPegins = getPendingPegins(ethAddress);
+  const normalizedId = normalizeTransactionId(vaultId);
+
+  const updatedPegins = existingPegins.map((pegin) =>
+    pegin.id === normalizedId
+      ? {
+          ...pegin,
+          status: LocalStorageStatus.REFUND_BROADCAST,
+          refundBroadcastAt,
+        }
+      : pegin,
+  );
+
+  savePendingPegins(ethAddress, updatedPegins);
+}
+
+/**
  * Filter and clean up old pending peg-ins
  *
  * Uses peginStateMachine.shouldRemoveFromLocalStorage() for cleanup logic:
@@ -242,6 +414,148 @@ export function filterPendingPegins(
 
     // If it exists on blockchain, use peginStateMachine to determine if we should remove it
     // This handles the logic for keeping status 0-1 and removing status 2+
-    return !shouldRemoveFromLocalStorage(confirmedPegin.status, pegin.status);
+    return !shouldRemoveFromLocalStorage(
+      confirmedPegin.status,
+      pegin.status,
+      pegin.refundBroadcastAt,
+    );
   });
+}
+
+// ============================================================================
+// UTXO Reservations — early cross-tab reservation before ETH registration
+// ============================================================================
+
+/**
+ * A lightweight reservation written to localStorage immediately after
+ * transaction preparation, BEFORE wallet interaction or ETH registration.
+ * This closes the TOCTOU race window where another tab could select the
+ * same UTXOs during the 1-3 minute signing/registration process.
+ */
+export interface UtxoReservation {
+  unsignedTxHex: string;
+  timestamp: number;
+  batchId: string;
+}
+
+function getReservationStorageKey(ethAddress: string): string {
+  return `${UTXO_RESERVATION_KEY_PREFIX}-${ethAddress}`;
+}
+
+function isValidReservation(entry: unknown): entry is UtxoReservation {
+  if (!entry || typeof entry !== "object") return false;
+  const r = entry as Record<string, unknown>;
+  return (
+    typeof r.unsignedTxHex === "string" &&
+    NON_EMPTY_HEX_RE.test(r.unsignedTxHex) &&
+    typeof r.timestamp === "number" &&
+    Number.isFinite(r.timestamp) &&
+    r.timestamp > 0 &&
+    typeof r.batchId === "string" &&
+    r.batchId.length > 0
+  );
+}
+
+/**
+ * Read all UTXO reservations for an address, filtering out expired entries.
+ * Expired entries are cleaned up on read to avoid accumulation from crashed tabs.
+ */
+export function getUtxoReservations(ethAddress: string): UtxoReservation[] {
+  if (!ethAddress) return [];
+
+  try {
+    const stored = localStorage.getItem(getReservationStorageKey(ethAddress));
+    if (!stored) return [];
+
+    const parsed: unknown = JSON.parse(stored);
+    if (!Array.isArray(parsed)) return [];
+
+    const now = Date.now();
+    const valid: UtxoReservation[] = [];
+    let hadExpired = false;
+
+    for (const entry of parsed) {
+      if (!isValidReservation(entry)) continue;
+      if (now - entry.timestamp > UTXO_RESERVATION_TTL) {
+        hadExpired = true;
+        continue;
+      }
+      valid.push(entry);
+    }
+
+    // Clean up expired entries lazily on read
+    if (hadExpired) {
+      saveReservations(ethAddress, valid);
+    }
+
+    return valid;
+  } catch (error) {
+    logger.warn("[peginStorage] Failed to read UTXO reservations", {
+      category: "peginStorage",
+      error: error instanceof Error ? error.message : String(error),
+    });
+    return [];
+  }
+}
+
+function saveReservations(
+  ethAddress: string,
+  reservations: UtxoReservation[],
+): void {
+  const key = getReservationStorageKey(ethAddress);
+  if (reservations.length === 0) {
+    localStorage.removeItem(key);
+  } else {
+    localStorage.setItem(key, JSON.stringify(reservations));
+  }
+  // No dispatchStorageUpdateEvent here: reservations are stored under a
+  // separate key and read imperatively by useDepositFlow, not via the
+  // pendingPegins hook. Cross-tab notification works automatically via
+  // the native StorageEvent fired by localStorage writes.
+}
+
+/**
+ * Reserve UTXOs by writing the prepared transaction hex to localStorage.
+ * Called immediately after `preparePeginTransaction()`, before wallet
+ * interaction or ETH registration.
+ */
+export function addUtxoReservation(
+  ethAddress: string,
+  reservation: UtxoReservation,
+): void {
+  if (!ethAddress) return;
+
+  try {
+    const existing = getUtxoReservations(ethAddress);
+    // Replace any existing reservation with the same batchId
+    const filtered = existing.filter((r) => r.batchId !== reservation.batchId);
+    saveReservations(ethAddress, [...filtered, reservation]);
+  } catch (error) {
+    logger.warn("[peginStorage] Failed to write UTXO reservation", {
+      category: "peginStorage",
+      error: error instanceof Error ? error.message : String(error),
+    });
+  }
+}
+
+/**
+ * Remove a UTXO reservation after the deposit flow completes (success or
+ * failure). The real pending pegin entries supersede the early reservation.
+ */
+export function removeUtxoReservation(
+  ethAddress: string,
+  batchId: string,
+): void {
+  if (!ethAddress) return;
+
+  try {
+    const existing = getUtxoReservations(ethAddress);
+    const filtered = existing.filter((r) => r.batchId !== batchId);
+    saveReservations(ethAddress, filtered);
+  } catch (error) {
+    logger.warn("[peginStorage] Failed to remove UTXO reservation", {
+      category: "peginStorage",
+      error: error instanceof Error ? error.message : String(error),
+    });
+  }
 }

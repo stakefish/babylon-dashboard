@@ -54,35 +54,70 @@ function writeAccountsMap(map: Record<string, unknown>): void {
  *                     so entries are scoped per-network and won't cross-restore on network changes
  * @returns - key value storage
  */
-export const createAccountStorage = (ttl: number, networkMap?: Record<string, string>): HashMap => ({
-  get: (key: string) => {
-    const map = readAccountsMap();
-
-    if (map._timestamp && Date.now() - (map._timestamp as number) > ttl) {
-      return undefined;
+export const createAccountStorage = (ttl: number, networkMap?: Record<string, string>): HashMap => {
+  function getTimestamps(map: Record<string, unknown>): Record<string, number> {
+    const timestamps = map._timestamps;
+    if (timestamps && typeof timestamps === "object" && !Array.isArray(timestamps)) {
+      return timestamps as Record<string, number>;
     }
+    return {};
+  }
 
-    return map[scopeKey(key, networkMap)] as string | undefined;
-  },
-  has: (key: string) => {
-    const map = readAccountsMap();
+  function isExpired(map: Record<string, unknown>, scoped: string): boolean {
+    const timestamps = getTimestamps(map);
+    const ts = timestamps[scoped];
+    if (typeof ts !== "number" || !Number.isFinite(ts)) return true;
 
-    if (map._timestamp && Date.now() - (map._timestamp as number) > ttl) {
-      return false;
-    }
+    const now = Date.now();
+    // Clamp to a sane window. Without these, an XSS-tier write of
+    // ts=Number.MAX_SAFE_INTEGER (or any far-future value) makes
+    // `now - ts` negative and the entry never expires; a backwards
+    // clock jump similarly extends entries past the intended TTL.
+    if (ts < 0) return true;
+    if (ts > now + ttl) return true;
+    return now - ts > ttl;
+  }
 
-    return Boolean(map[scopeKey(key, networkMap)]);
-  },
-  set: (key: string, value: string) => {
-    const map = readAccountsMap();
-    map[scopeKey(key, networkMap)] = value;
-    map._timestamp = Date.now();
-    writeAccountsMap(map);
-  },
-  delete: (key: string) => {
-    const map = readAccountsMap();
-    const deleted = Reflect.deleteProperty(map, scopeKey(key, networkMap));
-    writeAccountsMap(map);
-    return deleted;
-  },
-});
+  return {
+    get: (key: string) => {
+      const map = readAccountsMap();
+      const scoped = scopeKey(key, networkMap);
+
+      if (isExpired(map, scoped)) {
+        return undefined;
+      }
+
+      return map[scoped] as string | undefined;
+    },
+    has: (key: string) => {
+      const map = readAccountsMap();
+      const scoped = scopeKey(key, networkMap);
+
+      if (isExpired(map, scoped)) {
+        return false;
+      }
+
+      return Boolean(map[scoped]);
+    },
+    set: (key: string, value: string) => {
+      const map = readAccountsMap();
+      const scoped = scopeKey(key, networkMap);
+      const timestamps = getTimestamps(map);
+
+      map[scoped] = value;
+      map._timestamps = { ...timestamps, [scoped]: Date.now() };
+      writeAccountsMap(map);
+    },
+    delete: (key: string) => {
+      const map = readAccountsMap();
+      const scoped = scopeKey(key, networkMap);
+      const timestamps = getTimestamps(map);
+
+      const deleted = Reflect.deleteProperty(map, scoped);
+      delete timestamps[scoped];
+      map._timestamps = timestamps;
+      writeAccountsMap(map);
+      return deleted;
+    },
+  };
+};

@@ -12,6 +12,10 @@ export const STORAGE_KEY_PREFIX = "vault-pending-pegins";
 export const STORAGE_UPDATE_EVENT = "vault-pending-pegins-updated";
 export const MAX_PENDING_DURATION = 24 * 60 * 60 * 1000; // 24 hours - cleanup stale items
 
+// UTXO reservation constants (early reservation before ETH registration)
+export const UTXO_RESERVATION_KEY_PREFIX = "vault-utxo-reservations";
+export const UTXO_RESERVATION_TTL = 5 * ONE_MINUTE; // 5 minutes — auto-expire stale reservations from crashed tabs
+
 // Pending collateral storage constants
 export const PENDING_COLLATERAL_KEY_PREFIX = "vault-pending-collateral";
 
@@ -19,3 +23,8 @@ export const PENDING_COLLATERAL_KEY_PREFIX = "vault-pending-collateral";
 export const ZERO_ADDRESS =
   "0x0000000000000000000000000000000000000000" as const;
 export const MAX_UINT256 = 2n ** 256n - 1n;
+
+// Bitcoin protocol constants
+export const BTC_BLOCK_TIME_MINS = 10;
+export const MINS_PER_HOUR = 60;
+export const FALLBACK_FEE_RATE_SATS_VB = 1;

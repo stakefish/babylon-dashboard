@@ -4,25 +4,17 @@
 
 import type { PropsWithChildren } from "react";
 
-import type { DepositorGraphTransactions } from "../clients/vault-provider-rpc/types";
 import type {
   LocalStorageStatus,
   PeginState,
 } from "../models/peginStateMachine";
 import type { PendingPeginRequest } from "../storage/peginStorage";
-import type { ClaimerTransactions } from "../types";
 import type { VaultActivity } from "../types/activity";
 
 /** Result of polling for a single deposit */
 export interface DepositPollingResult {
   /** Deposit/activity ID (txHash) */
   depositId: string;
-  /** Claim and payout transactions (null if not ready) */
-  transactions: ClaimerTransactions[] | null;
-  /** Depositor graph transactions (depositor-as-claimer, optional) */
-  depositorGraph: DepositorGraphTransactions | null;
-  /** Whether transactions are ready for signing */
-  isReady: boolean;
   /** Loading state for this deposit */
   loading: boolean;
   /** Error state for this deposit */
@@ -41,10 +33,16 @@ export interface PeginPollingContextValue {
   isLoading: boolean;
   /** Trigger a manual refetch for all deposits */
   refetch: () => void;
-  /** Optimistically update the local status for a deposit (immediate UI feedback) */
+  /**
+   * Optimistically update the local status for a deposit (immediate UI
+   * feedback). When transitioning to REFUND_BROADCAST, pass
+   * `refundBroadcastAt` so the suppression-TTL anchor is available before
+   * `pendingPegins` is re-read from localStorage.
+   */
   setOptimisticStatus: (
     depositId: string,
     newStatus: LocalStorageStatus,
+    refundBroadcastAt?: number,
   ) => void;
   /** Clear optimistic status (after actual data refresh) */
   clearOptimisticStatus: (depositId: string) => void;
@@ -58,8 +56,6 @@ export interface PeginPollingProviderProps extends PropsWithChildren {
   pendingPegins: PendingPeginRequest[];
   /** Depositor's BTC public key (x-only, 32 bytes without 0x prefix) */
   btcPublicKey?: string;
-  /** Depositor's BTC address (for broadcast state auto-detection) */
-  btcAddress?: string;
 }
 
 /** Deposit prepared for polling */
@@ -70,8 +66,8 @@ export interface DepositToPoll {
   vaultProviderAddress: string | undefined;
 }
 
-/** Grouped deposits by provider URL */
+/** Grouped deposits by vault provider address */
 export interface DepositsByProvider {
-  providerUrl: string;
+  providerAddress: string;
   deposits: DepositToPoll[];
 }

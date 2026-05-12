@@ -1,15 +1,12 @@
 /**
  * Tests for useUTXOs hook
- *
- * Focuses on non-blocking ordinals behavior:
- * - When ordinals API fails, all confirmed UTXOs should be available
- * - When ordinals API is loading, all confirmed UTXOs should be available
  */
 
 import { useQuery } from "@tanstack/react-query";
 import { renderHook } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
+import { useAppState } from "../../state/AppState";
 import { useOrdinals } from "../useOrdinals";
 import { useUTXOs } from "../useUTXOs";
 
@@ -71,6 +68,7 @@ interface MempoolUTXO {
 
 const mockUseQuery = useQuery as ReturnType<typeof vi.fn>;
 const mockUseOrdinals = useOrdinals as ReturnType<typeof vi.fn>;
+const mockUseAppState = useAppState as ReturnType<typeof vi.fn>;
 
 // Helper to create mock MempoolUTXO
 function createMempoolUtxo(
@@ -93,83 +91,20 @@ describe("useUTXOs", () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    mockUseAppState.mockReturnValue({ ordinalsExcluded: true });
   });
 
-  describe("non-blocking ordinals behavior", () => {
+  describe("ordinals classification gating", () => {
     const confirmedUtxos: MempoolUTXO[] = [
       createMempoolUtxo("txid1", 0, 100000),
       createMempoolUtxo("txid2", 1, 200000),
       createMempoolUtxo("txid3", 2, 300000),
     ];
 
-    it("should treat all confirmed UTXOs as available when ordinals API fails", () => {
-      // Setup: UTXOs loaded successfully
-      mockUseQuery.mockReturnValue({
-        data: { utxos: confirmedUtxos, txs: [] },
-        isLoading: false,
-        error: null,
-        refetch: vi.fn(),
-      });
-
-      // Setup: Ordinals API returns error
-      mockUseOrdinals.mockReturnValue({
-        inscriptions: [],
-        isLoading: false,
-        error: new Error("Ordinals API returned 500"),
-        refetch: vi.fn(),
-      });
-
-      mockLoggerWarn.mockClear();
-
-      const { result } = renderHook(() => useUTXOs(testAddress));
-
-      // All confirmed UTXOs should be available
-      expect(result.current.availableUTXOs).toHaveLength(3);
-      expect(result.current.inscriptionUTXOs).toHaveLength(0);
-      expect(result.current.spendableUTXOs).toHaveLength(3);
-      expect(result.current.spendableMempoolUTXOs).toHaveLength(3);
-
-      expect(mockLoggerWarn).toHaveBeenCalledWith(
-        "Ordinals API failed, treating all UTXOs as available",
-        expect.objectContaining({
-          data: { error: "Ordinals API returned 500" },
-        }),
-      );
-    });
-
-    it("should treat all confirmed UTXOs as available when ordinals API is loading", () => {
-      // Setup: UTXOs loaded successfully
-      mockUseQuery.mockReturnValue({
-        data: { utxos: confirmedUtxos, txs: [] },
-        isLoading: false,
-        error: null,
-        refetch: vi.fn(),
-      });
-
-      // Setup: Ordinals API is still loading
-      mockUseOrdinals.mockReturnValue({
-        inscriptions: [],
-        isLoading: true,
-        error: null,
-        refetch: vi.fn(),
-      });
-
-      const { result } = renderHook(() => useUTXOs(testAddress));
-
-      // All confirmed UTXOs should be available while ordinals is loading
-      expect(result.current.availableUTXOs).toHaveLength(3);
-      expect(result.current.inscriptionUTXOs).toHaveLength(0);
-      expect(result.current.spendableUTXOs).toHaveLength(3);
-      expect(result.current.spendableMempoolUTXOs).toHaveLength(3);
-
-      // Loading flag should be exposed for UI
-      expect(result.current.isLoadingOrdinals).toBe(true);
-    });
-
     it("should filter inscription UTXOs when ordinals API succeeds", () => {
       // Setup: UTXOs loaded successfully
       mockUseQuery.mockReturnValue({
-        data: { utxos: confirmedUtxos, txs: [] },
+        data: confirmedUtxos,
         isLoading: false,
         error: null,
         refetch: vi.fn(),
@@ -219,7 +154,7 @@ describe("useUTXOs", () => {
       const testError = new Error("Network error");
 
       mockUseQuery.mockReturnValue({
-        data: { utxos: [createMempoolUtxo("txid1", 0, 100000)], txs: [] },
+        data: [createMempoolUtxo("txid1", 0, 100000)],
         isLoading: false,
         error: null,
         refetch: vi.fn(),
@@ -251,7 +186,7 @@ describe("useUTXOs", () => {
       ];
 
       mockUseQuery.mockReturnValue({
-        data: { utxos: mixedUtxos, txs: [] },
+        data: mixedUtxos,
         isLoading: false,
         error: null,
         refetch: vi.fn(),

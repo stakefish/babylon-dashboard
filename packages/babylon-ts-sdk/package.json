@@ -4,6 +4,10 @@
   "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
+  "sideEffects": false,
+  "engines": {
+    "node": ">=20.3.0"
+  },
   "exports": {
     ".": {
       "types": "./dist/index.d.ts",
@@ -29,6 +33,31 @@
       "types": "./dist/tbv/core/utils/index.d.ts",
       "require": "./dist/tbv/core/utils/index.cjs",
       "import": "./dist/tbv/core/utils/index.js"
+    },
+    "./tbv/core/clients": {
+      "types": "./dist/tbv/core/clients/index.d.ts",
+      "require": "./dist/tbv/core/clients/index.cjs",
+      "import": "./dist/tbv/core/clients/index.js"
+    },
+    "./tbv/core/services": {
+      "types": "./dist/tbv/core/services/index.d.ts",
+      "require": "./dist/tbv/core/services/index.cjs",
+      "import": "./dist/tbv/core/services/index.js"
+    },
+    "./tbv/core/managers": {
+      "types": "./dist/tbv/core/managers/index.d.ts",
+      "require": "./dist/tbv/core/managers/index.cjs",
+      "import": "./dist/tbv/core/managers/index.js"
+    },
+    "./tbv/core/contracts": {
+      "types": "./dist/tbv/core/contracts/index.d.ts",
+      "require": "./dist/tbv/core/contracts/index.cjs",
+      "import": "./dist/tbv/core/contracts/index.js"
+    },
+    "./tbv/core/vault-secrets": {
+      "types": "./dist/tbv/core/vault-secrets/index.d.ts",
+      "require": "./dist/tbv/core/vault-secrets/index.cjs",
+      "import": "./dist/tbv/core/vault-secrets/index.js"
     },
     "./tbv/integrations/aave": {
       "types": "./dist/tbv/integrations/aave/index.d.ts",
@@ -82,13 +111,13 @@
   "description": "TypeScript SDK for Babylon protocol integrations",
   "dependencies": {
     "@babylonlabs-io/babylon-tbv-rust-wasm": "workspace:*",
-    "@bitcoin-js/tiny-secp256k1-asmjs": "2.2.3",
     "@noble/hashes": "2.0.1",
     "@scure/bip39": "2.0.1",
-    "bitcoinjs-lib": "6.1.7",
     "buffer": "6.0.3"
   },
   "peerDependencies": {
+    "@bitcoin-js/tiny-secp256k1-asmjs": "2.2.3",
+    "bitcoinjs-lib": "6.1.7",
     "viem": "^2.38.2"
   },
   "devDependencies": {

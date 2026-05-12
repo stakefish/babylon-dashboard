@@ -1,27 +1,32 @@
 /**
  * Hook for polling peg-in transactions from vault providers
  *
- * Manages the React Query polling loop for fetching claim/payout
- * transactions from all vault providers in parallel.
+ * Manages the React Query polling loop for fetching the per-deposit VP daemon
+ * status. The cheap, unauthenticated `getPeginStatus` RPC is the readiness
+ * signal — once the daemon reports `PendingDepositorSignatures`, the deposit
+ * is marked ready and the heavy auth-gated `requestDepositorPresignTransactions`
+ * is deferred to the actual signing flow (`runDepositorPresignFlow`), which
+ * re-fetches it at click-time.
  */
 
+import type { GetPeginStatusResponse } from "@babylonlabs-io/ts-sdk/tbv/core/clients";
+import {
+  batchPollByProvider,
+  DaemonStatus,
+  VP_TRANSIENT_STATUSES,
+  VpResponseValidationError,
+} from "@babylonlabs-io/ts-sdk/tbv/core/clients";
 import { keepPreviousData, useQuery } from "@tanstack/react-query";
 import { useEffect, useMemo, useRef } from "react";
 
 import { logger } from "@/infrastructure";
 
-import { VaultProviderRpcApi } from "../../clients/vault-provider-rpc";
-import type { DepositorGraphTransactions } from "../../clients/vault-provider-rpc/types";
-import { VpResponseValidationError } from "../../clients/vault-provider-rpc/validators";
 import {
   POLLING_INTERVAL_MS,
   POLLING_RETRY_COUNT,
   POLLING_RETRY_DELAY_MS,
-  RPC_TIMEOUT_MS,
 } from "../../config/polling";
-import { DaemonStatus } from "../../models/peginStateMachine";
 import type { PendingPeginRequest } from "../../storage/peginStorage";
-import type { ClaimerTransactions } from "../../types";
 import type { VaultActivity } from "../../types/activity";
 import type {
   DepositsByProvider,
@@ -29,11 +34,11 @@ import type {
 } from "../../types/peginPolling";
 import { stripHexPrefix } from "../../utils/btc";
 import {
-  areTransactionsReady,
   getDepositsNeedingPolling,
   groupDepositsByProvider,
   isTerminalPollingError,
 } from "../../utils/peginPolling";
+import { createVpClient } from "../../utils/rpc";
 
 interface UsePeginPollingQueryParams {
   activities: VaultActivity[];
@@ -43,29 +48,25 @@ interface UsePeginPollingQueryParams {
 
 /** Result from polling query */
 interface PollingQueryData {
-  /** Map of depositId -> transactions */
-  transactions: Map<string, ClaimerTransactions[]>;
-  /** Map of depositId -> depositor graph (depositor-as-claimer) */
-  depositorGraphs: Map<string, DepositorGraphTransactions>;
   /** Map of depositId -> error (for deposits with provider connectivity issues) */
   errors: Map<string, Error>;
   /** Set of depositIds where vault provider needs the depositor's WOTS key */
   needsWotsKey: Set<string>;
   /** Set of depositIds where VP hasn't ingested the peg-in yet */
   pendingIngestion: Set<string>;
+  /** Set of depositIds where VP daemon reports `PendingDepositorSignatures` */
+  pendingDepositorSignatures: Set<string>;
 }
 
 interface UsePeginPollingQueryResult {
-  /** Map of depositId -> transactions */
-  data: Map<string, ClaimerTransactions[]> | undefined;
-  /** Map of depositId -> depositor graph */
-  depositorGraphs: Map<string, DepositorGraphTransactions> | undefined;
   /** Map of depositId -> error */
   errors: Map<string, Error> | undefined;
   /** Set of depositIds needing WOTS key submission */
   needsWotsKey: Set<string> | undefined;
   /** Set of depositIds where VP hasn't ingested the peg-in yet */
   pendingIngestion: Set<string> | undefined;
+  /** Set of depositIds where VP is ready for depositor presignatures */
+  pendingDepositorSignatures: Set<string> | undefined;
   /** Whether any polling is in progress */
   isLoading: boolean;
   /** Trigger manual refetch */
@@ -75,113 +76,161 @@ interface UsePeginPollingQueryResult {
 }
 
 /**
- * Statuses where no depositor action is needed — VP is still processing
- * or has already moved past depositor interaction.
- */
-const TRANSIENT_STATUSES = new Set<string>([
-  DaemonStatus.PENDING_BABE_SETUP,
-  DaemonStatus.PENDING_CHALLENGER_PRESIGNING,
-  DaemonStatus.PENDING_PEGIN_SIGS_AVAILABILITY,
-  DaemonStatus.PENDING_ACKS,
-  DaemonStatus.PENDING_ACTIVATION,
-  DaemonStatus.ACTIVATED,
-]);
-
-/**
- * Fetch status and transactions from a single vault provider for multiple deposits.
+ * Fetch status from a single vault provider via `batchGetPeginStatus`,
+ * chunked at `VP_BATCH_MAX_SIZE`. Defensive attribution + duplicate-skip
+ * + per-item dispatch live in the SDK's `batchPollByProvider`; this
+ * function only declares the per-item handlers.
  *
- * Uses the lightweight `getPeginStatus` RPC first, then only calls
- * `requestDepositorPresignTransactions` when the VP is in the right state.
+ * Unauthenticated RPC. The presign transaction payload is fetched at
+ * signing time by the SDK's `runDepositorPresignFlow`.
  */
 async function fetchFromProvider(
-  providerUrl: string,
+  providerAddress: string,
   deposits: DepositToPoll[],
-  btcPublicKey: string,
-  results: Map<string, ClaimerTransactions[]>,
-  depositorGraphs: Map<string, DepositorGraphTransactions>,
   errors: Map<string, Error>,
   needsWotsKey: Set<string>,
   pendingIngestion: Set<string>,
+  pendingDepositorSignatures: Set<string>,
 ): Promise<void> {
-  const rpcClient = new VaultProviderRpcApi(providerUrl, RPC_TIMEOUT_MS);
-
-  for (const deposit of deposits) {
-    const depositId = deposit.activity.id;
-    const strippedTxid = stripHexPrefix(deposit.activity.peginTxHash!);
-
-    try {
-      // Phase 1: Lightweight status check
-      const statusResponse = await rpcClient.getPeginStatus({
-        pegin_txid: strippedTxid,
-      });
-
-      const status = statusResponse.status;
-
-      if (status === DaemonStatus.PENDING_DEPOSITOR_WOTS_PK) {
-        needsWotsKey.add(depositId);
-        errors.delete(depositId);
-        continue;
-      }
-
-      if (status === DaemonStatus.PENDING_INGESTION) {
-        pendingIngestion.add(depositId);
-        errors.delete(depositId);
-        needsWotsKey.delete(depositId);
-        continue;
-      }
-
-      if (TRANSIENT_STATUSES.has(status)) {
-        errors.delete(depositId);
-        needsWotsKey.delete(depositId);
-        continue;
-      }
-
-      if (status === DaemonStatus.EXPIRED) {
-        errors.set(depositId, new Error("Deposit expired"));
-        needsWotsKey.delete(depositId);
-        continue;
-      }
-
-      // Phase 2: Status is PendingDepositorSignatures — fetch transaction data
-      if (status === DaemonStatus.PENDING_DEPOSITOR_SIGNATURES) {
-        const response = await rpcClient.requestDepositorPresignTransactions({
-          pegin_txid: strippedTxid,
-          depositor_pk: btcPublicKey,
-        });
-
-        if (response.txs && response.txs.length > 0) {
-          results.set(depositId, response.txs);
+  const rpcClient = createVpClient(providerAddress);
+  await batchPollByProvider<DepositToPoll, GetPeginStatusResponse>({
+    items: deposits,
+    getTxid: (deposit) => stripHexPrefix(deposit.activity.peginTxHash!),
+    batchCall: (pegin_txids) => rpcClient.batchGetPeginStatus({ pegin_txids }),
+    onItem: (deposit, envelope) => {
+      const depositId = deposit.activity.id;
+      if (envelope.error !== null) {
+        // "PegIn not found" is a routine pre-ingest signal, not a fault.
+        if (!envelope.error.includes("PegIn not found")) {
+          logger.warn(`Failed to poll deposit ${depositId}`, {
+            error: envelope.error,
+          });
         }
-        depositorGraphs.set(depositId, response.depositor_graph);
-        errors.delete(depositId);
-        needsWotsKey.delete(depositId);
-        continue;
+        applyPerDepositError(envelope.error, depositId, {
+          errors,
+          needsWotsKey,
+          pendingIngestion,
+        });
+        return;
       }
-
-      // Unknown status — clear errors and continue polling
-      errors.delete(depositId);
-      needsWotsKey.delete(depositId);
-    } catch (error) {
-      // "PegIn not found" — VP hasn't ingested yet, keep polling
-      if (error instanceof Error && error.message.includes("PegIn not found")) {
-        errors.delete(depositId);
-        needsWotsKey.delete(depositId);
-        pendingIngestion.add(depositId);
-        continue;
-      }
-
+      // envelope.result is non-null here by the validator's XOR invariant.
+      applyPerDepositStatus(envelope.result!, depositId, {
+        errors,
+        needsWotsKey,
+        pendingIngestion,
+        pendingDepositorSignatures,
+      });
+    },
+    onMissing: (deposit) =>
+      errors.set(
+        deposit.activity.id,
+        new Error("Provider omitted status entry"),
+      ),
+    onDuplicate: (deposit) =>
+      errors.set(
+        deposit.activity.id,
+        new Error("Provider returned duplicate status entry"),
+      ),
+    onDuplicateBatch: (count) =>
+      logger.warn(
+        `VP ${providerAddress} returned ${count} duplicate pegin txid(s); marking those deposits errored`,
+      ),
+    onWholeBatchError: (chunk, error) => {
       const errorObj =
         error instanceof Error ? error : new Error("Provider unreachable");
-      errors.set(depositId, errorObj);
-      logger.warn(`Failed to poll deposit ${depositId}`, {
-        error:
-          error instanceof VpResponseValidationError
-            ? error.detail
-            : error instanceof Error
-              ? error.message
-              : String(error),
-      });
-    }
+      const detail =
+        error instanceof VpResponseValidationError
+          ? error.detail
+          : errorObj.message;
+      logger.warn(
+        `Failed to poll ${chunk.length} deposit(s) from VP ${providerAddress}`,
+        { error: detail },
+      );
+      for (const deposit of chunk) {
+        errors.set(deposit.activity.id, errorObj);
+      }
+    },
+    onUnexpected: (echoed) =>
+      logger.warn(
+        `VP ${providerAddress} returned ${echoed.length} unexpected pegin txid(s); ignoring`,
+      ),
+  });
+}
+
+interface DepositSets {
+  errors: Map<string, Error>;
+  needsWotsKey: Set<string>;
+  pendingIngestion: Set<string>;
+}
+
+function applyPerDepositError(
+  errorMessage: string,
+  depositId: string,
+  sets: DepositSets,
+): void {
+  // "PegIn not found" — VP hasn't ingested yet, treat as still-pending.
+  if (errorMessage.includes("PegIn not found")) {
+    sets.errors.delete(depositId);
+    sets.needsWotsKey.delete(depositId);
+    sets.pendingIngestion.add(depositId);
+    return;
+  }
+  sets.errors.set(depositId, new Error(errorMessage));
+}
+
+function applyPerDepositStatus(
+  statusResponse: GetPeginStatusResponse,
+  depositId: string,
+  sets: DepositSets & { pendingDepositorSignatures: Set<string> },
+): void {
+  const status = statusResponse.status;
+
+  if (status === DaemonStatus.PENDING_DEPOSITOR_WOTS_PK) {
+    sets.needsWotsKey.add(depositId);
+    sets.errors.delete(depositId);
+    return;
+  }
+
+  if (status === DaemonStatus.PENDING_INGESTION) {
+    sets.pendingIngestion.add(depositId);
+    sets.errors.delete(depositId);
+    sets.needsWotsKey.delete(depositId);
+    return;
+  }
+
+  if (VP_TRANSIENT_STATUSES.has(status as DaemonStatus)) {
+    sets.errors.delete(depositId);
+    sets.needsWotsKey.delete(depositId);
+    return;
+  }
+
+  if (status === DaemonStatus.EXPIRED) {
+    sets.errors.set(depositId, new Error("Deposit expired"));
+    sets.needsWotsKey.delete(depositId);
+    return;
+  }
+
+  if (status === DaemonStatus.CLAIM_POSTED) {
+    sets.errors.set(depositId, new Error("Claim transaction posted"));
+    sets.needsWotsKey.delete(depositId);
+    return;
+  }
+
+  if (status === DaemonStatus.PEGGED_OUT) {
+    sets.errors.set(depositId, new Error("BTC has been returned to depositor"));
+    sets.needsWotsKey.delete(depositId);
+    return;
+  }
+
+  // VP daemon reached the depositor-signing state. The status alone is
+  // a sufficient readiness signal — the daemon only enters this state
+  // after `all_presigning_phases_complete`, so the depositor-presign RPC
+  // is guaranteed to succeed when the user clicks Sign Payouts.
+  if (status === DaemonStatus.PENDING_DEPOSITOR_SIGNATURES) {
+    sets.pendingDepositorSignatures.add(depositId);
+    sets.errors.delete(depositId);
+    sets.needsWotsKey.delete(depositId);
+    return;
   }
 }
 
@@ -229,69 +278,63 @@ export function usePeginPollingQuery({
 
       if (!currentBtcPubKey || currentDeposits.length === 0) {
         return {
-          transactions: new Map<string, ClaimerTransactions[]>(),
-          depositorGraphs: new Map<string, DepositorGraphTransactions>(),
           errors: new Map<string, Error>(),
           needsWotsKey: new Set<string>(),
           pendingIngestion: new Set<string>(),
+          pendingDepositorSignatures: new Set<string>(),
         };
       }
 
       // Group by provider using current values
       const depositsByProvider = groupDepositsByProvider(currentDeposits);
 
-      const transactions = new Map<string, ClaimerTransactions[]>();
-      const depositorGraphs = new Map<string, DepositorGraphTransactions>();
       const errors = new Map<string, Error>();
       const needsWotsKey = new Set<string>();
       const pendingIngestion = new Set<string>();
+      const pendingDepositorSignatures = new Set<string>();
 
       // Fetch from each provider in parallel
       const fetchPromises = Array.from(depositsByProvider.entries()).map(
-        ([, { providerUrl, deposits }]: [string, DepositsByProvider]) =>
+        ([, { providerAddress, deposits }]: [string, DepositsByProvider]) =>
           fetchFromProvider(
-            providerUrl,
+            providerAddress,
             deposits,
-            currentBtcPubKey,
-            transactions,
-            depositorGraphs,
             errors,
             needsWotsKey,
             pendingIngestion,
+            pendingDepositorSignatures,
           ),
       );
 
       await Promise.all(fetchPromises);
       return {
-        transactions,
-        depositorGraphs,
         errors,
         needsWotsKey,
         pendingIngestion,
+        pendingDepositorSignatures,
       };
     },
     enabled: isEnabled,
     staleTime: 0,
     refetchInterval: (query) => {
-      // Stop polling if any deposit has a terminal error (e.g., wallet mismatch)
-      const errorMap = query.state.data?.errors;
-      if (errorMap && errorMap.size > 0) {
-        for (const error of errorMap.values()) {
-          if (isTerminalPollingError(error)) return false;
-        }
-      }
-
-      // Stop polling if all deposits have ready transactions
       const currentDeposits = depositsRef.current;
-      const txMap = query.state.data?.transactions;
-      const hasAllData = txMap && txMap.size === currentDeposits.length;
-      if (hasAllData) {
-        const allReady = currentDeposits.every((d) => {
-          const txs = txMap?.get(d.activity.id);
-          return txs && areTransactionsReady(txs);
-        });
-        if (allReady) return false;
-      }
+      if (currentDeposits.length === 0) return false;
+
+      const readySet = query.state.data?.pendingDepositorSignatures;
+      const errorMap = query.state.data?.errors;
+
+      // Stop polling only when every deposit is resolved:
+      // either reached the depositor-signing state (VP has presign txs ready)
+      // or hit a terminal error.
+      const allResolved = currentDeposits.every((d) => {
+        const depositId = d.activity.id;
+        if (readySet?.has(depositId)) return true;
+        const error = errorMap?.get(depositId);
+        if (error && isTerminalPollingError(error)) return true;
+        return false;
+      });
+      if (allResolved) return false;
+
       return POLLING_INTERVAL_MS;
     },
     retry: POLLING_RETRY_COUNT,
@@ -310,11 +353,10 @@ export function usePeginPollingQuery({
   }, [isEnabled, refetch]);
 
   return {
-    data: data?.transactions,
-    depositorGraphs: data?.depositorGraphs,
     errors: data?.errors,
     needsWotsKey: data?.needsWotsKey,
     pendingIngestion: data?.pendingIngestion,
+    pendingDepositorSignatures: data?.pendingDepositorSignatures,
     isLoading,
     refetch,
     depositsToPoll,

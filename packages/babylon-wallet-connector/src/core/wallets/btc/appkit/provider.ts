@@ -2,7 +2,10 @@ import type { BitcoinAdapter } from "@reown/appkit-adapter-bitcoin";
 import { Psbt } from "bitcoinjs-lib";
 
 import type { BTCConfig, IBTCProvider, InscriptionIdentifier, SignPsbtOptions } from "@/core/types";
+import { resolveUseTweakedSigner } from "@/core/utils/psbtOptionsMapper";
 import { APPKIT_OPEN_EVENT } from "@/core/wallets/appkit/constants";
+import { unsupportedDeriveContextHash } from "@/core/wallets/btc/unsupportedDeriveContextHash";
+import { ERROR_CODES, WalletError, isUserRejectionMessage } from "@/error";
 
 import { APPKIT_BTC_CONNECTED_EVENT } from "./constants";
 import icon from "./icon.svg";
@@ -17,6 +20,8 @@ interface AppKitSignInput {
   index: number;
   sighashTypes: number[];
   publicKey?: string;
+  useTweakedSigner?: boolean;
+  /** @deprecated Forwarded in sync with `useTweakedSigner` for older wallets only. */
   disableTweakSigner?: boolean;
 }
 
@@ -46,9 +51,94 @@ export class AppKitBTCProvider implements IBTCProvider {
   private address?: string;
   private publicKey?: string;
   private eventHandlers: Map<string, Set<(...args: unknown[]) => void>> = new Map();
+  private listeningForChanges = false;
+  private boundHandleAccountChange: ((event: Event) => void) | null = null;
+  /**
+   * The {@link EventTarget} we currently have a persistent listener on.
+   * Captured at registration time so we always remove the listener from
+   * the same target we added it to, even if the shared config singleton
+   * is replaced mid-session.
+   */
+  private boundConnectionEventsTarget: EventTarget | null = null;
 
   constructor(config: BTCConfig) {
     this.config = config;
+  }
+
+  /**
+   * Emit an event to all registered handlers for the given event name.
+   */
+  private emit(eventName: string, ...args: unknown[]): void {
+    const handlers = this.eventHandlers.get(eventName);
+    if (!handlers) return;
+    for (const handler of handlers) {
+      try {
+        handler(...args);
+      } catch (error) {
+        console.error(`[AppKit Provider] Error in ${eventName} handler:`, error);
+      }
+    }
+  }
+
+  /**
+   * Start listening for account changes from the bridge hook.
+   *
+   * The listener is attached to the private `connectionEvents`
+   * {@link EventTarget} held inside {@link SharedBtcAppKitConfig}, NOT on
+   * `window`. The previous implementation listened on `window` for
+   * `APPKIT_BTC_CONNECTED_EVENT` and adopted `event.detail.{address, publicKey}`
+   * as truth. Any same-origin script (XSS, malicious extension content
+   * script) could `window.dispatchEvent` a forged event with attacker-chosen
+   * values and overwrite this provider's cached address/pubkey, which then
+   * propagated through `accountsChanged` into `BTCWalletProvider` React
+   * state and downstream consumers. Listening on a private `EventTarget`
+   * instance closes that channel — there is no global handle for an attacker
+   * to dispatch on.
+   */
+  private startListeningForAccountChanges(): void {
+    if (this.listeningForChanges) return;
+    if (!hasSharedBtcAppKitConfig()) return;
+
+    const { connectionEvents } = getSharedBtcAppKitConfig();
+
+    this.boundHandleAccountChange = (event: Event) => {
+      const detail = (event as BtcConnectedEvent).detail;
+
+      if (!detail?.address) {
+        // No address means disconnect — notify handlers with empty accounts array
+        this.emit("accountsChanged", []);
+        return;
+      }
+
+      if (detail.address === this.address) {
+        return;
+      }
+
+      this.address = detail.address;
+      this.publicKey = detail.publicKey;
+
+      // Emit only accountsChanged (not both) because BTCWalletProvider registers
+      // the same handler for both events — emitting both would cause double execution.
+      this.emit("accountsChanged", [detail.address]);
+    };
+
+    connectionEvents.addEventListener(APPKIT_BTC_CONNECTED_EVENT, this.boundHandleAccountChange);
+    this.boundConnectionEventsTarget = connectionEvents;
+    this.listeningForChanges = true;
+  }
+
+  private stopListeningForAccountChanges(): void {
+    if (!this.listeningForChanges || !this.boundHandleAccountChange || !this.boundConnectionEventsTarget) {
+      return;
+    }
+
+    this.boundConnectionEventsTarget.removeEventListener(
+      APPKIT_BTC_CONNECTED_EVENT,
+      this.boundHandleAccountChange,
+    );
+    this.boundHandleAccountChange = null;
+    this.boundConnectionEventsTarget = null;
+    this.listeningForChanges = false;
   }
 
   /**
@@ -66,45 +156,53 @@ export class AppKitBTCProvider implements IBTCProvider {
 
   async connectWallet(): Promise<void> {
     try {
-      // Open AppKit modal for Bitcoin wallet connection
-      if (typeof window !== "undefined") {
-        window.dispatchEvent(new CustomEvent(APPKIT_OPEN_EVENT));
-
-        // Wait for connection to complete
-        const waitForConnection = new Promise<void>((resolve, reject) => {
-          const timeout = setTimeout(() => {
-            console.error("[AppKit Provider] Connection timeout after 60 seconds");
-            cleanup();
-            reject(new Error("Connection timeout"));
-          }, 60000);
-
-          const handleAccountChange = (event: Event) => {
-            const detail = (event as BtcConnectedEvent).detail;
-            if (detail?.address) {
-              cleanup();
-              this.address = detail.address;
-              this.publicKey = detail.publicKey;
-              resolve();
-            } else {
-              console.warn("[AppKit Provider] Event received but no address in detail");
-            }
-          };
-
-          const cleanup = () => {
-            clearTimeout(timeout);
-            window.removeEventListener(APPKIT_BTC_CONNECTED_EVENT, handleAccountChange);
-          };
-
-          window.addEventListener(APPKIT_BTC_CONNECTED_EVENT, handleAccountChange);
-        });
-
-        await waitForConnection;
-        return;
+      if (typeof window === "undefined") {
+        throw new Error("Window not available for AppKit modal");
       }
 
-      throw new Error("Window not available for AppKit modal");
+      // Resolve the shared config up front so we listen on the private
+      // connection-events bus, not on `window`. If the modal hasn't been
+      // initialized yet, fail loudly rather than fall back to a spoofable
+      // global channel.
+      const { connectionEvents } = this.getAppKitConfig();
+
+      // The modal-open trigger remains a window event because it is
+      // intentionally a UI hook (not a state source). It carries no
+      // payload that downstream code adopts as truth.
+      window.dispatchEvent(new CustomEvent(APPKIT_OPEN_EVENT));
+
+      // Wait for connection to complete
+      const waitForConnection = new Promise<void>((resolve, reject) => {
+        const timeout = setTimeout(() => {
+          console.error("[AppKit Provider] Connection timeout after 60 seconds");
+          cleanup();
+          reject(new Error("Connection timeout"));
+        }, 60000);
+
+        const handleAccountChange = (event: Event) => {
+          const detail = (event as BtcConnectedEvent).detail;
+          if (detail?.address) {
+            cleanup();
+            this.address = detail.address;
+            this.publicKey = detail.publicKey;
+            resolve();
+          } else {
+            console.warn("[AppKit Provider] Event received but no address in detail");
+          }
+        };
+
+        const cleanup = () => {
+          clearTimeout(timeout);
+          connectionEvents.removeEventListener(APPKIT_BTC_CONNECTED_EVENT, handleAccountChange);
+        };
+
+        connectionEvents.addEventListener(APPKIT_BTC_CONNECTED_EVENT, handleAccountChange);
+      });
+
+      await waitForConnection;
+      this.startListeningForAccountChanges();
     } catch (error) {
-      console.error("[AppKit Provider] Failed to connect Bitcoin wallet:", error);
+      console.error("[AppKit Provider] Failed to connect Bitcoin wallet:", error instanceof Error ? error.message : "Unknown error");
       throw new Error(`Failed to connect Bitcoin wallet: ${error instanceof Error ? error.message : "Unknown error"}`);
     }
   }
@@ -114,6 +212,7 @@ export class AppKitBTCProvider implements IBTCProvider {
       const { modal } = this.getAppKitConfig();
       await modal.disconnect();
     } finally {
+      this.stopListeningForAccountChanges();
       this.address = undefined;
       this.publicKey = undefined;
     }
@@ -178,13 +277,19 @@ export class AppKitBTCProvider implements IBTCProvider {
       const signInputs: AppKitSignInput[] | undefined =
         options?.autoFinalized || !options?.signInputs
           ? undefined
-          : options.signInputs.map((input) => ({
-              address: input.address ?? address,
-              index: input.index,
-              sighashTypes: input.sighashTypes ?? [],
-              ...(input.publicKey && { publicKey: input.publicKey }),
-              ...(input.disableTweakSigner && { disableTweakSigner: true }),
-            }));
+          : options.signInputs.map((input) => {
+              const useTweakedSigner = resolveUseTweakedSigner(input);
+              return {
+                address: input.address ?? address,
+                index: input.index,
+                sighashTypes: input.sighashTypes ?? [],
+                ...(input.publicKey && { publicKey: input.publicKey }),
+                ...(useTweakedSigner !== undefined && {
+                  useTweakedSigner,
+                  disableTweakSigner: !useTweakedSigner,
+                }),
+              };
+            });
 
       const result = await walletProvider.signPSBT({
         psbt: psbtBase64,
@@ -198,8 +303,16 @@ export class AppKitBTCProvider implements IBTCProvider {
 
       return Psbt.fromBase64(result.psbt).toHex();
     } catch (error) {
-      console.error("[AppKit Provider] signPsbt failed:", error);
-      throw new Error(`Failed to sign PSBT: ${error instanceof Error ? error.message : "Unknown error"}`);
+      const message = error instanceof Error ? error.message : "Unknown error";
+      console.error("[AppKit Provider] signPsbt failed:", message);
+      if (isUserRejectionMessage(message)) {
+        throw new WalletError({
+          code: ERROR_CODES.CONNECTION_REJECTED,
+          message: "User rejected the PSBT signing request in AppKit",
+          wallet: "AppKit",
+        });
+      }
+      throw new Error(`Failed to sign PSBT: ${message}`);
     }
   }
 
@@ -243,7 +356,7 @@ export class AppKitBTCProvider implements IBTCProvider {
 
       return signature;
     } catch (error) {
-      console.error("[AppKit Provider] signMessage failed:", error);
+      console.error("[AppKit Provider] signMessage failed:", error instanceof Error ? error.message : "Unknown error");
       throw new Error(`Failed to sign message: ${error instanceof Error ? error.message : "Unknown error"}`);
     }
   }
@@ -274,8 +387,10 @@ export class AppKitBTCProvider implements IBTCProvider {
     return [];
   }
 
-  // Cleanup method for proper resource management
+  deriveContextHash = unsupportedDeriveContextHash("AppKit Bitcoin");
+
   destroy(): void {
+    this.stopListeningForAccountChanges();
     this.eventHandlers.clear();
   }
 }

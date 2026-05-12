@@ -1,7 +1,6 @@
 // GraphQL: Aave config
 export {
   fetchAaveAppConfig,
-  fetchAaveConfig,
   type AaveAppConfig,
   type AaveConfig,
   type AaveReserveConfig,
@@ -55,3 +54,9 @@ export {
   repayPartial,
   withdrawSelectedCollateral,
 } from "./positionTransactions";
+
+// On-chain integrity guards
+export {
+  ReserveMismatchError,
+  assertReserveMatchesOnChain,
+} from "./assertReserveMatchesOnChain";

@@ -5,14 +5,18 @@
  * pending deposit section. Uses SimpleDeposit in resume mode for all actions.
  */
 
+import { useEffect, useState } from "react";
 import type { Hex } from "viem";
 
+import { ArtifactDownloadModal } from "@/components/deposit/ArtifactDownloadModal";
 import { BroadcastSuccessModal } from "@/components/deposit/BroadcastSuccessModal";
+import { RefundModal } from "@/components/deposit/RefundModal";
 import { usePeginPolling } from "@/context/deposit/PeginPollingContext";
 import type { SignModalData } from "@/hooks/deposit/usePayoutSignModal";
 import type { VaultActivity } from "@/types/activity";
 import type { VaultProvider } from "@/types/vaultProvider";
 
+import { ActivateConfirmationModal } from "./ActivateConfirmationModal";
 import SimpleDeposit from "./SimpleDeposit";
 
 interface SignModalState {
@@ -41,8 +45,6 @@ interface ActivationModalState {
   activatingActivity: VaultActivity | null;
   handleClose: () => void;
   handleSuccess: () => void;
-  successOpen: boolean;
-  handleSuccessClose: () => void;
 }
 
 interface RefundModalState {
@@ -79,6 +81,27 @@ export function PendingDepositModals({
     refetchPolling();
   };
 
+  const activatingActivity = activationModal.activatingActivity;
+  const [activationConfirmed, setActivationConfirmed] = useState(false);
+  const [showArtifactDownload, setShowArtifactDownload] = useState(false);
+  const [downloadCompletedAt, setDownloadCompletedAt] = useState(0);
+
+  useEffect(() => {
+    if (!activatingActivity) {
+      setActivationConfirmed(false);
+      setShowArtifactDownload(false);
+    }
+  }, [activatingActivity]);
+
+  const artifactProviderAddress = activatingActivity?.providers?.[0]?.id;
+  const artifactPeginTxid = activatingActivity?.peginTxHash;
+  const artifactDepositorPk = activatingActivity?.depositorBtcPubkey;
+  const canDownloadArtifacts =
+    !!activatingActivity &&
+    !!artifactProviderAddress &&
+    !!artifactPeginTxid &&
+    !!artifactDepositorPk;
+
   return (
     <>
       {/* Payout Sign Modal – full-screen with stepper */}
@@ -89,8 +112,6 @@ export function PendingDepositModals({
           onClose={signModal.handleClose}
           onResumeSuccess={signModal.handleSuccess}
           activity={signModal.signingData.activity}
-          transactions={signModal.signingData.transactions}
-          depositorGraph={signModal.signingData.depositorGraph}
           btcPublicKey={btcPublicKey}
           depositorEthAddress={ethAddress as Hex}
         />
@@ -108,7 +129,7 @@ export function PendingDepositModals({
         />
       )}
 
-      {/* WOTS Key Modal – mnemonic re-entry */}
+      {/* WOTS Key Modal – re-derives via wallet deriveContextHash */}
       {wotsKeyModal.isOpen && wotsKeyModal.activity && (
         <SimpleDeposit
           open={wotsKeyModal.isOpen}
@@ -120,26 +141,54 @@ export function PendingDepositModals({
         />
       )}
 
+      {/* Activation gate — confirmation + artifact-download nudge */}
+      {activatingActivity && ethAddress && !activationConfirmed && (
+        <ActivateConfirmationModal
+          open
+          vaultId={activatingActivity.id}
+          downloadCompletedAt={downloadCompletedAt}
+          onClose={activationModal.handleClose}
+          onConfirm={() => setActivationConfirmed(true)}
+          onDownloadArtifacts={() => {
+            if (canDownloadArtifacts) setShowArtifactDownload(true);
+          }}
+        />
+      )}
+
+      {activatingActivity && showArtifactDownload && canDownloadArtifacts && (
+        <ArtifactDownloadModal
+          open
+          providerAddress={artifactProviderAddress as string}
+          peginTxid={artifactPeginTxid as string}
+          depositorPk={artifactDepositorPk as string}
+          vaultId={activatingActivity.id}
+          onClose={() => setShowArtifactDownload(false)}
+          onComplete={() => {
+            setShowArtifactDownload(false);
+            setDownloadCompletedAt((n) => n + 1);
+          }}
+        />
+      )}
+
       {/* Activation Modal — secret input + ETH tx */}
-      {activationModal.activatingActivity && ethAddress && (
+      {activatingActivity && ethAddress && activationConfirmed && (
         <SimpleDeposit
-          open={!!activationModal.activatingActivity}
+          open
           resumeMode="activate_vault"
           onClose={activationModal.handleClose}
           onResumeSuccess={activationModal.handleSuccess}
-          activity={activationModal.activatingActivity}
+          activity={activatingActivity}
           depositorEthAddress={ethAddress}
         />
       )}
 
       {/* Refund Modal */}
       {refundModal.refundingActivity && (
-        <SimpleDeposit
+        <RefundModal
           open={!!refundModal.refundingActivity}
-          resumeMode="refund_htlc"
-          onClose={refundModal.handleClose}
-          onResumeSuccess={refundModal.handleSuccess}
           activity={refundModal.refundingActivity}
+          onClose={refundModal.handleClose}
+          onSuccess={refundModal.handleSuccess}
         />
       )}
 

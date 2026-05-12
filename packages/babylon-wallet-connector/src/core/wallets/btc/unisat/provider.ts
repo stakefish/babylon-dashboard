@@ -4,7 +4,8 @@ import { isAccountChangeEvent, DISCONNECT_EVENT, removeProviderListener } from "
 import type { BTCConfig, IBTCProvider, InscriptionIdentifier, SignPsbtOptions, WalletInfo } from "@/core/types";
 import { Network } from "@/core/types";
 import { initBTCCurve } from "@/core/utils/initBTCCurve";
-import { ERROR_CODES, WalletError } from "@/error";
+import { resolveUseTweakedSigner } from "@/core/utils/psbtOptionsMapper";
+import { ERROR_CODES, WalletError, isUserRejectionMessage } from "@/error";
 
 import logo from "./logo.svg";
 
@@ -21,6 +22,30 @@ interface UnisatChainResponse {
 }
 
 export const WALLET_PROVIDER_NAME = "Unisat";
+
+const mapUnisatChainToNetwork = (chain: UnisatChainEnum): Network | null => {
+  switch (chain) {
+    case UnisatChainEnum.BITCOIN_MAINNET:
+      return Network.MAINNET;
+    case UnisatChainEnum.BITCOIN_SIGNET:
+      return Network.SIGNET;
+    case UnisatChainEnum.BITCOIN_TESTNET:
+      return Network.TESTNET;
+    default:
+      return null;
+  }
+};
+
+const mapNetworkToUnisatChain = (network: Network): UnisatChainEnum => {
+  switch (network) {
+    case Network.MAINNET:
+      return UnisatChainEnum.BITCOIN_MAINNET;
+    case Network.SIGNET:
+      return UnisatChainEnum.BITCOIN_SIGNET;
+    case Network.TESTNET:
+      return UnisatChainEnum.BITCOIN_TESTNET;
+  }
+};
 
 // Unisat derivation path for BTC Signet
 // Taproot: `m/86'/1'/0'/0`
@@ -46,9 +71,8 @@ export class UnisatProvider implements IBTCProvider {
   }
 
   connectWallet = async (): Promise<void> => {
-    let accounts;
     try {
-      accounts = await this.provider.requestAccounts();
+      await this.provider.requestAccounts();
     } catch (error) {
       if ((error as Error)?.message?.includes("rejected")) {
         throw new WalletError({
@@ -65,6 +89,16 @@ export class UnisatProvider implements IBTCProvider {
       }
     }
 
+    // Unisat silently returns a wrong-network (or empty) account if the wallet
+    // is on a chain the dApp does not target. Align the wallet to the configured
+    // network before reading the address/pubkey so the connection cannot succeed
+    // with a stale mainnet account when signet is required (and vice-versa).
+    await this.ensureExpectedChain();
+
+    // Use requestAccounts (not getAccounts) so per-chain dApp approval is
+    // re-established after a chain switch. requestAccounts is idempotent on
+    // already-authorized chains, so this does not produce an extra prompt.
+    const accounts: string[] = await this.provider.requestAccounts();
     const address = accounts[0];
     const publicKeyHex = await this.provider.getPublicKey();
 
@@ -77,6 +111,50 @@ export class UnisatProvider implements IBTCProvider {
       throw new WalletError({
         code: ERROR_CODES.CONNECTION_FAILED,
         message: "Could not connect to Unisat Wallet",
+        wallet: WALLET_PROVIDER_NAME,
+      });
+    }
+  };
+
+  private ensureExpectedChain = async (): Promise<void> => {
+    let currentChain: UnisatChainResponse;
+    try {
+      currentChain = await this.provider.getChain();
+    } catch (error) {
+      throw new WalletError({
+        code: ERROR_CODES.CONNECTION_FAILED,
+        message: (error as Error)?.message || "Failed to read Unisat Wallet network",
+        wallet: WALLET_PROVIDER_NAME,
+      });
+    }
+
+    if (mapUnisatChainToNetwork(currentChain.enum) === this.config.network) return;
+
+    const expectedChain = mapNetworkToUnisatChain(this.config.network);
+    const targetLabel = this.config.networkName || this.config.network;
+
+    if (typeof this.provider.switchChain !== "function") {
+      throw new WalletError({
+        code: ERROR_CODES.UNSUPPORTED_NETWORK,
+        message: `Unisat Wallet is on ${currentChain.name}, but ${targetLabel} is required. Switch networks in your Unisat extension and try again.`,
+        wallet: WALLET_PROVIDER_NAME,
+      });
+    }
+
+    try {
+      await this.provider.switchChain(expectedChain);
+    } catch (error) {
+      const errorMessage = (error as Error)?.message || "";
+      if (isUserRejectionMessage(errorMessage)) {
+        throw new WalletError({
+          code: ERROR_CODES.CONNECTION_REJECTED,
+          message: `Switching Unisat Wallet to ${targetLabel} was rejected`,
+          wallet: WALLET_PROVIDER_NAME,
+        });
+      }
+      throw new WalletError({
+        code: ERROR_CODES.UNSUPPORTED_NETWORK,
+        message: errorMessage || `Failed to switch Unisat Wallet to ${targetLabel}`,
         wallet: WALLET_PROVIDER_NAME,
       });
     }
@@ -125,15 +203,23 @@ export class UnisatProvider implements IBTCProvider {
       // If signInputs is provided, use it directly instead of auto-generating
       // This allows callers to specify exactly which inputs to sign
       if (options?.signInputs && options.signInputs.length > 0) {
+        // UniSat's native field is `useTweakedSigner`; unlike OKX/OneKey/AppKit we
+        // intentionally do NOT forward `disableTweakSigner`. `mapSignInputsToToSignInputs`
+        // forwards both fields to cover older OKX versions that only understood the
+        // legacy field — UniSat has always understood `useTweakedSigner`, so the
+        // legacy field would be noise here.
         signOptions = {
           autoFinalized: options.autoFinalized ?? false,
-          toSignInputs: options.signInputs.map((input) => ({
-            index: input.index,
-            publicKey: input.publicKey,
-            address: input.address,
-            sighashTypes: input.sighashTypes,
-            useTweakedSigner: input.disableTweakSigner === true ? false : undefined,
-          })),
+          toSignInputs: options.signInputs.map((input) => {
+            const useTweakedSigner = resolveUseTweakedSigner(input);
+            return {
+              index: input.index,
+              publicKey: input.publicKey,
+              address: input.address,
+              sighashTypes: input.sighashTypes,
+              ...(useTweakedSigner !== undefined && { useTweakedSigner }),
+            };
+          }),
         };
       } else {
         // Default behavior: auto-generate toSignInputs for all unsigned inputs
@@ -147,6 +233,13 @@ export class UnisatProvider implements IBTCProvider {
       const signedHex = await this.provider.signPsbt(psbtHex, signOptions);
       return signedHex;
     } catch (error: Error | any) {
+      if (isUserRejectionMessage(error?.message)) {
+        throw new WalletError({
+          code: ERROR_CODES.CONNECTION_REJECTED,
+          message: "User rejected the PSBT signing request in Unisat Wallet",
+          wallet: WALLET_PROVIDER_NAME,
+        });
+      }
       throw new WalletError({
         code: ERROR_CODES.SIGNATURE_EXTRACT_ERROR,
         message: error?.message || "Failed to sign PSBT with Unisat Wallet",
@@ -175,17 +268,21 @@ export class UnisatProvider implements IBTCProvider {
       const signOptions = psbtsHexes.map((psbtHex, index) => {
         const option = options?.[index];
 
-        // If signInputs is provided, convert to toSignInputs format (like signPsbt does)
+        // If signInputs is provided, convert to toSignInputs format (like signPsbt does).
+        // Forwards only `useTweakedSigner` — see the note in signPsbt above.
         if (option?.signInputs && option.signInputs.length > 0) {
           return {
             autoFinalized: option.autoFinalized ?? false,
-            toSignInputs: option.signInputs.map((input) => ({
-              index: input.index,
-              publicKey: input.publicKey,
-              address: input.address,
-              sighashTypes: input.sighashTypes,
-              useTweakedSigner: input.disableTweakSigner === true ? false : undefined,
-            })),
+            toSignInputs: option.signInputs.map((input) => {
+              const useTweakedSigner = resolveUseTweakedSigner(input);
+              return {
+                index: input.index,
+                publicKey: input.publicKey,
+                address: input.address,
+                sighashTypes: input.sighashTypes,
+                ...(useTweakedSigner !== undefined && { useTweakedSigner }),
+              };
+            }),
           };
         }
 
@@ -195,6 +292,13 @@ export class UnisatProvider implements IBTCProvider {
 
       return await this.provider.signPsbts(psbtsHexes, signOptions);
     } catch (error: Error | any) {
+      if (isUserRejectionMessage(error?.message)) {
+        throw new WalletError({
+          code: ERROR_CODES.CONNECTION_REJECTED,
+          message: "User rejected the PSBT signing request in Unisat Wallet",
+          wallet: WALLET_PROVIDER_NAME,
+        });
+      }
       throw new WalletError({
         code: ERROR_CODES.SIGNATURE_EXTRACT_ERROR,
         message: error?.message || "Failed to sign PSBTs with Unisat Wallet",
@@ -390,5 +494,53 @@ export class UnisatProvider implements IBTCProvider {
 
   getWalletProviderIcon = async (): Promise<string> => {
     return logo;
+  };
+
+  deriveContextHash = async (appName: string, context: string): Promise<string> => {
+    if (!this.walletInfo)
+      throw new WalletError({
+        code: ERROR_CODES.WALLET_NOT_CONNECTED,
+        message: "Unisat Wallet not connected",
+        wallet: WALLET_PROVIDER_NAME,
+      });
+
+    // UniSat exposes deriveContextHash on `window.unisat` per the spec
+    // at docs/specs/derive-context-hash.md §2.1. If the installed
+    // version is older than the one that shipped this method, we
+    // surface a typed `WALLET_METHOD_NOT_SUPPORTED` so the caller can
+    // gate on capability rather than receiving an opaque "X is not a
+    // function" runtime error.
+    if (typeof this.provider.deriveContextHash !== "function") {
+      throw new WalletError({
+        code: ERROR_CODES.WALLET_METHOD_NOT_SUPPORTED,
+        message:
+          "Unisat Wallet version does not support deriveContextHash. Update to a version that implements the deriveContextHash specification.",
+        wallet: WALLET_PROVIDER_NAME,
+      });
+    }
+
+    try {
+      return await this.provider.deriveContextHash(appName, context);
+    } catch (error) {
+      // Pass through user-rejection as a typed connection-rejected
+      // error so callers can distinguish "user said no" from other
+      // failures. isUserRejectionMessage matches the specific phrasings
+      // wallets use ("user rejected", "user denied", ...) — not the bare
+      // word "rejected", since wallet-side validation errors (e.g.
+      // "context format rejected by wallet") also contain "rejected"
+      // but should keep their original diagnostic shape.
+      if (isUserRejectionMessage((error as Error | undefined)?.message)) {
+        throw new WalletError({
+          code: ERROR_CODES.CONNECTION_REJECTED,
+          message: "Unisat Wallet rejected the deriveContextHash approval",
+          wallet: WALLET_PROVIDER_NAME,
+        });
+      }
+      // Everything else is rethrown unwrapped so the underlying
+      // message and stack are preserved — collapsing wallet errors
+      // would hide spec-validation failures the wallet must surface
+      // (`appName` charset, `context` hex format, length bounds).
+      throw error;
+    }
   };
 }

@@ -59,14 +59,28 @@ export default {
   },
 
   /**
-   * POSITION_NOTIFICATIONS feature flag
+   * POSITION_DEBUG_PANEL feature flag
    *
-   * Purpose: Enables the position notifications calculator that analyzes
-   * vault structure and shows actionable warnings (cliff, reorder, rebalance, etc.)
-   * Why needed: Feature is being developed incrementally; hidden behind flag until ready
+   * Purpose: Shows the position notifications debug panel on the dashboard,
+   * allowing manual parameter overrides and simulation of notification states.
+   * Why needed: Dev/QA tool for testing position notification scenarios
    * Default: false (disabled unless explicitly set to "true")
    */
-  get isPositionNotificationsEnabled() {
-    return process.env.NEXT_PUBLIC_FF_POSITION_NOTIFICATIONS === "true";
+  get isPositionDebugPanelEnabled() {
+    return process.env.NEXT_PUBLIC_FF_POSITION_DEBUG_PANEL === "true";
+  },
+
+  /**
+   * DISABLE_VAULT_CAP feature flag
+   *
+   * Purpose: Kill-switch to hide the vault supply-cap UI (dashboard section
+   * and deposit-form remaining-capacity check). When enabled, the hook
+   * short-circuits without any on-chain CapPolicy reads.
+   * Why needed: Feature is on by default; this flag lets DevOps quickly
+   * disable it per environment without a code change.
+   * Default: false (vault cap is enabled unless explicitly set to "true")
+   */
+  get isVaultCapDisabled() {
+    return process.env.NEXT_PUBLIC_FF_DISABLE_VAULT_CAP === "true";
   },
 };

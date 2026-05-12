@@ -51,7 +51,28 @@ export function toCollateralVaultEntries(
       providerName: provider?.name ?? truncateHash(providerAddress),
       providerIconUrl: provider?.iconUrl,
       depositorBtcPubkey: c.vault?.depositorBtcPubKey,
+      depositorPayoutBtcAddress: c.vault?.depositorPayoutBtcAddress,
       liquidationIndex: c.liquidationIndex,
     };
   });
+}
+
+/**
+ * Computes the maximum borrowable USD value for a collateral position:
+ *   amountBtc * btcPrice * collateralFactor
+ *
+ * Returns `null` when any input is missing, non-finite, or non-positive,
+ * so callers can hide the field rather than render a misleading `$0`.
+ */
+export function computeMaxBorrowUsd(
+  amountBtc: string,
+  btcPrice: number,
+  collateralFactor: number | null,
+): number | null {
+  if (collateralFactor === null) return null;
+  if (!Number.isFinite(btcPrice) || btcPrice <= 0) return null;
+  if (!Number.isFinite(collateralFactor) || collateralFactor <= 0) return null;
+  const amount = parseFloat(amountBtc);
+  if (!Number.isFinite(amount) || amount <= 0) return null;
+  return amount * btcPrice * collateralFactor;
 }

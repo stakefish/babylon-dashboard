@@ -24,6 +24,7 @@ export default tseslint.config(
       "*.{js,ts}",
       "postcss.config.cjs",
       "prettier.config.cjs",
+      "scripts",
     ],
   },
   importPlugin.flatConfigs.recommended,
@@ -114,6 +115,24 @@ export default tseslint.config(
     ],
     rules: {
       "no-console": "off",
+    },
+  },
+  // CRITICAL PATHS - see CLAUDE.md > "CRITICAL PATHS — HUMAN REVIEW REQUIRED".
+  // These overrides ensure escape hatches (any, non-null assertions, raw
+  // @ts-ignore) cannot slip into value-bearing code without explicit review.
+  // Tests are excluded - non-null assertions on fixtures are legitimate there.
+  {
+    files: [
+      "src/utils/fee/peginFee.ts",
+      "src/hooks/deposit/depositFlowSteps/payoutSigning.ts",
+      "src/services/wots/**/*.ts",
+      "src/services/vault/vaultActivationService.ts",
+    ],
+    ignores: ["**/__tests__/**", "**/*.test.{ts,tsx}"],
+    rules: {
+      "@typescript-eslint/no-explicit-any": "error",
+      "@typescript-eslint/no-non-null-assertion": "error",
+      "@typescript-eslint/ban-ts-comment": "error",
     },
   },
   {

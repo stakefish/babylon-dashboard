@@ -8,11 +8,14 @@ import { beforeAll, describe, expect, it } from "vitest";
 import * as bitcoin from "bitcoinjs-lib";
 
 import {
-  buildPrePeginPsbt,
+  fundPeginTransaction,
+  parseUnfundedWasmTransaction,
+} from "../../../utils/transaction/fundPeginTransaction";
+import {
   buildPeginTxFromFundedPrePegin,
+  buildPrePeginPsbt,
   type PrePeginParams,
 } from "../pegin";
-import { fundPeginTransaction } from "../../../utils/transaction/fundPeginTransaction";
 import { TEST_AMOUNTS, TEST_KEYS, initializeWasmForTests } from "./helpers";
 
 // Deterministic SHA256 hash commitment (64 hex chars = 32 bytes)
@@ -23,7 +26,9 @@ const TEST_TIMELOCK_PEGIN = 100;
 const TEST_COUNCIL_QUORUM = 2;
 const TEST_COUNCIL_SIZE = 3;
 
-function makePrePeginParams(overrides?: Partial<PrePeginParams>): PrePeginParams {
+function makePrePeginParams(
+  overrides?: Partial<PrePeginParams>,
+): PrePeginParams {
   return {
     depositorPubkey: TEST_KEYS.DEPOSITOR,
     vaultProviderPubkey: TEST_KEYS.VAULT_PROVIDER,
@@ -102,7 +107,9 @@ describe("buildPrePeginPsbt", () => {
       ];
 
       for (const pegInAmount of amounts) {
-        const result = await buildPrePeginPsbt(makePrePeginParams({ pegInAmounts: [pegInAmount] }));
+        const result = await buildPrePeginPsbt(
+          makePrePeginParams({ pegInAmounts: [pegInAmount] }),
+        );
 
         expect(result.peginAmounts[0]).toBe(pegInAmount);
         expect(result.htlcValues[0]).toBeGreaterThanOrEqual(pegInAmount);
@@ -112,7 +119,10 @@ describe("buildPrePeginPsbt", () => {
     it("should handle multiple vault keepers", async () => {
       const result = await buildPrePeginPsbt(
         makePrePeginParams({
-          vaultKeeperPubkeys: [TEST_KEYS.VAULT_KEEPER_1, TEST_KEYS.VAULT_KEEPER_2],
+          vaultKeeperPubkeys: [
+            TEST_KEYS.VAULT_KEEPER_1,
+            TEST_KEYS.VAULT_KEEPER_2,
+          ],
           numLocalChallengers: 2,
         }),
       );
@@ -156,7 +166,9 @@ describe("buildPrePeginPsbt", () => {
       );
 
       expect(result1.psbtHex).not.toBe(result2.psbtHex);
-      expect(result1.htlcScriptPubKeys[0]).not.toBe(result2.htlcScriptPubKeys[0]);
+      expect(result1.htlcScriptPubKeys[0]).not.toBe(
+        result2.htlcScriptPubKeys[0],
+      );
       expect(result1.htlcAddresses[0]).not.toBe(result2.htlcAddresses[0]);
     });
 
@@ -168,8 +180,77 @@ describe("buildPrePeginPsbt", () => {
         makePrePeginParams({ hashlocks: ["cd".repeat(32)] }),
       );
 
-      expect(result1.htlcScriptPubKeys[0]).not.toBe(result2.htlcScriptPubKeys[0]);
+      expect(result1.htlcScriptPubKeys[0]).not.toBe(
+        result2.htlcScriptPubKeys[0],
+      );
       expect(result1.htlcAddresses[0]).not.toBe(result2.htlcAddresses[0]);
+    });
+
+    // Load-bearing invariant for the planned two-pass Pre-PegIn ordering
+    // (sizing pass with placeholder hashlocks → UTXO selection → real
+    // hashlocks from `expandHashlockSecret` after `deriveVaultRoot`).
+    // Asserts the placeholder pass produces the same `htlcValues` and
+    // `totalOutputValue` as the real pass — i.e., values are determined
+    // by the economic parameters (peginAmount, depositorClaimValue,
+    // minPeginFee), independent of hashlock script bytes. The Rust side
+    // (btc-vault `prepegin.rs`) preserves this; pin it on the TS side
+    // so silent regressions can't slip in.
+    it("htlcValues + totalOutputValue are invariant under hashlock substitution", async () => {
+      const HASH_A = "ab".repeat(32);
+      const HASH_B = "cd".repeat(32);
+
+      const a = await buildPrePeginPsbt(
+        makePrePeginParams({ hashlocks: [HASH_A] }),
+      );
+      const b = await buildPrePeginPsbt(
+        makePrePeginParams({ hashlocks: [HASH_B] }),
+      );
+
+      // Values match across hashlock substitution.
+      expect(a.htlcValues).toEqual(b.htlcValues);
+      expect(a.totalOutputValue).toBe(b.totalOutputValue);
+      expect(a.peginAmounts).toEqual(b.peginAmounts);
+      expect(a.depositorClaimValue).toBe(b.depositorClaimValue);
+      // Scripts MUST differ — sanity check that we actually changed
+      // the hashlock and the test isn't a tautology.
+      expect(a.htlcScriptPubKeys).not.toEqual(b.htlcScriptPubKeys);
+    });
+
+    it("htlcValues invariance also holds across multi-vault batches", async () => {
+      const baseParams = makePrePeginParams();
+      const HASHES_A = [
+        "11".repeat(32),
+        "22".repeat(32),
+        "33".repeat(32),
+      ];
+      const HASHES_B = [
+        "44".repeat(32),
+        "55".repeat(32),
+        "66".repeat(32),
+      ];
+
+      const a = await buildPrePeginPsbt({
+        ...baseParams,
+        pegInAmounts: [
+          BigInt(100_000),
+          BigInt(200_000),
+          BigInt(300_000),
+        ],
+        hashlocks: HASHES_A,
+      });
+      const b = await buildPrePeginPsbt({
+        ...baseParams,
+        pegInAmounts: [
+          BigInt(100_000),
+          BigInt(200_000),
+          BigInt(300_000),
+        ],
+        hashlocks: HASHES_B,
+      });
+
+      expect(a.htlcValues).toEqual(b.htlcValues);
+      expect(a.totalOutputValue).toBe(b.totalOutputValue);
+      expect(a.htlcScriptPubKeys).not.toEqual(b.htlcScriptPubKeys);
     });
 
     it("should produce different output for different vault keepers", async () => {
@@ -180,14 +261,162 @@ describe("buildPrePeginPsbt", () => {
         makePrePeginParams({ vaultKeeperPubkeys: [TEST_KEYS.VAULT_KEEPER_2] }),
       );
 
-      expect(result1.htlcScriptPubKeys[0]).not.toBe(result2.htlcScriptPubKeys[0]);
+      expect(result1.htlcScriptPubKeys[0]).not.toBe(
+        result2.htlcScriptPubKeys[0],
+      );
+    });
+  });
+
+  // Tests the OP_RETURN auth-anchor commitment from btc-vault #1516.
+  // Requires WASM rebuilt against a commit ≥ 1ced81e5.
+  describe("authAnchorHash (OP_RETURN commitment)", () => {
+    const VALID_AUTH_ANCHOR_HASH = "ab".repeat(32);
+
+    it("returns authAnchorVout = null when no authAnchorHash is provided", async () => {
+      const result = await buildPrePeginPsbt(makePrePeginParams());
+      expect(result.authAnchorVout).toBeNull();
+    });
+
+    it("returns authAnchorVout = htlc count when authAnchorHash is provided", async () => {
+      const result = await buildPrePeginPsbt(
+        makePrePeginParams({ authAnchorHash: VALID_AUTH_ANCHOR_HASH }),
+      );
+      expect(result.authAnchorVout).toBe(result.htlcValues.length);
+    });
+
+    it("emits an OP_RETURN <PUSH32 hash> output at the reported vout", async () => {
+      const result = await buildPrePeginPsbt(
+        makePrePeginParams({ authAnchorHash: VALID_AUTH_ANCHOR_HASH }),
+      );
+      expect(result.authAnchorVout).not.toBeNull();
+
+      const parsed = parseUnfundedWasmTransaction(result.psbtHex);
+      const output = parsed.outputs[result.authAnchorVout as number];
+      // Value must be 0 (OP_RETURN outputs are zero-sat)
+      expect(output.value).toBe(0);
+      // scriptPubKey = OP_RETURN (0x6a) || OP_PUSHBYTES_32 (0x20) || 32B hash
+      const scriptHex = output.script.toString("hex");
+      expect(scriptHex).toBe(`6a20${VALID_AUTH_ANCHOR_HASH}`);
+    });
+
+    it("accepts a 0x-prefixed authAnchorHash and normalizes to lowercase", async () => {
+      const prefixed = "0x" + "CD".repeat(32);
+      const result = await buildPrePeginPsbt(
+        makePrePeginParams({ authAnchorHash: prefixed }),
+      );
+      const parsed = parseUnfundedWasmTransaction(result.psbtHex);
+      const output = parsed.outputs[result.authAnchorVout as number];
+      const scriptHex = output.script.toString("hex");
+      expect(scriptHex).toBe(`6a20${"cd".repeat(32)}`);
+    });
+
+    it("rejects authAnchorHash with wrong length", async () => {
+      await expect(
+        buildPrePeginPsbt(
+          makePrePeginParams({ authAnchorHash: "ab".repeat(31) }),
+        ),
+      ).rejects.toThrow(/authAnchorHash/);
+    });
+
+    it("rejects authAnchorHash with non-hex chars", async () => {
+      await expect(
+        buildPrePeginPsbt(
+          makePrePeginParams({ authAnchorHash: "zz".repeat(32) }),
+        ),
+      ).rejects.toThrow(/authAnchorHash/);
+    });
+
+    it("places OP_RETURN at vout = htlc count for multi-HTLC batches", async () => {
+      // 2 HTLCs → OP_RETURN at vout 2 (HTLCs at 0, 1; OP_RETURN at 2;
+      // CPFP anchor at 3).
+      const result = await buildPrePeginPsbt(
+        makePrePeginParams({
+          hashlocks: ["ab".repeat(32), "cd".repeat(32)],
+          pegInAmounts: [TEST_AMOUNTS.PEGIN, TEST_AMOUNTS.PEGIN],
+          authAnchorHash: VALID_AUTH_ANCHOR_HASH,
+        }),
+      );
+
+      expect(result.htlcValues.length).toBe(2);
+      expect(result.authAnchorVout).toBe(2);
+
+      const parsed = parseUnfundedWasmTransaction(result.psbtHex);
+      const output = parsed.outputs[2];
+      expect(output.value).toBe(0);
+      expect(output.script.toString("hex")).toBe(
+        `6a20${VALID_AUTH_ANCHOR_HASH}`,
+      );
+    });
+
+    it("does not change htlc scriptPubKeys when authAnchorHash is added", async () => {
+      // The HTLC outputs should be byte-identical whether or not the
+      // auth-anchor OP_RETURN is present — it's just an additional output.
+      const without = await buildPrePeginPsbt(makePrePeginParams());
+      const with_ = await buildPrePeginPsbt(
+        makePrePeginParams({ authAnchorHash: VALID_AUTH_ANCHOR_HASH }),
+      );
+      expect(with_.htlcScriptPubKeys).toEqual(without.htlcScriptPubKeys);
+      expect(with_.htlcValues).toEqual(without.htlcValues);
+    });
+
+    it("totalOutputValue and tx structure are invariant under hashlock content", async () => {
+      // The sizing pass uses 32-byte placeholder hashlocks because the
+      // wallet popup that produces real ones hasn't run yet. The commit
+      // pass swaps in real values. UTXO selection MUST be invariant
+      // under that swap — otherwise sizing's fee/changeAmount would be
+      // wrong for the funded broadcast tx and broadcast underfunding
+      // (or change misaccounting) becomes possible. Mirrors the
+      // auth-anchor invariance test below.
+      const placeholderHashlocks = ["00".repeat(32), "00".repeat(32)];
+      const realHashlocks = ["ab".repeat(32), "cd".repeat(32)];
+      const sized = await buildPrePeginPsbt(
+        makePrePeginParams({
+          hashlocks: placeholderHashlocks,
+          pegInAmounts: [50_000n, 60_000n],
+        }),
+      );
+      const committed = await buildPrePeginPsbt(
+        makePrePeginParams({
+          hashlocks: realHashlocks,
+          pegInAmounts: [50_000n, 60_000n],
+        }),
+      );
+      expect(committed.totalOutputValue).toBe(sized.totalOutputValue);
+      expect(committed.htlcValues).toEqual(sized.htlcValues);
+      // HTLC scriptPubKey is a tweaked taproot output key that depends
+      // on the hashlock — these legitimately differ between sized and
+      // committed. We don't assert equality on htlcScriptPubKeys here.
+    });
+
+    it("totalOutputValue and fee sizing are invariant under authAnchorHash content", async () => {
+      // The sizing pass uses a 32-byte placeholder for `authAnchorHash`
+      // because the wallet popup that produces the real anchor hasn't
+      // run yet. The commit pass swaps in the real hash. UTXO selection
+      // and fee computation MUST be identical between the two so the
+      // funding outpoints used to derive the vault root are the same as
+      // the ones funding the broadcast tx — otherwise the resume flow
+      // re-derives a different root and activation fails.
+      const placeholderHash = "00".repeat(32);
+      const realHash = VALID_AUTH_ANCHOR_HASH;
+      const sized = await buildPrePeginPsbt(
+        makePrePeginParams({ authAnchorHash: placeholderHash }),
+      );
+      const committed = await buildPrePeginPsbt(
+        makePrePeginParams({ authAnchorHash: realHash }),
+      );
+      expect(committed.totalOutputValue).toBe(sized.totalOutputValue);
+      expect(committed.htlcValues).toEqual(sized.htlcValues);
+      expect(committed.htlcScriptPubKeys).toEqual(sized.htlcScriptPubKeys);
+      expect(committed.authAnchorVout).toBe(sized.authAnchorVout);
     });
   });
 
   describe("Error handling", () => {
     it("should reject invalid depositor pubkey", async () => {
       await expect(
-        buildPrePeginPsbt(makePrePeginParams({ depositorPubkey: "invalid-pubkey" })),
+        buildPrePeginPsbt(
+          makePrePeginParams({ depositorPubkey: "invalid-pubkey" }),
+        ),
       ).rejects.toThrow();
     });
 
@@ -281,10 +510,13 @@ describe("buildPeginTxFromFundedPrePegin", () => {
     });
 
     it("should embed fundedPrePeginTxHex as the input reference", async () => {
-      const { txHex: txHex1, params: params1 } = await buildFundedPrePeginTxHex();
-      const { txHex: txHex2, params: params2 } = await buildFundedPrePeginTxHex({
-        hashlocks: ["cd".repeat(32)],
-      });
+      const { txHex: txHex1, params: params1 } =
+        await buildFundedPrePeginTxHex();
+      const { txHex: txHex2, params: params2 } = await buildFundedPrePeginTxHex(
+        {
+          hashlocks: ["cd".repeat(32)],
+        },
+      );
 
       const result1 = await buildPeginTxFromFundedPrePegin({
         prePeginParams: params1,
@@ -328,10 +560,13 @@ describe("buildPeginTxFromFundedPrePegin", () => {
     });
 
     it("should produce different vaultScriptPubKey for different depositors", async () => {
-      const { txHex: txHex1, params: params1 } = await buildFundedPrePeginTxHex();
-      const { txHex: txHex2, params: params2 } = await buildFundedPrePeginTxHex({
-        depositorPubkey: TEST_KEYS.VAULT_PROVIDER,
-      });
+      const { txHex: txHex1, params: params1 } =
+        await buildFundedPrePeginTxHex();
+      const { txHex: txHex2, params: params2 } = await buildFundedPrePeginTxHex(
+        {
+          depositorPubkey: TEST_KEYS.VAULT_PROVIDER,
+        },
+      );
 
       const result1 = await buildPeginTxFromFundedPrePegin({
         prePeginParams: params1,

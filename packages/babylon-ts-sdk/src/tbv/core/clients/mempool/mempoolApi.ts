@@ -7,10 +7,61 @@
  * @module clients/mempool/mempoolApi
  */
 
+import {
+  BITCOIN_ADDRESS_RE,
+  HEX_RE,
+  KNOWN_SCRIPT_PREFIXES,
+  TXID_RE,
+} from "../../utils/validation";
+
 import type { MempoolUTXO, NetworkFees, TxInfo, UtxoInfo } from "./types";
 
 /** Maximum valid satoshi value: 21 million BTC × 10^8 sats/BTC */
 const MAX_SATOSHIS = 21_000_000 * 1e8;
+
+/** Timeout for mempool API requests — prevents indefinite hangs from stalled endpoints */
+const MEMPOOL_REQUEST_TIMEOUT_MS = 30_000;
+
+/**
+ * Fetch wrapper with AbortController-based timeout.
+ * Ensures all mempool API requests fail bounded rather than hanging indefinitely.
+ */
+async function fetchWithTimeout(
+  url: string,
+  options?: RequestInit,
+): Promise<Response> {
+  const controller = new AbortController();
+  const timeoutId = setTimeout(
+    () => controller.abort(),
+    MEMPOOL_REQUEST_TIMEOUT_MS,
+  );
+
+  // Compose timeout signal with any caller-supplied signal so both can cancel
+  const signals = [controller.signal, options?.signal].filter(
+    Boolean,
+  ) as AbortSignal[];
+
+  try {
+    // Don't clear timeout here — let it cover body consumption by callers
+    return await fetch(url, {
+      ...options,
+      signal: AbortSignal.any(signals),
+    });
+  } catch (error) {
+    clearTimeout(timeoutId);
+    if (
+      error != null &&
+      typeof error === "object" &&
+      "name" in error &&
+      error.name === "AbortError"
+    ) {
+      throw new Error(
+        `Mempool API request timed out after ${MEMPOOL_REQUEST_TIMEOUT_MS}ms: ${url}`,
+      );
+    }
+    throw error;
+  }
+}
 
 /**
  * Maximum sane fee rate in sat/vByte.
@@ -31,6 +82,36 @@ function isValidVout(vout: number, outputCount?: number): boolean {
   return outputCount === undefined || vout < outputCount;
 }
 
+
+function assertValidTxid(txid: string): void {
+  if (!TXID_RE.test(txid)) {
+    throw new Error(`Invalid transaction ID format: ${txid}`);
+  }
+}
+
+function assertValidAddress(address: string): void {
+  if (!BITCOIN_ADDRESS_RE.test(address)) {
+    throw new Error(`Invalid Bitcoin address format: ${address}`);
+  }
+}
+
+function assertValidScriptPubKey(scriptPubKey: string, context: string): void {
+  if (!HEX_RE.test(scriptPubKey)) {
+    throw new Error(
+      `Invalid scriptPubKey: not valid hex for ${context}`,
+    );
+  }
+  const matchesKnownType = KNOWN_SCRIPT_PREFIXES.some((prefix) =>
+    scriptPubKey.toLowerCase().startsWith(prefix),
+  );
+  if (!matchesKnownType) {
+    throw new Error(
+      `Unrecognized scriptPubKey type for ${context}: ` +
+        `prefix ${scriptPubKey.slice(0, 6)} does not match any known Bitcoin script type`,
+    );
+  }
+}
+
 /**
  * Default mempool API URLs by network.
  */
@@ -48,7 +129,7 @@ async function fetchApi<T>(
   options?: RequestInit,
 ): Promise<T> {
   try {
-    const response = await fetch(url, options);
+    const response = await fetchWithTimeout(url, options);
 
     if (!response.ok) {
       const errorText = await response.text();
@@ -81,7 +162,7 @@ async function fetchApi<T>(
  */
 export async function pushTx(txHex: string, apiUrl: string): Promise<string> {
   try {
-    const response = await fetch(`${apiUrl}/tx`, {
+    const response = await fetchWithTimeout(`${apiUrl}/tx`, {
       method: "POST",
       body: txHex,
       headers: {
@@ -124,6 +205,7 @@ export async function pushTx(txHex: string, apiUrl: string): Promise<string> {
  * @returns Transaction information
  */
 export async function getTxInfo(txid: string, apiUrl: string): Promise<TxInfo> {
+  assertValidTxid(txid);
   return fetchApi<TxInfo>(`${apiUrl}/tx/${txid}`);
 }
 
@@ -136,8 +218,9 @@ export async function getTxInfo(txid: string, apiUrl: string): Promise<TxInfo> {
  * @throws Error if the request fails or transaction is not found
  */
 export async function getTxHex(txid: string, apiUrl: string): Promise<string> {
+  assertValidTxid(txid);
   try {
-    const response = await fetch(`${apiUrl}/tx/${txid}/hex`);
+    const response = await fetchWithTimeout(`${apiUrl}/tx/${txid}/hex`);
 
     if (!response.ok) {
       const errorText = await response.text();
@@ -171,6 +254,7 @@ export async function getUtxoInfo(
   vout: number,
   apiUrl: string,
 ): Promise<UtxoInfo> {
+  assertValidTxid(txid);
   const txInfo = await getTxInfo(txid, apiUrl);
 
   if (!isValidVout(vout, txInfo.vout.length)) {
@@ -183,6 +267,7 @@ export async function getUtxoInfo(
   if (!isValidSatoshiValue(output.value)) {
     throw new Error(`Invalid UTXO value ${output.value} for ${txid}:${vout}`);
   }
+  assertValidScriptPubKey(output.scriptpubkey, `${txid}:${vout}`);
 
   return {
     txid,
@@ -203,6 +288,7 @@ export async function getAddressUtxos(
   address: string,
   apiUrl: string,
 ): Promise<MempoolUTXO[]> {
+  assertValidAddress(address);
   try {
     // Fetch UTXOs for the address
     const utxos = await fetchApi<
@@ -227,11 +313,16 @@ export async function getAddressUtxos(
         `Invalid Bitcoin address: ${address}. Mempool API validation failed.`,
       );
     }
+    assertValidScriptPubKey(addressInfo.scriptPubKey, address);
 
-    // Validate UTXO fields from the external API.
-    // Note: upper-bound vout check is omitted because we don't fetch
-    // full transactions here. Out-of-range indices surface downstream.
+    // Validate UTXO fields from the listing endpoint.
+    // Per-UTXO cross-verification against /tx/{txid} is intentionally NOT done
+    // here — it would be expensive (N API calls) and redundant: the broadcast
+    // path already verifies each selected input via getUtxoInfo before signing.
+    // Both endpoints come from the same mempool API, so cross-checking one
+    // against the other on the same server does not add real security.
     for (const utxo of utxos) {
+      assertValidTxid(utxo.txid);
       if (!isValidVout(utxo.vout)) {
         throw new Error(`Invalid vout ${utxo.vout} for ${utxo.txid}`);
       }
@@ -301,6 +392,7 @@ export async function getAddressTxs(
   address: string,
   apiUrl: string,
 ): Promise<AddressTx[]> {
+  assertValidAddress(address);
   return fetchApi<AddressTx[]>(`${apiUrl}/address/${address}/txs`);
 }
 
@@ -314,7 +406,7 @@ export async function getAddressTxs(
  * @see https://mempool.space/docs/api/rest#get-recommended-fees
  */
 export async function getNetworkFees(apiUrl: string): Promise<NetworkFees> {
-  const response = await fetch(`${apiUrl}/v1/fees/recommended`);
+  const response = await fetchWithTimeout(`${apiUrl}/v1/fees/recommended`);
 
   if (!response.ok) {
     throw new Error(

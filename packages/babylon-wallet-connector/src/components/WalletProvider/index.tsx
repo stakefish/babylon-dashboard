@@ -53,6 +53,7 @@ interface WalletProviderProps {
    * instead of all three checkboxes (inscriptions, hardware wallet warnings)
    */
   simplifiedTerms?: boolean;
+  disableTomo?: boolean;
 }
 
 export function WalletProvider({
@@ -68,6 +69,7 @@ export function WalletProvider({
   requiredChains,
   appKitConfig,
   simplifiedTerms = false,
+  disableTomo = false,
 }: PropsWithChildren<WalletProviderProps>) {
   const networkMap = useMemo(() => deriveNetworkMap(config), [config]);
   const storage = useMemo(() => createAccountStorage(ttl, networkMap), [ttl, networkMap]);
@@ -84,7 +86,7 @@ export function WalletProvider({
       // Config may have eth and/or btc properties
       initializeAppKitModal(appKitConfig);
     } catch (error) {
-      console.error("Failed to initialize AppKit modal:", error);
+      console.error("Failed to initialize AppKit modal:", error instanceof Error ? error.message : "Unknown error");
     }
   }, [appKitConfig]);
 
@@ -93,24 +95,36 @@ export function WalletProvider({
   // This hook gracefully handles cases where AppKit is not initialized
   useAppKitOpenListener();
 
+  const tree = (
+    <LifeCycleHooksProvider value={lifecycleHooks}>
+      <ChainProvider
+        persistent={persistent}
+        storage={storage}
+        context={context}
+        config={config}
+        onError={onError}
+        disabledWallets={disabledWallets}
+        requiredChains={requiredChains}
+      >
+        {children}
+        {!disableTomo && (
+          <>
+            <TomoBTCConnector persistent={persistent} storage={storage} />
+            <TomoBBNConnector persistent={persistent} storage={storage} />
+          </>
+        )}
+        <WalletDialog persistent={persistent} storage={storage} config={config} onError={onError} simplifiedTerms={simplifiedTerms} />
+      </ChainProvider>
+    </LifeCycleHooksProvider>
+  );
+
+  if (disableTomo) {
+    return tree;
+  }
+
   return (
     <TomoConnectionProvider theme={theme} config={config}>
-      <LifeCycleHooksProvider value={lifecycleHooks}>
-        <ChainProvider
-          persistent={persistent}
-          storage={storage}
-          context={context}
-          config={config}
-          onError={onError}
-          disabledWallets={disabledWallets}
-          requiredChains={requiredChains}
-        >
-          {children}
-          <TomoBTCConnector persistent={persistent} storage={storage} />
-          <TomoBBNConnector persistent={persistent} storage={storage} />
-          <WalletDialog persistent={persistent} storage={storage} config={config} onError={onError} simplifiedTerms={simplifiedTerms} />
-        </ChainProvider>
-      </LifeCycleHooksProvider>
+      {tree}
     </TomoConnectionProvider>
   );
 }

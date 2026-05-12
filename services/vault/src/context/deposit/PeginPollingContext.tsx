@@ -20,7 +20,6 @@ import {
 } from "react";
 
 import { usePeginPollingQuery } from "../../hooks/deposit/usePeginPollingQuery";
-import { useUTXOs } from "../../hooks/useUTXOs";
 import {
   ContractStatus,
   getPeginState,
@@ -31,45 +30,37 @@ import type {
   PeginPollingContextValue,
   PeginPollingProviderProps,
 } from "../../types/peginPolling";
-import { stripHexPrefix } from "../../utils/btc";
-import { areTransactionsReady } from "../../utils/peginPolling";
+import { isTerminalPollingError } from "../../utils/peginPolling";
 import { isVaultOwnedByWallet } from "../../utils/vaultWarnings";
 
 /**
  * Resolve the effective local status for a deposit, accounting for
- * optimistic UI updates and auto-detection of broadcast state.
+ * optimistic UI updates.
  */
 function resolveLocalStatus(
   depositId: string,
-  contractStatus: ContractStatus,
   optimisticStatuses: Map<string, LocalStorageStatus>,
   pendingPegins: Array<{ id: string; status?: string }>,
-  hasUtxoData: boolean,
-  broadcastedTxIds: Set<string>,
 ): LocalStorageStatus | undefined {
   const pendingPegin = pendingPegins.find((p) => p.id === depositId);
   const optimistic = optimisticStatuses.get(depositId);
-  let localStatus = (optimistic ?? pendingPegin?.status) as
-    | LocalStorageStatus
-    | undefined;
+  return (optimistic ?? pendingPegin?.status) as LocalStorageStatus | undefined;
+}
 
-  // Auto-detect CONFIRMING state from blockchain data.
-  // If contract is VERIFIED and the tx is already broadcast to Bitcoin,
-  // treat as CONFIRMING even if localStorage doesn't have this status.
-  // Skip if already CONFIRMING or CONFIRMED (post-activation) to avoid regression.
-  if (
-    hasUtxoData &&
-    contractStatus === ContractStatus.VERIFIED &&
-    localStatus !== LocalStorageStatus.CONFIRMING &&
-    localStatus !== LocalStorageStatus.CONFIRMED
-  ) {
-    const txid = stripHexPrefix(depositId).toLowerCase();
-    if (broadcastedTxIds.has(txid)) {
-      localStatus = LocalStorageStatus.CONFIRMING;
-    }
-  }
-
-  return localStatus;
+/**
+ * Resolve the broadcast timestamp anchoring the REFUND_BROADCAST suppression
+ * TTL. Falls back to the optimistic timestamp set right after broadcast (when
+ * localStorage has not yet been read back into `pendingPegins`).
+ */
+function resolveRefundBroadcastAt(
+  depositId: string,
+  optimisticRefundBroadcastAt: Map<string, number>,
+  pendingPegins: Array<{ id: string; refundBroadcastAt?: number }>,
+): number | undefined {
+  return (
+    optimisticRefundBroadcastAt.get(depositId) ??
+    pendingPegins.find((p) => p.id === depositId)?.refundBroadcastAt
+  );
 }
 
 const PeginPollingContext = createContext<PeginPollingContextValue | null>(
@@ -87,20 +78,22 @@ export function PeginPollingProvider({
   activities,
   pendingPegins,
   btcPublicKey,
-  btcAddress,
 }: PeginPollingProviderProps) {
   // Optimistic status overrides (for immediate UI feedback after signing)
   const [optimisticStatuses, setOptimisticStatuses] = useState<
     Map<string, LocalStorageStatus>
   >(new Map());
+  // Companion timestamp for REFUND_BROADCAST so the suppression TTL is honored
+  // immediately, before localStorage is read back.
+  const [optimisticRefundBroadcastAt, setOptimisticRefundBroadcastAt] =
+    useState<Map<string, number>>(new Map());
 
   // Use the polling query hook
   const {
-    data,
-    depositorGraphs,
     errors,
     needsWotsKey,
     pendingIngestion,
+    pendingDepositorSignatures,
     isLoading,
     refetch,
   } = usePeginPollingQuery({
@@ -109,30 +102,36 @@ export function PeginPollingProvider({
     btcPublicKey,
   });
 
-  // Fetch recent transactions using React Query (cached with 30s staleTime)
-  // broadcastedTxIds is used by resolveLocalStatus to auto-detect CONFIRMING state
-  const {
-    broadcastedTxIds,
-    isLoading: isLoadingUtxos,
-    error: utxoError,
-  } = useUTXOs(btcAddress);
-
-  const hasUtxoData = !!btcAddress && !isLoadingUtxos && !utxoError;
-
   // Optimistic status handlers
   const setOptimisticStatus = useCallback(
-    (depositId: string, newStatus: LocalStorageStatus) => {
+    (
+      depositId: string,
+      newStatus: LocalStorageStatus,
+      refundBroadcastAt?: number,
+    ) => {
       setOptimisticStatuses((prev) => {
         const next = new Map(prev);
         next.set(depositId, newStatus);
         return next;
       });
+      if (refundBroadcastAt !== undefined) {
+        setOptimisticRefundBroadcastAt((prev) => {
+          const next = new Map(prev);
+          next.set(depositId, refundBroadcastAt);
+          return next;
+        });
+      }
     },
     [],
   );
 
   const clearOptimisticStatus = useCallback((depositId: string) => {
     setOptimisticStatuses((prev) => {
+      const next = new Map(prev);
+      next.delete(depositId);
+      return next;
+    });
+    setOptimisticRefundBroadcastAt((prev) => {
       const next = new Map(prev);
       next.delete(depositId);
       return next;
@@ -148,32 +147,42 @@ export function PeginPollingProvider({
       const contractStatus = (activity.contractStatus ?? 0) as ContractStatus;
       const localStatus = resolveLocalStatus(
         depositId,
-        contractStatus,
         optimisticStatuses,
         pendingPegins,
-        hasUtxoData,
-        broadcastedTxIds,
+      );
+      const refundBroadcastAt = resolveRefundBroadcastAt(
+        depositId,
+        optimisticRefundBroadcastAt,
+        pendingPegins,
       );
 
-      const transactions = data?.get(depositId) ?? null;
-      const isReady = transactions ? areTransactionsReady(transactions) : false;
+      const depositError = errors?.get(depositId);
+      const vpTerminalError =
+        depositError && isTerminalPollingError(depositError)
+          ? depositError.message
+          : undefined;
+
+      const justSignedPayoutsThisSession =
+        optimisticStatuses.get(depositId) === LocalStorageStatus.PAYOUT_SIGNED;
+      const transactionsReady = justSignedPayoutsThisSession
+        ? false
+        : (pendingDepositorSignatures?.has(depositId) ?? false);
 
       const peginState = getPeginState(contractStatus, {
         localStatus,
-        transactionsReady: isReady,
+        transactionsReady,
         isInUse: activity.isInUse,
         needsWotsKey: needsWotsKey?.has(depositId),
         pendingIngestion: pendingIngestion?.has(depositId),
         expirationReason: activity.expirationReason,
         expiredAt: activity.expiredAt,
         canRefund: !!activity.unsignedPrePeginTx,
+        vpTerminalError,
+        refundBroadcastAt,
       });
 
       return {
         depositId,
-        transactions,
-        depositorGraph: depositorGraphs?.get(depositId) ?? null,
-        isReady,
         loading: isLoading,
         error: errors?.get(depositId) ?? null,
         peginState,
@@ -186,16 +195,14 @@ export function PeginPollingProvider({
     [
       activities,
       pendingPegins,
-      data,
-      depositorGraphs,
+      pendingDepositorSignatures,
       errors,
       needsWotsKey,
       pendingIngestion,
       isLoading,
       optimisticStatuses,
+      optimisticRefundBroadcastAt,
       btcPublicKey,
-      hasUtxoData,
-      broadcastedTxIds,
     ],
   );
 

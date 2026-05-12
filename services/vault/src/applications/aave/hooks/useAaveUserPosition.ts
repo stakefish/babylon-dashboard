@@ -7,7 +7,6 @@
 
 import { useQuery } from "@tanstack/react-query";
 import { useEffect, useMemo, useRef, useState } from "react";
-import type { Address } from "viem";
 
 import { satoshiToBtcNumber } from "@/utils/btcConversion";
 
@@ -21,6 +20,7 @@ import {
   type AavePositionWithLiveData,
 } from "../services";
 import {
+  aaveRayValueToUsd,
   aaveValueToUsd,
   getHealthFactorStatus,
   wadToNumber,
@@ -62,8 +62,8 @@ export interface UseAaveUserPositionResult {
   isLoading: boolean;
   /** Error state */
   error: Error | null;
-  /** Refetch function */
-  refetch: () => Promise<void>;
+  /** Refetch function — returns fresh position data (or null if unavailable) */
+  refetch: () => Promise<AavePositionWithLiveData | null>;
 }
 
 /**
@@ -78,18 +78,16 @@ export interface UseAaveUserPositionResult {
 export function useAaveUserPosition(
   connectedAddress: string | undefined,
 ): UseAaveUserPositionResult {
-  const {
-    config,
-    borrowableReserves,
-    isLoading: configLoading,
-  } = useAaveConfig();
-  const spokeAddress = config?.btcVaultCoreSpokeAddress as Address | undefined;
+  const { config, allBorrowReserves } = useAaveConfig();
+  const spokeAddress = config?.coreSpokeAddress;
   const vbtcReserveId = config?.btcVaultCoreVbtcReserveId;
 
-  // Extract reserve IDs for fetching debt positions
+  // Query debt positions across all non-vBTC reserves, not just currently
+  // borrowable ones. A user may carry debt in a reserve that has since been
+  // frozen/paused/un-borrowable, and that debt must still surface here.
   const borrowableReserveIds = useMemo(
-    () => borrowableReserves.map((r) => r.reserveId),
-    [borrowableReserves],
+    () => allBorrowReserves.map((r) => r.reserveId),
+    [allBorrowReserves],
   );
 
   // Convert BigInt to string for React Query key serialization
@@ -175,9 +173,9 @@ export function useAaveUserPosition(
       return {
         collateralBtc: satoshiToBtcNumber(totalCollateral),
         collateralValueUsd: aaveValueToUsd(accountData.totalCollateralValue),
-        debtValueUsd: aaveValueToUsd(accountData.totalDebtValue),
+        debtValueUsd: aaveRayValueToUsd(accountData.totalDebtValueRay),
         healthFactor:
-          accountData.borrowedCount > 0n
+          accountData.borrowCount > 0n
             ? wadToNumber(accountData.healthFactor)
             : null,
       };
@@ -196,8 +194,14 @@ export function useAaveUserPosition(
     healthFactor,
     healthFactorStatus,
     isPositionDataStale,
-    isLoading: positionsLoading || configLoading,
+    isLoading: positionsLoading,
     error: positionsError as Error | null,
-    refetch: async () => void refetch(),
+    refetch: async () => {
+      const result = await refetch();
+      if (result.isError) {
+        throw result.error ?? new Error("Failed to refetch position data");
+      }
+      return result.data?.[0] ?? null;
+    },
   };
 }

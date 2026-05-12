@@ -3,7 +3,7 @@ import { describe, expect, it } from "vitest";
 import type { AavePositionCollateral } from "@/applications/aave/services/fetchPositions";
 import type { VaultProvider } from "@/types/vaultProvider";
 
-import { toCollateralVaultEntries } from "../collateral";
+import { computeMaxBorrowUsd, toCollateralVaultEntries } from "../collateral";
 
 function makeCollateral(
   overrides: Partial<AavePositionCollateral> = {},
@@ -23,6 +23,7 @@ function makeCollateral(
       vaultProvider: "0xprovider1",
       inUse: true,
       depositorBtcPubKey: "0xbtcpubkey1",
+      depositorPayoutBtcAddress: "0xpayout1",
     },
     ...overrides,
   };
@@ -46,6 +47,7 @@ describe("Collateral Utilities", () => {
           providerName: "0xprov...der1",
           providerIconUrl: undefined,
           depositorBtcPubkey: "0xbtcpubkey1",
+          depositorPayoutBtcAddress: "0xpayout1",
           liquidationIndex: 0,
         },
       ]);
@@ -76,6 +78,7 @@ describe("Collateral Utilities", () => {
             vaultProvider: "0xprovider1",
             inUse: false,
             depositorBtcPubKey: "0xbtcpubkey1",
+            depositorPayoutBtcAddress: "0xpayout1",
           },
         }),
       ];
@@ -95,6 +98,7 @@ describe("Collateral Utilities", () => {
             vaultProvider: "0xprovider1",
             inUse: false,
             depositorBtcPubKey: "0xbtcpubkey1",
+            depositorPayoutBtcAddress: "0xpayout1",
           },
         }),
       ];
@@ -114,6 +118,7 @@ describe("Collateral Utilities", () => {
         providerName: "",
         providerIconUrl: undefined,
         depositorBtcPubkey: undefined,
+        depositorPayoutBtcAddress: undefined,
       });
     });
 
@@ -125,6 +130,7 @@ describe("Collateral Utilities", () => {
         url: "https://provider.test",
         name: "Babylon Provider",
         iconUrl: "https://example.com/icon.png",
+        metadataStatus: "ok",
       };
       const findProvider = (address: string) =>
         address === "0xprovider1" ? mockProvider : undefined;
@@ -156,6 +162,35 @@ describe("Collateral Utilities", () => {
       const result = toCollateralVaultEntries(collaterals);
 
       expect(result[0].amountBtc).toBe(0.5);
+    });
+  });
+
+  describe("computeMaxBorrowUsd", () => {
+    it("returns the product of amount, price, and CF", () => {
+      expect(computeMaxBorrowUsd("1", 88400, 0.72)).toBeCloseTo(63648);
+      expect(computeMaxBorrowUsd("0.5", 100000, 0.5)).toBe(25000);
+    });
+
+    it("returns null when collateralFactor is null", () => {
+      expect(computeMaxBorrowUsd("1", 88400, null)).toBeNull();
+    });
+
+    it("returns null when btcPrice is missing or non-positive", () => {
+      expect(computeMaxBorrowUsd("1", 0, 0.72)).toBeNull();
+      expect(computeMaxBorrowUsd("1", -1, 0.72)).toBeNull();
+      expect(computeMaxBorrowUsd("1", Number.NaN, 0.72)).toBeNull();
+    });
+
+    it("returns null when collateralFactor is non-positive or non-finite", () => {
+      expect(computeMaxBorrowUsd("1", 88400, 0)).toBeNull();
+      expect(computeMaxBorrowUsd("1", 88400, -0.1)).toBeNull();
+      expect(computeMaxBorrowUsd("1", 88400, Number.NaN)).toBeNull();
+    });
+
+    it("returns null for empty / non-numeric / zero amount strings", () => {
+      expect(computeMaxBorrowUsd("", 88400, 0.72)).toBeNull();
+      expect(computeMaxBorrowUsd("0", 88400, 0.72)).toBeNull();
+      expect(computeMaxBorrowUsd("abc", 88400, 0.72)).toBeNull();
     });
   });
 });

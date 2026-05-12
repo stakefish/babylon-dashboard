@@ -2,8 +2,13 @@
  * Custom hook for vault actions (broadcast, activation)
  */
 
-import { getETHChain } from "@babylonlabs-io/config";
 import { ensureHexPrefix } from "@babylonlabs-io/ts-sdk/tbv/core";
+import { vpTokenRegistry } from "@babylonlabs-io/ts-sdk/tbv/core/clients";
+import { validateSecretAgainstHashlock } from "@babylonlabs-io/ts-sdk/tbv/core/services";
+import {
+  calculateBtcTxHash,
+  UtxoNotAvailableError,
+} from "@babylonlabs-io/ts-sdk/tbv/core/utils";
 import {
   getSharedWagmiConfig,
   useChainConnector,
@@ -12,7 +17,13 @@ import { useState } from "react";
 import type { Hex } from "viem";
 import { getWalletClient, switchChain } from "wagmi/actions";
 
+import { getETHChain } from "@/config/network";
+
+import { getVaultFromChain } from "../../clients/eth-contract/btc-vault-registry/query";
+import { getVaultRegistryReader } from "../../clients/eth-contract/sdk-readers";
+import { useProtocolParamsContext } from "../../context/ProtocolParamsContext";
 import {
+  ContractStatus,
   getNextLocalStatus,
   PeginAction,
   type LocalStorageStatus,
@@ -21,19 +32,17 @@ import {
   assertUtxosAvailable,
   broadcastPrePeginTransaction,
   fetchVaultById,
-  UtxoNotAvailableError,
 } from "../../services/vault";
 import { activateVaultWithSecret } from "../../services/vault/vaultActivationService";
 import { utxosToExpectedRecord } from "../../services/vault/vaultPeginBroadcastService";
 import type { PendingPeginRequest } from "../../storage/peginStorage";
 import { stripHexPrefix } from "../../utils/btc";
-import { validateSecretAgainstHashlock } from "../../utils/htlcSecret";
 
 export interface BroadcastPrePeginParams {
-  activityId: Hex;
-  activityAmount: string;
-  activityProviders: Array<{ id: string }>;
-  activityApplicationEntryPoint?: string;
+  vaultId: Hex;
+  amount: string;
+  providers: Array<{ id: string }>;
+  applicationEntryPoint?: string;
   pendingPegin?: PendingPeginRequest;
   updatePendingPeginStatus?: (
     vaultId: string,
@@ -85,16 +94,17 @@ export function useVaultActions(): UseVaultActionsReturn {
 
   // Connectors
   const btcConnector = useChainConnector("BTC");
+  const { config } = useProtocolParamsContext();
 
   /**
    * Handle broadcasting BTC transaction
    */
   const handleBroadcast = async (params: BroadcastPrePeginParams) => {
     const {
-      activityId,
-      activityAmount,
-      activityProviders,
-      activityApplicationEntryPoint,
+      vaultId,
+      amount,
+      providers,
+      applicationEntryPoint,
       pendingPegin,
       updatePendingPeginStatus,
       addPendingPegin,
@@ -107,17 +117,22 @@ export function useVaultActions(): UseVaultActionsReturn {
 
     try {
       // Fetch vault data from GraphQL
-      const vault = await fetchVaultById(activityId);
+      const vault = await fetchVaultById(vaultId);
 
       if (!vault) {
         throw new Error("Vault not found. Please try again.");
       }
 
+      if (vault.status !== ContractStatus.PENDING) {
+        throw new Error(
+          `Cannot broadcast: vault is in ${ContractStatus[vault.status]} state. Broadcast is only valid during PENDING.`,
+        );
+      }
+
       const graphqlUnsignedTxHex = vault.unsignedPrePeginTx;
 
-      // Use the locally stored transaction as the source of truth when available.
-      // The local copy was saved before ETH submission and is trustworthy.
-      // A mismatch means the indexer is returning a different transaction — abort.
+      // Prefer the locally stored transaction when available, while keeping the
+      // indexer comparison as a sanity check for drift or substitution.
       const localUnsignedTxHex = pendingPegin?.unsignedTxHex;
       if (
         localUnsignedTxHex &&
@@ -128,7 +143,41 @@ export function useVaultActions(): UseVaultActionsReturn {
           "Transaction mismatch: the indexer returned a transaction that differs from the locally stored copy. Aborting to prevent a potential attack.",
         );
       }
+
       const unsignedTxHex = localUnsignedTxHex || graphqlUnsignedTxHex;
+
+      // Fetch on-chain vault for both the transaction integrity check and
+      // the offchain-params version check. Same TOCTOU concern as the
+      // same-device deposit flow: a tx whose BTC scripts were built under
+      // version v(N) must not be broadcast against an on-chain vault locked
+      // under v(N+1), or the scripts (timelocks, council quorum, signer set)
+      // will not match the on-chain record.
+      const onChainVault = await getVaultFromChain(vaultId);
+
+      // Validate the selected transaction against the on-chain prePeginTxHash.
+      // The tx hash commits to all inputs AND outputs, so a substituted
+      // transaction would produce a different hash.
+      const computedHash = calculateBtcTxHash(unsignedTxHex);
+      if (
+        computedHash.toLowerCase() !== onChainVault.prePeginTxHash.toLowerCase()
+      ) {
+        throw new Error(
+          "Transaction integrity check failed: the Pre-PegIn transaction " +
+            "does not match the hash stored on-chain. Aborting to prevent a potential attack.",
+        );
+      }
+
+      // Verify the local environment's offchain params version matches the
+      // version the on-chain vault was registered under. A mismatch indicates
+      // governance updated the version between build and registration (or
+      // since), so the BTC scripts encoded in the tx may not reflect the
+      // on-chain locked parameters. Aborting keeps BTC unspent; the user can
+      // refresh and retry once the environment is consistent.
+      if (onChainVault.offchainParamsVersion !== config.offchainParamsVersion) {
+        throw new Error(
+          `Aborting BTC broadcast: offchain params version mismatch (on-chain v${onChainVault.offchainParamsVersion}, local v${config.offchainParamsVersion}). Refresh and retry once the environment matches the on-chain vault version.`,
+        );
+      }
 
       // Get BTC wallet provider
       const btcWalletProvider = btcConnector?.connectedWallet?.provider;
@@ -150,8 +199,9 @@ export function useVaultActions(): UseVaultActionsReturn {
       // Get depositor's BTC address for UTXO validation
       const depositorAddress = await btcWalletProvider.getAddress();
 
-      // Validate UTXOs are still available BEFORE asking user to sign
+      // Validate UTXOs are still available BEFORE asking user to sign.
       // This prevents wasted signing effort if UTXOs have been spent
+      // by unrelated transactions.
       await assertUtxosAvailable(unsignedTxHex, depositorAddress);
 
       // Use trusted UTXO data from localStorage when available (stored at
@@ -177,14 +227,14 @@ export function useVaultActions(): UseVaultActionsReturn {
 
       if (pendingPegin && updatePendingPeginStatus && nextStatus) {
         // Case 1: localStorage entry EXISTS - update status
-        updatePendingPeginStatus(activityId, nextStatus);
+        updatePendingPeginStatus(vaultId, nextStatus);
       } else if (addPendingPegin && nextStatus) {
         // Case 2: NO localStorage entry (cross-device) - create one with status
         addPendingPegin({
-          id: activityId,
-          amount: activityAmount,
-          providerIds: activityProviders.map((p) => p.id),
-          applicationEntryPoint: activityApplicationEntryPoint,
+          id: vaultId,
+          amount,
+          providerIds: providers.map((p) => p.id),
+          applicationEntryPoint,
           peginTxHash: vault.peginTxHash,
           depositorBtcPubkey: vault.depositorBtcPubkey,
           unsignedTxHex: vault.unsignedPrePeginTx,
@@ -232,21 +282,28 @@ export function useVaultActions(): UseVaultActionsReturn {
     setActivationError(null);
 
     try {
-      // Fetch vault to get hashlock for client-side validation
-      const vault = await fetchVaultById(vaultId);
-      if (!vault) {
-        throw new Error("Vault not found. Please try again.");
+      // Hashlock from on-chain — indexer is untrusted for signing-critical reads.
+      const reader = getVaultRegistryReader();
+      const protocolInfo = await reader.getVaultProtocolInfo(vaultId);
+      if (
+        !protocolInfo.depositorSignedPeginTx ||
+        protocolInfo.depositorSignedPeginTx === "0x"
+      ) {
+        throw new Error(
+          `Vault ${vaultId} not found on-chain or has no pegin transaction`,
+        );
       }
-      if (!vault.hashlock) {
+      if (!protocolInfo.hashlock || protocolInfo.hashlock === "0x") {
         throw new Error(
           "Vault hashlock not found. The vault may not support activation.",
         );
       }
 
-      // Validate secret against hashlock before sending ETH tx
-      const isValid = await validateSecretAgainstHashlock(
-        secretHex,
-        vault.hashlock,
+      // Validate secret against hashlock before sending ETH tx.
+      // SDK version is sync + requires 0x-prefixed inputs.
+      const isValid = validateSecretAgainstHashlock(
+        ensureHexPrefix(secretHex),
+        ensureHexPrefix(protocolInfo.hashlock),
       );
       if (!isValid) {
         throw new Error(
@@ -269,6 +326,15 @@ export function useVaultActions(): UseVaultActionsReturn {
         walletClient,
       });
 
+      // Cross-device resume has no `pendingPegin`; fall back to the
+      // contract-authoritative signed pegin tx so the entry doesn't leak.
+      const peginTxidForRelease = pendingPegin?.peginTxHash
+        ? stripHexPrefix(pendingPegin.peginTxHash)
+        : stripHexPrefix(
+            calculateBtcTxHash(protocolInfo.depositorSignedPeginTx),
+          );
+      vpTokenRegistry.release(peginTxidForRelease);
+
       // Update localStorage status
       const nextStatus = getNextLocalStatus(PeginAction.ACTIVATE_VAULT);
       if (pendingPegin && updatePendingPeginStatus && nextStatus) {
@@ -281,8 +347,13 @@ export function useVaultActions(): UseVaultActionsReturn {
 
       setActivating(false);
     } catch (err) {
-      const errorMessage =
+      const rawMessage =
         err instanceof Error ? err.message : "Failed to activate vault";
+      // Normalize the on-chain "vault not found" message so we don't leak
+      // implementation detail like the raw vault id into the UI.
+      const errorMessage = rawMessage.includes("not found on-chain")
+        ? "Vault not found. The vault ID may be invalid."
+        : rawMessage;
       setActivationError(errorMessage);
       setActivating(false);
     }

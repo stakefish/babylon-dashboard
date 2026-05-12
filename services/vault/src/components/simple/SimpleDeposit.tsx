@@ -1,36 +1,28 @@
 import { FullScreenDialog, Heading } from "@babylonlabs-io/core-ui";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef } from "react";
 import type { Hex } from "viem";
 
-import type { DepositorGraphTransactions } from "@/clients/vault-provider-rpc/types";
 import { FeatureFlags } from "@/config";
+import { useAddressScreening } from "@/context/addressScreening";
 import { useGeoFencing } from "@/context/geofencing";
 import { ProtocolParamsProvider } from "@/context/ProtocolParamsContext";
+import { useETHWallet } from "@/context/wallet";
 import { useDialogStep } from "@/hooks/deposit/useDialogStep";
+import { useProtocolFeeRows } from "@/hooks/useProtocolFeeRows";
 import { depositService } from "@/services/deposit";
 import type { VaultActivity } from "@/types/activity";
-import type { ClaimerTransactions } from "@/types/rpc";
 import type { VaultProvider } from "@/types/vaultProvider";
-import { generateSecretHex } from "@/utils/secretUtils";
 
-import {
-  DepositState,
-  DepositStep,
-  useDepositState,
-} from "../../context/deposit/DepositState";
+import { DepositState, DepositStep } from "../../context/deposit/DepositState";
 import { useDepositPageFlow } from "../../hooks/deposit/useDepositPageFlow";
 import { useDepositPageForm } from "../../hooks/deposit/useDepositPageForm";
-import { DepositSecretModal } from "../deposit/DepositSecretModal";
-import { MnemonicModal } from "../deposit/MnemonicModal";
 
 import { DepositForm } from "./DepositForm";
 import { DepositSignContent } from "./DepositSignContent";
-import { DepositSuccessContent } from "./DepositSuccessContent";
 import { FadeTransition } from "./FadeTransition";
 import {
   ResumeActivationContent,
   ResumeBroadcastContent,
-  ResumeRefundContent,
   ResumeSignContent,
   ResumeWotsContent,
 } from "./ResumeDepositContent";
@@ -42,6 +34,8 @@ import {
 type SimpleDepositBaseProps = {
   open: boolean;
   onClose: () => void;
+  /** Optional pre-filled BTC amount (e.g. from position notification suggestions) */
+  initialAmountBtc?: string;
 };
 
 type NewDepositProps = SimpleDepositBaseProps & {
@@ -51,8 +45,6 @@ type NewDepositProps = SimpleDepositBaseProps & {
 type ResumeSignProps = SimpleDepositBaseProps & {
   resumeMode: "sign_payouts";
   activity: VaultActivity;
-  transactions: ClaimerTransactions[] | null;
-  depositorGraph: DepositorGraphTransactions;
   btcPublicKey: string;
   depositorEthAddress: Hex;
   onResumeSuccess: () => void;
@@ -79,26 +71,28 @@ type ResumeActivationProps = SimpleDepositBaseProps & {
   onResumeSuccess: () => void;
 };
 
-type ResumeRefundProps = SimpleDepositBaseProps & {
-  resumeMode: "refund_htlc";
-  activity: VaultActivity;
-  onResumeSuccess: () => void;
-};
-
 export type SimpleDepositProps =
   | NewDepositProps
   | ResumeSignProps
   | ResumeBroadcastProps
   | ResumeWotsProps
-  | ResumeActivationProps
-  | ResumeRefundProps;
+  | ResumeActivationProps;
 
 // ---------------------------------------------------------------------------
 // New deposit flow content (form → sign → success)
 // ---------------------------------------------------------------------------
 
-function SimpleDepositContent({ open, onClose }: SimpleDepositBaseProps) {
+function SimpleDepositContent({
+  open,
+  onClose,
+  initialAmountBtc,
+}: SimpleDepositBaseProps) {
   const { isGeoBlocked, isLoading: isGeoLoading } = useGeoFencing();
+  const { isBlocked: isAddressBlocked, isLoading: isScreeningLoading } =
+    useAddressScreening();
+  const { address: connectedEthAddress } = useETHWallet();
+  const { rows: feeRows, collateralFactor } =
+    useProtocolFeeRows(connectedEthAddress);
 
   const {
     formData,
@@ -126,6 +120,8 @@ function SimpleDepositContent({ open, onClose }: SimpleDepositBaseProps) {
     isSplitLoading,
     splitRatioLabel,
     depositorClaimValue,
+    ordinalsCheckUnavailable,
+    ordinalsCheckPending,
     validateForm,
   } = useDepositPageForm();
 
@@ -140,49 +136,34 @@ function SimpleDepositContent({ open, onClose }: SimpleDepositBaseProps) {
     selectedProviderBtcPubkey,
     vaultKeeperBtcPubkeys,
     universalChallengerBtcPubkeys,
-    hasExistingVaults,
     hasActiveVaults,
     isSplitDeposit,
     setIsSplitDeposit,
     splitVaultAmounts,
     setSplitVaultAmounts,
-    confirmMnemonic,
-    getMnemonic,
-    mnemonicId,
     resetDeposit,
     refetchActivities,
     goToStep,
     setDepositData,
     setFeeRate,
-    setTransactionHashes,
   } = useDepositPageFlow();
 
-  const { setSecretHashes, secretHashes } = useDepositState();
+  // Pre-fill amount when opening with a suggested amount from notifications
+  const hasPrefilled = useRef(false);
+  useEffect(() => {
+    if (open && initialAmountBtc && !hasPrefilled.current) {
+      hasPrefilled.current = true;
+      setFormData({ amountBtc: initialAmountBtc });
+    }
+    if (!open) {
+      hasPrefilled.current = false;
+    }
+  }, [open, initialAmountBtc, setFormData]);
 
-  // Per-vault secrets generated when the SECRET step is entered.
-  // Using a ref (not state) avoids re-renders and keeps sensitive data
-  // out of React DevTools.
-  const secretHexesRef = useRef<string[]>([]);
-  const [secretVaultIndex, setSecretVaultIndex] = useState(0);
-
-  const handleMnemonicComplete = useCallback(
-    (mnemonic?: string, mnemonicId?: string) => {
-      confirmMnemonic(mnemonic, mnemonicId);
-      // Always generate secrets — the pegin flow requires an HTLC preimage.
-      // The feature flag only controls whether the user sees the secret modal.
-      const vaultCount =
-        isSplitDeposit && splitVaultAmounts ? splitVaultAmounts.length : 1;
-      secretHexesRef.current = Array.from({ length: vaultCount }, () =>
-        generateSecretHex(),
-      );
-      setSecretVaultIndex(0);
-      goToStep(DepositStep.SECRET);
-    },
-    [confirmMnemonic, goToStep, isSplitDeposit, splitVaultAmounts],
-  );
-
+  const isSupplementalDeposit = !!initialAmountBtc;
   const allowSplit =
-    !hasActiveVaults || FeatureFlags.isForcePartialLiquidationSplit;
+    !isSupplementalDeposit &&
+    (!hasActiveVaults || FeatureFlags.isForcePartialLiquidationSplit);
 
   // Auto-enable split once when it first becomes available and allowed
   const hasAutoChecked = useRef(false);
@@ -204,8 +185,6 @@ function SimpleDepositContent({ open, onClose }: SimpleDepositBaseProps) {
       };
 
   const resetAll = useCallback(() => {
-    secretHexesRef.current = [];
-    setSecretVaultIndex(0);
     hasAutoChecked.current = false;
     setIsPartialLiquidation(false);
     resetDeposit();
@@ -232,17 +211,11 @@ function SimpleDepositContent({ open, onClose }: SimpleDepositBaseProps) {
       if (shouldSplit && vaultAmounts) {
         setSplitVaultAmounts([...vaultAmounts]);
       }
-      goToStep(DepositStep.MNEMONIC);
+      // Wallet derives per-vault HTLC secrets via `expandHashlockSecret`
+      // inside the SIGN step — no pre-sign secret step needed.
+      goToStep(DepositStep.SIGN);
     }
   };
-
-  const handleSignSuccess = useCallback(
-    (peginTxHash: string, ethTxHash: string, _depositorBtcPubkey: string) => {
-      setTransactionHashes(peginTxHash, ethTxHash, _depositorBtcPubkey);
-      goToStep(DepositStep.SUCCESS);
-    },
-    [setTransactionHashes, goToStep],
-  );
 
   const showForm = !renderedStep || renderedStep === DepositStep.FORM;
   const stepKey = renderedStep ?? "form";
@@ -284,80 +257,37 @@ function SimpleDepositContent({ open, onClose }: SimpleDepositBaseProps) {
                 feeError={feeError}
                 isDepositDisabled={FeatureFlags.isDepositDisabled}
                 isGeoBlocked={isGeoBlocked || isGeoLoading}
+                isAddressBlocked={isAddressBlocked || isScreeningLoading}
                 onDeposit={handleDeposit}
                 partialLiquidation={partialLiquidationProps}
+                collateralFactor={collateralFactor}
+                feeRows={feeRows}
+                ordinalsCheckUnavailable={ordinalsCheckUnavailable}
+                ordinalsCheckPending={ordinalsCheckPending}
               />
             </div>
           </div>
         )}
 
-        {renderedStep === DepositStep.MNEMONIC && (
-          <MnemonicModal
-            open
-            onClose={onClose}
-            onComplete={handleMnemonicComplete}
-            hasExistingVaults={hasExistingVaults}
-            scope={ethAddress}
-          />
-        )}
-
-        {renderedStep === DepositStep.SECRET &&
-          secretHexesRef.current.length > 0 && (
-            <DepositSecretModal
-              key={secretVaultIndex}
-              open
-              onClose={onClose}
-              secretHex={secretHexesRef.current[secretVaultIndex]}
-              vaultLabel={
-                secretHexesRef.current.length > 1
-                  ? `Vault ${secretVaultIndex + 1} of ${secretHexesRef.current.length}`
-                  : undefined
-              }
-              onComplete={(_secretHex, hash) => {
-                const updated = [...secretHashes, hash];
-                if (secretVaultIndex + 1 < secretHexesRef.current.length) {
-                  setSecretHashes(updated);
-                  setSecretVaultIndex((i) => i + 1);
-                } else {
-                  setSecretHashes(updated);
-                  goToStep(DepositStep.SIGN);
-                }
-              }}
-            />
-          )}
-
-        {renderedStep === DepositStep.SIGN &&
-          getMnemonic &&
-          btcWalletProvider && (
-            <div className="mx-auto w-full max-w-[520px]">
-              <DepositSignContent
-                vaultAmounts={
-                  isSplitDeposit && splitVaultAmounts
-                    ? splitVaultAmounts
-                    : [depositAmount]
-                }
-                mempoolFeeRate={feeRate}
-                btcWalletProvider={btcWalletProvider}
-                depositorEthAddress={ethAddress}
-                selectedApplication={selectedApplication}
-                selectedProviders={selectedProviders}
-                vaultProviderBtcPubkey={selectedProviderBtcPubkey}
-                vaultKeeperBtcPubkeys={vaultKeeperBtcPubkeys}
-                universalChallengerBtcPubkeys={universalChallengerBtcPubkeys}
-                getMnemonic={getMnemonic}
-                mnemonicId={mnemonicId}
-                htlcSecretHexes={secretHexesRef.current}
-                depositorSecretHashes={secretHashes}
-                onSuccess={handleSignSuccess}
-                onClose={onClose}
-                onRefetchActivities={refetchActivities}
-              />
-            </div>
-          )}
-
-        {renderedStep === DepositStep.SUCCESS && (
+        {renderedStep === DepositStep.SIGN && btcWalletProvider && (
           <div className="mx-auto w-full max-w-[520px]">
-            <DepositSuccessContent onClose={onClose} />
+            <DepositSignContent
+              vaultAmounts={
+                isSplitDeposit && splitVaultAmounts
+                  ? splitVaultAmounts
+                  : [depositAmount]
+              }
+              mempoolFeeRate={feeRate}
+              btcWalletProvider={btcWalletProvider}
+              depositorEthAddress={ethAddress}
+              selectedApplication={selectedApplication}
+              selectedProviders={selectedProviders}
+              vaultProviderBtcPubkey={selectedProviderBtcPubkey}
+              vaultKeeperBtcPubkeys={vaultKeeperBtcPubkeys}
+              universalChallengerBtcPubkeys={universalChallengerBtcPubkeys}
+              onClose={onClose}
+              onRefetchActivities={refetchActivities}
+            />
           </div>
         )}
       </FadeTransition>
@@ -415,24 +345,6 @@ export default function SimpleDeposit(props: SimpleDepositProps) {
       );
     }
 
-    if (resumeMode === "refund_htlc") {
-      return (
-        <FullScreenDialog
-          open={open}
-          onClose={onClose}
-          className="items-center justify-center p-6"
-        >
-          <div className="mx-auto w-full max-w-[520px]">
-            <ResumeRefundContent
-              activity={props.activity}
-              onClose={onClose}
-              onSuccess={props.onResumeSuccess}
-            />
-          </div>
-        </FullScreenDialog>
-      );
-    }
-
     return (
       <ProtocolParamsProvider>
         <FullScreenDialog
@@ -444,8 +356,6 @@ export default function SimpleDeposit(props: SimpleDepositProps) {
             {resumeMode === "sign_payouts" ? (
               <ResumeSignContent
                 activity={props.activity}
-                transactions={props.transactions}
-                depositorGraph={props.depositorGraph}
                 btcPublicKey={props.btcPublicKey}
                 depositorEthAddress={props.depositorEthAddress}
                 onClose={onClose}
@@ -469,7 +379,11 @@ export default function SimpleDeposit(props: SimpleDepositProps) {
   return (
     <ProtocolParamsProvider>
       <DepositState>
-        <SimpleDepositContent open={open} onClose={onClose} />
+        <SimpleDepositContent
+          open={open}
+          onClose={onClose}
+          initialAmountBtc={props.initialAmountBtc}
+        />
       </DepositState>
     </ProtocolParamsProvider>
   );

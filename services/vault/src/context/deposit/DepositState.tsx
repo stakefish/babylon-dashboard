@@ -1,15 +1,11 @@
 import { useCallback, useMemo, useState, type PropsWithChildren } from "react";
-import type { Hex } from "viem";
 
 import { createStateUtils } from "../../utils/createStateUtils";
 
 export enum DepositStep {
   FORM = "form",
   REVIEW = "review",
-  MNEMONIC = "mnemonic",
-  SECRET = "secret",
   SIGN = "sign",
-  SUCCESS = "success",
 }
 
 export interface DepositStateData {
@@ -18,10 +14,6 @@ export interface DepositStateData {
   selectedApplication: string;
   selectedProviders: string[];
   feeRate: number;
-  peginTxHash: string;
-  ethTxHash: string;
-  depositorBtcPubkey?: string;
-  secretHashes: Hex[];
 }
 
 interface DepositStateContext {
@@ -30,10 +22,6 @@ interface DepositStateContext {
   selectedApplication: string;
   selectedProviders: string[];
   feeRate: number;
-  peginTxHash: string;
-  ethTxHash: string;
-  depositorBtcPubkey?: string;
-  secretHashes: Hex[];
   processing: boolean;
   isSplitDeposit: boolean;
   splitVaultAmounts: bigint[] | null;
@@ -44,12 +32,6 @@ interface DepositStateContext {
     providers: string[],
   ) => void;
   setFeeRate: (feeRate: number) => void;
-  setTransactionHashes: (
-    peginTxHash: string,
-    ethTxHash: string,
-    depositorBtcPubkey?: string,
-  ) => void;
-  setSecretHashes: (hashes: Hex[]) => void;
   setProcessing: (processing: boolean) => void;
   setIsSplitDeposit: (v: boolean) => void;
   setSplitVaultAmounts: (amounts: bigint[] | null) => void;
@@ -63,18 +45,12 @@ const { StateProvider, useState: useDepositState } =
     selectedApplication: "",
     selectedProviders: [],
     feeRate: 0,
-    peginTxHash: "",
-    ethTxHash: "",
-    depositorBtcPubkey: undefined,
-    secretHashes: [],
     processing: false,
     isSplitDeposit: false,
     splitVaultAmounts: null,
     goToStep: () => {},
     setDepositData: () => {},
     setFeeRate: () => {},
-    setTransactionHashes: () => {},
-    setSecretHashes: () => {},
     setProcessing: () => {},
     setIsSplitDeposit: () => {},
     setSplitVaultAmounts: () => {},
@@ -87,10 +63,6 @@ export function DepositState({ children }: PropsWithChildren) {
   const [selectedApplication, setSelectedApplication] = useState("");
   const [selectedProviders, setSelectedProviders] = useState<string[]>([]);
   const [feeRate, setFeeRate] = useState(0);
-  const [peginTxHash, setPeginTxHash] = useState("");
-  const [ethTxHash, setEthTxHash] = useState("");
-  const [depositorBtcPubkey, setDepositorBtcPubkey] = useState<string>();
-  const [secretHashes, setSecretHashes] = useState<Hex[]>([]);
   const [processing, setProcessing] = useState(false);
   const [isSplitDeposit, setIsSplitDeposit] = useState(false);
   const [splitVaultAmounts, setSplitVaultAmounts] = useState<bigint[] | null>(
@@ -114,25 +86,12 @@ export function DepositState({ children }: PropsWithChildren) {
     setFeeRate(newFeeRate);
   }, []);
 
-  const setTransactionHashes = useCallback(
-    (btc: string, eth: string, pubkey?: string) => {
-      setPeginTxHash(btc);
-      setEthTxHash(eth);
-      setDepositorBtcPubkey(pubkey);
-    },
-    [],
-  );
-
   const reset = useCallback(() => {
     setStep(undefined);
     setAmount(0n);
     setSelectedApplication("");
     setSelectedProviders([]);
     setFeeRate(0);
-    setPeginTxHash("");
-    setEthTxHash("");
-    setDepositorBtcPubkey(undefined);
-    setSecretHashes([]);
     setProcessing(false);
     setIsSplitDeposit(false);
     setSplitVaultAmounts(null);
@@ -145,18 +104,12 @@ export function DepositState({ children }: PropsWithChildren) {
       selectedApplication,
       selectedProviders,
       feeRate,
-      peginTxHash,
-      ethTxHash,
-      depositorBtcPubkey,
-      secretHashes,
       processing,
       isSplitDeposit,
       splitVaultAmounts,
       goToStep,
       setDepositData,
       setFeeRate: updateFeeRate,
-      setTransactionHashes,
-      setSecretHashes,
       setProcessing,
       setIsSplitDeposit,
       setSplitVaultAmounts,
@@ -168,18 +121,12 @@ export function DepositState({ children }: PropsWithChildren) {
       selectedApplication,
       selectedProviders,
       feeRate,
-      peginTxHash,
-      ethTxHash,
-      depositorBtcPubkey,
-      secretHashes,
       processing,
       isSplitDeposit,
       splitVaultAmounts,
       goToStep,
       setDepositData,
       updateFeeRate,
-      setTransactionHashes,
-      setSecretHashes,
       reset,
     ],
   );

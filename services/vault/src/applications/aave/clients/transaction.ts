@@ -15,6 +15,15 @@ import {
 } from "@babylonlabs-io/ts-sdk/tbv/integrations/aave";
 import { type Address, type Chain, type Hex, type WalletClient } from "viem";
 
+import { getETHChain } from "@/config/network";
+
+import { ethClient } from "../../../clients/eth-contract/client";
+import {
+  throwRevertError,
+  type TransactionResult,
+} from "../../../clients/eth-contract/transactionFactory";
+import { mapViemErrorToContractError } from "../../../utils/errors";
+
 /**
  * Read the Core Spoke address from the controller contract.
  *
@@ -36,10 +45,6 @@ export async function getCoreSpokeAddress(
     args: [],
   }) as Promise<Address>;
 }
-
-import { ethClient } from "../../../clients/eth-contract/client";
-import { type TransactionResult } from "../../../clients/eth-contract/transactionFactory";
-import { mapViemErrorToContractError } from "../../../utils/errors";
 
 /**
  * Simulate a transaction to catch errors before sending
@@ -77,6 +82,16 @@ async function executeTx(
   data: Hex,
   errorContext: string,
 ): Promise<TransactionResult> {
+  // Reject if the wallet is connected to the wrong chain.
+  // Callers pass getETHChain() as `chain`, but the wallet itself may still be
+  // on a different network. Check the wallet's actual chain to catch this early.
+  const expectedChainId = getETHChain().id;
+  if (walletClient.chain?.id !== expectedChainId) {
+    throw new Error(
+      `Chain mismatch: expected chain ${expectedChainId}, got ${walletClient.chain?.id}. Please switch to the correct network.`,
+    );
+  }
+
   const publicClient = ethClient.getPublicClient();
   const account = walletClient.account?.address;
 
@@ -100,9 +115,7 @@ async function executeTx(
 
     // Check if transaction was reverted
     if (receipt.status === "reverted") {
-      throw new Error(
-        `Transaction reverted. Hash: ${hash}. Check the transaction on block explorer for details.`,
-      );
+      await throwRevertError(publicClient, receipt, hash, to, data, account);
     }
 
     return {

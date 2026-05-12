@@ -5,10 +5,19 @@
 
 import { Avatar, Button, Card } from "@babylonlabs-io/core-ui";
 import { useQueryClient } from "@tanstack/react-query";
-import { useCallback, useState } from "react";
+import { useCallback, useMemo, useState } from "react";
 import type { Address } from "viem";
 import { useAccount } from "wagmi";
 
+import { WITHDRAW_HF_BLOCK_THRESHOLD } from "@/applications/aave/constants";
+import {
+  canWithdrawAnyVault,
+  computeProjectedHealthFactor,
+  getEffectiveVaultSelection,
+  getWithdrawHfWarningState,
+  isVaultIndividuallyWithdrawable,
+  type PositionSnapshot,
+} from "@/applications/aave/utils";
 import { ArtifactDownloadModal } from "@/components/deposit/ArtifactDownloadModal";
 import { DepositButton, ExpandMenuButton } from "@/components/shared";
 import { Connect } from "@/components/Wallet";
@@ -29,30 +38,117 @@ interface CollateralSectionProps {
   collateralVaults: CollateralVaultEntry[];
   hasCollateral: boolean;
   isConnected: boolean;
-  hasDebt: boolean;
+  collateralBtc: number;
+  /** User's current on-chain health factor (null when no debt). */
+  currentHealthFactor: number | null;
+  /**
+   * Selected vault IDs, owned by the parent so the withdraw dialog can read
+   * them as its initial selection and reset them when it closes.
+   */
+  selectedVaultIds: string[];
+  onSelectedVaultIdsChange: (selectedVaultIds: string[]) => void;
   onWithdraw: () => void;
   onDeposit: () => void;
 }
+
+const WITHDRAW_DISABLED_TOOLTIP =
+  "No vault can be released without putting your position at risk of liquidation. Repay debt first.";
+
+const WITHDRAW_HF_BREACH_TOOLTIP = `This selection would drop your health factor below ${WITHDRAW_HF_BLOCK_THRESHOLD.toFixed(1)} and be rejected on-chain. Reduce the selection or repay debt first.`;
 
 export function CollateralSection({
   totalAmountBtc,
   collateralVaults,
   hasCollateral,
   isConnected,
-  hasDebt,
+  collateralBtc,
+  currentHealthFactor,
+  selectedVaultIds,
+  onSelectedVaultIdsChange,
   onWithdraw,
   onDeposit,
 }: CollateralSectionProps) {
   const [isExpanded, setIsExpanded] = useState(false);
-  const [artifactParams, setArtifactParams] =
-    useState<ArtifactDownloadModalParams | null>(null);
+  const [artifactParams, setArtifactParams] = useState<
+    (ArtifactDownloadModalParams & { vaultId: string }) | null
+  >(null);
   const [isReorderOpen, setIsReorderOpen] = useState(false);
   const [isReorderSuccess, setIsReorderSuccess] = useState(false);
   const { findProvider } = useVaultProviders();
   const queryClient = useQueryClient();
   const { address } = useAccount();
-  const canWithdraw = !hasDebt;
+
+  const position: PositionSnapshot = useMemo(
+    () => ({ collateralBtc, currentHealthFactor }),
+    [collateralBtc, currentHealthFactor],
+  );
+
+  // Per-vault eligibility: can this single vault be withdrawn alone without
+  // breaching HF 1.0? Drives the per-row checkbox enabled state.
+  const vaultEligibility = useMemo(() => {
+    const map = new Map<string, boolean>();
+    for (const v of collateralVaults) {
+      if (!v.inUse) continue;
+      map.set(
+        v.vaultId,
+        isVaultIndividuallyWithdrawable(v.amountBtc, position),
+      );
+    }
+    return map;
+  }, [collateralVaults, position]);
+
+  const { selectedVaultIds: effectiveSelectedVaultIds, selectedVaults } =
+    useMemo(
+      () => getEffectiveVaultSelection(collateralVaults, selectedVaultIds),
+      [collateralVaults, selectedVaultIds],
+    );
+
+  const selectedBtc = useMemo(
+    () => selectedVaults.reduce((sum, v) => sum + v.amountBtc, 0),
+    [selectedVaults],
+  );
+
+  const projectedHealthFactor = useMemo(
+    () =>
+      computeProjectedHealthFactor(
+        currentHealthFactor,
+        collateralBtc,
+        selectedBtc,
+      ),
+    [currentHealthFactor, collateralBtc, selectedBtc],
+  );
+
+  const { wouldBreachHF } = getWithdrawHfWarningState(projectedHealthFactor);
+
+  const hasWithdrawableVault = useMemo(() => {
+    if (!hasCollateral) return false;
+    return canWithdrawAnyVault(collateralVaults, position);
+  }, [hasCollateral, collateralVaults, position]);
+
+  const canWithdraw =
+    hasWithdrawableVault &&
+    effectiveSelectedVaultIds.length > 0 &&
+    !wouldBreachHF;
+
+  const disabledReason = useMemo(() => {
+    if (!hasWithdrawableVault) return WITHDRAW_DISABLED_TOOLTIP;
+    if (wouldBreachHF && effectiveSelectedVaultIds.length > 0) {
+      return WITHDRAW_HF_BREACH_TOOLTIP;
+    }
+    return undefined;
+  }, [hasWithdrawableVault, wouldBreachHF, effectiveSelectedVaultIds.length]);
+
   const canReorder = collateralVaults.length >= 2;
+
+  const handleToggleVaultSelect = useCallback(
+    (vaultId: string) => {
+      const next = selectedVaultIds.includes(vaultId)
+        ? selectedVaultIds.filter((id) => id !== vaultId)
+        : [...selectedVaultIds, vaultId];
+      onSelectedVaultIdsChange(next);
+    },
+    [selectedVaultIds, onSelectedVaultIdsChange],
+  );
 
   const handleReorderSuccessClose = useCallback(() => {
     setIsReorderSuccess(false);
@@ -81,6 +177,7 @@ export function CollateralSection({
         providerAddress: vault.providerAddress,
         peginTxid: vault.peginTxHash,
         depositorPk: vault.depositorBtcPubkey,
+        vaultId: vault.vaultId,
       });
     },
     [collateralVaults, findProvider],
@@ -107,7 +204,7 @@ export function CollateralSection({
           <DepositButton
             variant="outlined"
             size="medium"
-            onClick={onDeposit}
+            onClick={() => onDeposit()}
             disabled={!isConnected}
             className="rounded-full"
           >
@@ -141,8 +238,13 @@ export function CollateralSection({
           {isExpanded && (
             <CollateralExpandedContent
               vaults={collateralVaults}
-              onWithdraw={onWithdraw}
+              vaultEligibility={vaultEligibility}
+              selectedVaultIds={effectiveSelectedVaultIds}
+              selectedBtc={selectedBtc}
               canWithdraw={canWithdraw}
+              onToggleVaultSelect={handleToggleVaultSelect}
+              onWithdraw={onWithdraw}
+              disabledReason={disabledReason}
               onArtifactDownload={handleArtifactDownload}
             />
           )}
@@ -170,7 +272,7 @@ export function CollateralSection({
                 <DepositButton
                   variant="outlined"
                   size="medium"
-                  onClick={onDeposit}
+                  onClick={() => onDeposit()}
                   className="rounded-full"
                 >
                   Deposit {btcConfig.coinSymbol}
@@ -189,6 +291,7 @@ export function CollateralSection({
           providerAddress={artifactParams.providerAddress}
           peginTxid={artifactParams.peginTxid}
           depositorPk={artifactParams.depositorPk}
+          vaultId={artifactParams.vaultId}
         />
       )}
 

@@ -7,7 +7,7 @@
 
 import type { BitcoinWallet } from "@babylonlabs-io/ts-sdk/shared";
 import { useChainConnector } from "@babylonlabs-io/wallet-connector";
-import { useCallback, useMemo, useRef, useState } from "react";
+import { useCallback, useMemo } from "react";
 import type { Address } from "viem";
 
 import {
@@ -50,10 +50,6 @@ export interface UseDepositPageFlowResult {
     providers: string[],
   ) => void;
   confirmReview: (feeRate: number) => void;
-  confirmMnemonic: (mnemonic?: string, mnemonicId?: string) => void;
-  getMnemonic: (() => Promise<string>) | undefined;
-  mnemonicId: string | undefined;
-  onSignSuccess: (peginTxHash: string, ethTxHash: string) => void;
   resetDeposit: () => void;
   refetchActivities: () => Promise<void>;
 
@@ -71,11 +67,6 @@ export interface UseDepositPageFlowResult {
     providers: string[],
   ) => void;
   setFeeRate: (feeRate: number) => void;
-  setTransactionHashes: (
-    peginTxHash: string,
-    ethTxHash: string,
-    depositorBtcPubkey?: string,
-  ) => void;
 }
 
 export function useDepositPageFlow(): UseDepositPageFlowResult {
@@ -97,7 +88,6 @@ export function useDepositPageFlow(): UseDepositPageFlowResult {
     goToStep,
     setDepositData,
     setFeeRate,
-    setTransactionHashes,
     isSplitDeposit,
     setIsSplitDeposit,
     splitVaultAmounts,
@@ -164,38 +154,12 @@ export function useDepositPageFlow(): UseDepositPageFlowResult {
 
   const confirmReview = (confirmedFeeRate: number) => {
     setFeeRate(confirmedFeeRate);
-    goToStep(DepositStep.MNEMONIC);
+    goToStep(DepositStep.SIGN);
   };
-
-  // Mnemonic is stored in a ref to avoid exposing the sensitive value in
-  // React state / devtools.  A counter state forces re-renders when set/cleared.
-  const mnemonicRef = useRef<string | undefined>(undefined);
-  const [mnemonicId, setMnemonicId] = useState<string | undefined>(undefined);
-  const [mnemonicVersion, setMnemonicVersion] = useState(0);
-
-  const confirmMnemonic = useCallback((mnemonic?: string, id?: string) => {
-    mnemonicRef.current = mnemonic;
-    setMnemonicId(id);
-    setMnemonicVersion((v) => v + 1);
-  }, []);
-
-  const getMnemonic = useMemo<(() => Promise<string>) | undefined>(
-    () => (mnemonicRef.current ? async () => mnemonicRef.current! : undefined),
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- mnemonicVersion triggers rebuild
-    [mnemonicVersion],
-  );
 
   const resetDeposit = useCallback(() => {
-    mnemonicRef.current = undefined;
-    setMnemonicId(undefined);
-    setMnemonicVersion((v) => v + 1);
     resetDepositState();
   }, [resetDepositState]);
-
-  const onSignSuccess = (peginTxHash: string, ethTxHash: string) => {
-    setTransactionHashes(peginTxHash, ethTxHash);
-    goToStep(DepositStep.SUCCESS);
-  };
 
   return {
     depositStep,
@@ -216,15 +180,10 @@ export function useDepositPageFlow(): UseDepositPageFlowResult {
     setSplitVaultAmounts,
     startDeposit,
     confirmReview,
-    confirmMnemonic,
-    getMnemonic,
-    mnemonicId: mnemonicId,
-    onSignSuccess,
     resetDeposit,
     refetchActivities,
     goToStep,
     setDepositData,
     setFeeRate,
-    setTransactionHashes,
   };
 }

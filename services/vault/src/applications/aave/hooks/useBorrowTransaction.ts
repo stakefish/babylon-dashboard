@@ -9,6 +9,7 @@ import { parseUnits } from "viem";
 import { useAccount, useWalletClient } from "wagmi";
 
 import { ERC20 } from "@/clients/eth-contract";
+import { getETHChain } from "@/config/network";
 import { useError } from "@/context/error";
 import { logger } from "@/infrastructure";
 import {
@@ -17,7 +18,12 @@ import {
   mapViemErrorToContractError,
 } from "@/utils/errors";
 
-import { borrow } from "../services";
+import { getAaveAdapterAddress } from "../config";
+import {
+  ReserveMismatchError,
+  assertReserveMatchesOnChain,
+  borrow,
+} from "../services";
 import type { AaveReserveConfig } from "../services/fetchConfig";
 
 export interface UseBorrowTransactionResult {
@@ -25,6 +31,7 @@ export interface UseBorrowTransactionResult {
   executeBorrow: (
     borrowAmount: number,
     reserve: AaveReserveConfig,
+    preSignValidation?: () => Promise<void>,
   ) => Promise<boolean>;
   /** Whether transaction is currently processing */
   isProcessing: boolean;
@@ -42,19 +49,20 @@ export function useBorrowTransaction(): UseBorrowTransactionResult {
   const { data: walletClient } = useWalletClient();
   const { address } = useAccount();
   const queryClient = useQueryClient();
-  const chain = walletClient?.chain;
+  const chain = getETHChain();
   const { handleError } = useError();
 
   const executeBorrow = async (
     borrowAmount: number,
     reserve: AaveReserveConfig,
+    preSignValidation?: () => Promise<void>,
   ) => {
     if (borrowAmount <= 0) return false;
 
     setIsProcessing(true);
     try {
       // Validate wallet connection
-      if (!walletClient || !chain) {
+      if (!walletClient) {
         throw new WalletError(
           "Please connect your wallet to continue",
           ErrorCode.WALLET_NOT_CONNECTED,
@@ -68,9 +76,16 @@ export function useBorrowTransaction(): UseBorrowTransactionResult {
         );
       }
 
-      // Fetch decimals on-chain to prevent a compromised GraphQL indexer from
-      // supplying a falsified value that would cause parseUnits to produce a
-      // materially different amount than the user intended.
+      // Verify the indexer-supplied (reserveId, token.address) pair maps to
+      // the same reserve on-chain via the env-pinned adapter the tx will
+      // execute against. Run before the decimals fetch so a mismatch surfaces
+      // its specific error instead of being masked by a parallel rejection.
+      await assertReserveMatchesOnChain(
+        getAaveAdapterAddress(),
+        reserve.reserveId,
+        reserve.token.address,
+      );
+
       const onChainDecimals = await ERC20.getERC20Decimals(
         reserve.token.address,
       ).catch(() => {
@@ -87,6 +102,12 @@ export function useBorrowTransaction(): UseBorrowTransactionResult {
         onChainDecimals,
       );
 
+      // Pre-sign revalidation: refetch position and recheck health factor
+      // before submitting the on-chain transaction. Throws if unsafe.
+      if (preSignValidation) {
+        await preSignValidation();
+      }
+
       // Execute the borrow transaction
       // Adapter resolves borrower's proxy from msg.sender
       await borrow(walletClient, chain, reserve.reserveId, borrowAmountBigInt);
@@ -101,8 +122,16 @@ export function useBorrowTransaction(): UseBorrowTransactionResult {
       logger.error(error instanceof Error ? error : new Error(String(error)), {
         data: { context: "Borrow failed" },
       });
-      const mappedError =
-        error instanceof Error
+      // Surface the on-chain reserve-mismatch as its own user-facing error so
+      // the user sees an integrity warning, not a generic borrow failure.
+      // Retry is suppressed because retrying can't help against a compromised
+      // indexer.
+      const isReserveMismatch = error instanceof ReserveMismatchError;
+      const mappedError = isReserveMismatch
+        ? new Error(
+            "Asset integrity check failed: the borrowable asset returned by the indexer does not match what's registered on-chain. Refresh and try again. If this persists, do not proceed.",
+          )
+        : error instanceof Error
           ? mapViemErrorToContractError(error, "Borrow")
           : new Error("An unexpected error occurred while borrowing");
 
@@ -110,7 +139,9 @@ export function useBorrowTransaction(): UseBorrowTransactionResult {
         error: mappedError,
         displayOptions: {
           showModal: true,
-          retryAction: () => executeBorrow(borrowAmount, reserve),
+          retryAction: isReserveMismatch
+            ? undefined
+            : () => executeBorrow(borrowAmount, reserve, preSignValidation),
         },
       });
 

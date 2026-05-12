@@ -7,7 +7,7 @@
 
 import { type Address, type Hex, type PublicClient, zeroAddress } from "viem";
 
-import type { AaveMarketPosition } from "../types.js";
+import type { AaveMarketPosition, PositionSizeParams } from "../types.js";
 import AaveIntegrationAdapterABI from "./abis/AaveIntegrationAdapter.abi.json";
 
 /**
@@ -55,24 +55,29 @@ export async function getPosition(
 }
 
 /**
- * Get total collateral for a user's position.
+ * Get position size parameters from the adapter contract.
+ *
+ * Returns the maximum BTC position size and maximum vaults per position
+ * as configured on-chain.
  *
  * @param publicClient - Viem public client for reading contracts
  * @param contractAddress - AaveIntegrationAdapter contract address
- * @param user - User's Ethereum address
- * @returns Total collateral amount in satoshis
+ * @returns Position size parameters (maxPositionBTC, maxVaultsPerPosition)
  */
-export async function getPositionCollateral(
+export async function getPositionSizeParams(
   publicClient: PublicClient,
   contractAddress: Address,
-  user: Address,
-): Promise<bigint> {
+): Promise<PositionSizeParams> {
   const result = await publicClient.readContract({
     address: contractAddress,
     abi: AaveIntegrationAdapterABI,
-    functionName: "getPositionCollateral",
-    args: [user],
+    functionName: "getPositionSizeParams",
   });
 
-  return result as bigint;
+  const [maxPositionBTC, maxVaultsPerPosition] = result as [bigint, bigint];
+
+  return {
+    maxPositionBTC,
+    maxVaultsPerPosition,
+  };
 }

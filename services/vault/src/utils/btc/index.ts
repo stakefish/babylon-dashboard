@@ -4,15 +4,11 @@
  * Centralized exports for Bitcoin-specific utility functions
  */
 
-export { BitcoinScriptType, getScriptType } from "./btcScriptType";
 export {
   btcAddressToScriptPubKeyHex,
   deriveBip86ScriptPubKeyHex,
-  processPublicKeyToXOnly,
-  signPsbtsWithFallback,
+  scriptPubKeyHexToBtcAddress,
   stripHexPrefix,
-  toXOnly,
-  validateXOnlyPubkey,
 } from "./btcUtils";
 export { TAP_INTERNAL_KEY, tapInternalPubkey } from "./constants";
 export {
