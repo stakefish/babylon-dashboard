@@ -1,0 +1,76 @@
+version: 2
+updates:
+  # --- JavaScript / TypeScript dependencies (pnpm-lock.yaml at repo root) ---
+  - package-ecosystem: npm
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+      time: "06:00"
+      timezone: Etc/UTC
+    open-pull-requests-limit: 10
+    labels:
+      - dependencies
+      - npm
+    commit-message:
+      prefix: chore
+      prefix-development: chore
+      include: scope
+    cooldown:
+      default-days: 14
+    groups:
+      npm-minor-and-patch:
+        applies-to: version-updates
+        update-types:
+          - minor
+          - patch
+    # Majors fall outside the group -> each opens its own PR.
+    # Security updates are never grouped -> each advisory opens its own PR
+    # with severity/CVE info auto-included by Dependabot.
+    ignore:
+      # React 18 is locked across the monorepo: both `@babylonlabs-io/core-ui`
+      # and `@babylonlabs-io/wallet-connector` declare `react`/`react-dom` as
+      # peerDependencies pinned to "18.3.1", and every consumer
+      # (services/vault, services/simple-staking) pins the same exact version.
+      # React 19 requires a coordinated migration across all workspace
+      # packages plus wagmi/@tanstack/react-query/@reown compatibility checks
+      # before it can land here.
+      - dependency-name: "react"
+        update-types:
+          - version-update:semver-major
+      - dependency-name: "react-dom"
+        update-types:
+          - version-update:semver-major
+      - dependency-name: "@types/react"
+        update-types:
+          - version-update:semver-major
+      - dependency-name: "@types/react-dom"
+        update-types:
+          - version-update:semver-major
+
+      # Storybook 8 is locked across many sibling packages: `storybook`,
+      # `@storybook/react`, `@storybook/react-vite`, `@storybook/blocks`,
+      # `@storybook/test`, `@storybook/addon-*` (all ^8.6.15) in both
+      # `packages/babylon-core-ui` and `packages/babylon-wallet-connector`.
+      # Storybook 9 is a coordinated major rewrite — bumping any one of
+      # these in isolation breaks the storybook build.
+      - dependency-name: "storybook"
+        update-types:
+          - version-update:semver-major
+      - dependency-name: "@storybook/*"
+        update-types:
+          - version-update:semver-major
+
+      # Tailwind 3 is locked: `tailwindcss: ^3.4.14` is used across
+      # services/vault, services/simple-staking, packages/babylon-core-ui,
+      # and packages/babylon-wallet-connector, and `eslint-plugin-tailwindcss`
+      # is pinned to ^3.18.2 — that plugin's v3.x line only supports
+      # Tailwind 3 (Tailwind 4 is a rewrite with a new engine and PostCSS
+      # plugin model). Bumping tailwindcss to 4 without coordinated
+      # plugin/config work breaks linting and build.
+      - dependency-name: "tailwindcss"
+        update-types:
+          - version-update:semver-major
+      - dependency-name: "eslint-plugin-tailwindcss"
+        update-types:
+          - version-update:semver-major
