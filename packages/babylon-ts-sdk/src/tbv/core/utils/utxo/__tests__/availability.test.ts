@@ -1,19 +1,39 @@
+<<<<<<<< HEAD:packages/babylon-ts-sdk/src/tbv/core/utils/utxo/__tests__/availability.test.ts
 /** Tests for UTXO availability validation. */
 
 import { describe, expect, it } from "vitest";
+========
+/** Tests for UTXO validation service (I/O wrapper layer). */
+
+import { getAddressUtxos } from "@babylonlabs-io/ts-sdk";
+import { UtxoNotAvailableError } from "@babylonlabs-io/ts-sdk/tbv/core/utils";
+import { beforeEach, describe, expect, it, vi } from "vitest";
+>>>>>>>> main:services/vault/src/services/vault/__tests__/vaultUtxoValidationService.test.ts
 
 import {
   assertUtxosAvailable,
-  extractInputsFromTransaction,
-  UtxoNotAvailableError,
   validateUtxosAvailable,
+<<<<<<<< HEAD:packages/babylon-ts-sdk/src/tbv/core/utils/utxo/__tests__/availability.test.ts
 } from "../availability";
+========
+} from "../vaultUtxoValidationService";
+
+vi.mock("@babylonlabs-io/ts-sdk", () => ({
+  getAddressUtxos: vi.fn(),
+}));
+
+vi.mock("../../../clients/btc/config", () => ({
+  getMempoolApiUrl: vi.fn(() => "https://mempool.space/api"),
+}));
+
+const mockedGetAddressUtxos = vi.mocked(getAddressUtxos);
+>>>>>>>> main:services/vault/src/services/vault/__tests__/vaultUtxoValidationService.test.ts
 
 // Valid transaction hex with single input (txid: aaa..., vout: 3)
 const VALID_TX_SINGLE_INPUT =
   "0100000001" +
-  "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" + // prev txid (LE)
-  "03000000" + // prev vout = 3 (LE)
+  "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" +
+  "03000000" +
   "6b" +
   "483045022100884d142d86652a3f47ba4746ec719bbfbd040a570b1deccbb6498c75c4ae24cb02204b9f039ff08df09cbe9f6addac960298cad530a863ea8f53982c09db8f6e381301210484ecc0d46f1918b30928fa0e4ed99f16a0fb4fde0735e7ade8416ab9fe423cc5" +
   "ffffffff" +
@@ -23,6 +43,7 @@ const VALID_TX_SINGLE_INPUT =
   "76a914887c6824d03eb8997b1e28c1d81b4e5c8c96d41688ac" +
   "00000000";
 
+<<<<<<<< HEAD:packages/babylon-ts-sdk/src/tbv/core/utils/utxo/__tests__/availability.test.ts
 // Helper to create a valid transaction hex with multiple inputs
 function createMultiInputTxHex(
   inputs: Array<{ txidLE: string; vout: number }>,
@@ -138,6 +159,18 @@ describe("UTXO availability validation", () => {
   describe("validateUtxosAvailable", () => {
     it("should return allAvailable: true when all UTXOs exist", () => {
       const availableUtxos = [
+========
+describe("vaultUtxoValidationService", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  describe("validateUtxosAvailable", () => {
+    const TEST_ADDRESS = "bc1qtest...";
+
+    it("should fetch UTXOs and delegate to SDK validation", async () => {
+      mockedGetAddressUtxos.mockResolvedValue([
+>>>>>>>> main:services/vault/src/services/vault/__tests__/vaultUtxoValidationService.test.ts
         {
           txid: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
           vout: 3,
@@ -149,22 +182,32 @@ describe("UTXO availability validation", () => {
         availableUtxos,
       );
 
+      expect(mockedGetAddressUtxos).toHaveBeenCalledWith(
+        TEST_ADDRESS,
+        "https://mempool.space/api",
+      );
       expect(result.allAvailable).toBe(true);
-      expect(result.missingUtxos).toHaveLength(0);
       expect(result.totalInputs).toBe(1);
     });
 
+<<<<<<<< HEAD:packages/babylon-ts-sdk/src/tbv/core/utils/utxo/__tests__/availability.test.ts
     it("should return allAvailable: false when UTXO is missing", () => {
       const result = validateUtxosAvailable(VALID_TX_SINGLE_INPUT, []);
+========
+    it("should return missing UTXOs when mempool has none", async () => {
+      mockedGetAddressUtxos.mockResolvedValue([]);
+
+      const result = await validateUtxosAvailable(
+        VALID_TX_SINGLE_INPUT,
+        TEST_ADDRESS,
+      );
+>>>>>>>> main:services/vault/src/services/vault/__tests__/vaultUtxoValidationService.test.ts
 
       expect(result.allAvailable).toBe(false);
       expect(result.missingUtxos).toHaveLength(1);
-      expect(result.missingUtxos[0].txid).toBe(
-        "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-      );
-      expect(result.missingUtxos[0].vout).toBe(3);
     });
 
+<<<<<<<< HEAD:packages/babylon-ts-sdk/src/tbv/core/utils/utxo/__tests__/availability.test.ts
     it("should detect multiple missing UTXOs", () => {
       const multiInputTx = createMultiInputTxHex([
         {
@@ -220,6 +263,10 @@ describe("UTXO availability validation", () => {
           vout: 3,
         },
       ];
+========
+    it("should propagate mempool API errors on validate", async () => {
+      mockedGetAddressUtxos.mockRejectedValue(new Error("API unavailable"));
+>>>>>>>> main:services/vault/src/services/vault/__tests__/vaultUtxoValidationService.test.ts
 
       const result = validateUtxosAvailable(
         VALID_TX_SINGLE_INPUT,
@@ -295,6 +342,7 @@ describe("UTXO availability validation", () => {
       ).toThrow(UtxoNotAvailableError);
     });
 
+<<<<<<<< HEAD:packages/babylon-ts-sdk/src/tbv/core/utils/utxo/__tests__/availability.test.ts
     it("should include missing UTXOs in error", () => {
       try {
         assertUtxosAvailable(VALID_TX_SINGLE_INPUT, []);
@@ -360,6 +408,14 @@ describe("UTXO availability validation", () => {
     it("should be instanceof Error", () => {
       const error = new UtxoNotAvailableError([{ txid: "test", vout: 0 }]);
       expect(error).toBeInstanceOf(Error);
+========
+    it("should propagate mempool API errors on assert", async () => {
+      mockedGetAddressUtxos.mockRejectedValue(new Error("Network timeout"));
+
+      await expect(
+        assertUtxosAvailable(VALID_TX_SINGLE_INPUT, TEST_ADDRESS),
+      ).rejects.toThrow("Network timeout");
+>>>>>>>> main:services/vault/src/services/vault/__tests__/vaultUtxoValidationService.test.ts
     });
   });
 });

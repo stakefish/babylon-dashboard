@@ -43,9 +43,11 @@ import {
 
 import type { BitcoinWallet, Hash, SignPsbtOptions } from "../../../shared/wallets";
 import type { WotsBlockPublicKey } from "../clients/vault-provider/types";
+import { ViemVaultRegistryReader } from "../clients/eth";
 import { type UtxoInfo, getUtxoInfo, pushTx } from "../clients/mempool";
 import { BTCVaultRegistryABI, handleContractError } from "../contracts";
 import {
+  assertPsbtUnsignedTxMatches,
   buildPrePeginPsbt,
   buildPeginTxFromFundedPrePegin,
   buildPeginInputPsbt,
@@ -61,6 +63,7 @@ import {
   isAddressFromPublicKey,
   stripHexPrefix,
   uint8ArrayToHex,
+  X_ONLY_PUBKEY_HEX_LEN,
 } from "../primitives/utils/bitcoin";
 import {
   calculateBtcTxHash,
@@ -71,6 +74,7 @@ import {
   selectUtxosForPegin,
   type UTXO,
   MAX_REASONABLE_FEE_SATS,
+  waitForTransactionReceiptSmartAware,
 } from "../utils";
 import { createTaprootScriptPathSignOptions } from "../utils/signing";
 import {
@@ -83,13 +87,36 @@ import {
 const NO_REFERRAL_CODE = 0;
 
 /**
+ * Headroom (in basis points) added to the current VP commission to compute
+ * `maxAcceptableCommissionBps` at submit time. Lets the VP raise its
+ * commission by up to this amount between read and submit without forcing
+ * a re-quote. Capped by {@link MAX_ACCEPTABLE_COMMISSION_BPS_CAP}.
+ *
+ * Contract check is strict `>` (PeginLogic.sol:182-190), so +25 allows up
+ * to +25 bps of drift.
+ */
+const COMMISSION_BPS_HEADROOM = 25;
+
+/**
+ * Hard ceiling for `maxAcceptableCommissionBps`. The contract enforces
+ * `commissionBps < 10000`, so any value at/above that is unreachable;
+ * `9999` is the maximum useful cap.
+ */
+const MAX_ACCEPTABLE_COMMISSION_BPS_CAP = 9999;
+
+/**
  * 32-byte zero hex used as a placeholder during the sizing pass for any
  * value whose content does not affect output sizes — currently the
  * per-vault hashlocks and the auth-anchor commitment. The commit pass
- * substitutes real values; UTXO selection and fee sizing are invariant
- * under the swap because all four (placeholder hashlock, real
- * SHA256(secret), placeholder anchor, real SHA256(authAnchor)) are
- * 32-byte pushes. Substitution invariance is pinned in `pegin.test.ts`.
+ * substitutes real values; UTXO selection and fees match because all
+ * four (placeholder hashlock, real SHA256(secret), placeholder anchor,
+ * real SHA256(authAnchor)) are 32-byte pushes. Substitution invariance
+ * is pinned in `pegin.test.ts`.
+ *
+ * Scope: only used inside `prepareSizing` where the BYTE CONTENT of an
+ * OP_RETURN/hashlock push actually goes into a (throwaway) PSBT.
+ * `peginOutputCount` takes a boolean — callers outside this file that
+ * just need an output count must not import a placeholder string.
  */
 const SIZING_PASS_PLACEHOLDER_BYTES32_HEX = "00".repeat(32);
 
@@ -185,10 +212,16 @@ export interface PreparePeginParams {
   timelockRefund: number;
 
   /**
-   * Protocol fee rate in sat/vB from the contract offchain params.
-   * Used by WASM for computing depositorClaimValue and min pegin fee.
+   * TX-graph fee rate in sat/vB from the contract offchain params.
+   * Used by WASM to size the depositor claim value (graph transactions).
    */
   protocolFeeRate: bigint;
+
+  /**
+   * Minimum PegIn fee rate in sat/vB from the contract offchain params.
+   * Used by WASM to size the PegIn transaction fee.
+   */
+  minPeginFeeRate: bigint;
 
   /**
    * Mempool fee rate in sat/vB for funding the Pre-PegIn transaction.
@@ -390,6 +423,9 @@ export interface RegisterPeginParams {
    * registration references a different htlcVout (0..N-1).
    */
   htlcVout: number;
+
+  /** VP commission (bps) shown to the user — bounds maxAcceptableCommissionBps. See #1691. */
+  quotedCommissionBps?: number;
 }
 
 /**
@@ -447,6 +483,8 @@ export interface RegisterPeginBatchParams {
   requests: BatchPeginRequestItem[];
   /** Proof of possession from {@link PeginManager.signProofOfPossession}. */
   popSignature: PopSignature;
+  /** See {@link RegisterPeginParams.quotedCommissionBps}. */
+  quotedCommissionBps?: number;
 }
 
 /**
@@ -469,6 +507,32 @@ export interface RegisterPeginBatchResult {
   vaults: BatchPeginResultItem[];
 }
 
+
+/**
+ * Detect a P2WPKH (Native SegWit) bech32 address for the configured network,
+ * used purely for diagnostic routing. Distinguishes P2WPKH (witness v0,
+ * 20-byte program) from P2WSH (v0, 32-byte program) and any other bech32
+ * shape, so the specific "use a P2TR" error fires only when the user
+ * actually has a P2WPKH address.
+ */
+function isP2wpkhAddressForNetwork(address: string, network: Network): boolean {
+  const expectedHrp: Record<Network, string> = {
+    bitcoin: "bc",
+    testnet: "tb",
+    signet: "tb",
+    regtest: "bcrt",
+  };
+  try {
+    const decoded = bitcoin.address.fromBech32(address);
+    return (
+      decoded.prefix === expectedHrp[network] &&
+      decoded.version === 0 &&
+      decoded.data.length === 20
+    );
+  } catch {
+    return false;
+  }
+}
 
 /**
  * Resolve prevout data for a transaction input.
@@ -569,6 +633,26 @@ export class PeginManager {
       await this.config.btcWallet.getPublicKeyHex();
     const depositorBtcPubkey = normalizeXOnlyPubkey(depositorBtcPubkeyRaw);
 
+    // Pre-PegIn change pays back to the depositor. The wallet will sign
+    // whatever output the PSBT carries; nothing downstream proves the
+    // change address belongs to the signing key, so a state-race / stale
+    // FE / hostile adapter that puts an attacker-controlled address here
+    // would drain the change after signing. Bind once at entry using the
+    // pubkey snapshot above (no second wallet read).
+    if (
+      !isAddressFromPublicKey(
+        params.changeAddress,
+        depositorBtcPubkeyRaw,
+        this.config.btcNetwork,
+      )
+    ) {
+      throw new Error(
+        `Pre-PegIn changeAddress "${params.changeAddress}" is not derived ` +
+          `from the connected wallet's public key. Refusing to build a tx ` +
+          `that would send change to an address the signing key doesn't control.`,
+      );
+    }
+
     // Sizing pass uses a placeholder for the auth-anchor hash because
     // the wallet popup that produces the real anchor hasn't run yet.
     // The OP_RETURN's byte length is invariant under content swap, so
@@ -595,7 +679,7 @@ export class PeginManager {
     let authAnchorHex: string;
     let authAnchorHash: string;
     try {
-      const authAnchorBytes = expandAuthAnchor(root);
+      const authAnchorBytes = await expandAuthAnchor(root);
       try {
         authAnchorHex = uint8ArrayToHex(authAnchorBytes);
         authAnchorHash = uint8ArrayToHex(sha256(authAnchorBytes));
@@ -695,6 +779,7 @@ export class PeginManager {
       timelockRefund: params.timelockRefund,
       pegInAmounts: params.amounts,
       feeRate: params.protocolFeeRate,
+      minPeginFeeRate: params.minPeginFeeRate,
       numLocalChallengers,
       councilQuorum: params.councilQuorum,
       councilSize: params.councilSize,
@@ -706,10 +791,7 @@ export class PeginManager {
       [...params.availableUTXOs],
       prePegin.totalOutputValue,
       params.mempoolFeeRate,
-      peginOutputCount(
-        prePegin.htlcValues.length,
-        SIZING_PASS_PLACEHOLDER_BYTES32_HEX,
-      ),
+      peginOutputCount(prePegin.htlcValues.length, true),
     );
 
     return {
@@ -778,6 +860,7 @@ export class PeginManager {
       timelockRefund: params.timelockRefund,
       pegInAmounts: params.amounts,
       feeRate: params.protocolFeeRate,
+      minPeginFeeRate: params.minPeginFeeRate,
       numLocalChallengers,
       councilQuorum: params.councilQuorum,
       councilSize: params.councilSize,
@@ -841,6 +924,11 @@ export class PeginManager {
 
     const perVault: PerVaultPeginData[] = [];
     for (let i = 0; i < signedPsbts.length; i++) {
+      assertPsbtUnsignedTxMatches({
+        requestedPsbtHex: psbtsToSign[i],
+        returnedPsbtHex: signedPsbts[i],
+      });
+
       const peginInputSignature = extractPeginInputSignature(
         signedPsbts[i],
         depositorBtcPubkey,
@@ -972,7 +1060,15 @@ export class PeginManager {
     }
 
     // Step 4: Sign PSBT via wallet
-    const signedPsbtHex = await this.config.btcWallet.signPsbt(psbt.toHex());
+    const requestedPsbtHex = psbt.toHex();
+    const signedPsbtHex =
+      await this.config.btcWallet.signPsbt(requestedPsbtHex);
+
+    assertPsbtUnsignedTxMatches({
+      requestedPsbtHex,
+      returnedPsbtHex: signedPsbtHex,
+    });
+
     const signedPsbt = Psbt.fromHex(signedPsbtHex);
 
     // Step 5: Finalize and extract transaction
@@ -1052,7 +1148,11 @@ export class PeginManager {
           `Reconnect the original account or call signProofOfPossession() again.`,
       );
     }
-    await this.assertPopMatchesBtcWallet(popSignature);
+    // The raw (parity-preserving) pubkey is required to validate P2WPKH
+    // payout addresses; the x-only form on `popSignature` would let an
+    // attacker substitute the opposite-parity P2WPKH address.
+    const verifiedBtcPubkeyRaw =
+      await this.assertPopMatchesBtcWallet(popSignature);
     const btcPopSignature = popSignature.btcPopSignature;
 
     // Step 2: Format parameters for contract call
@@ -1060,8 +1160,13 @@ export class PeginManager {
     const unsignedPrePeginTxHex = ensureHexPrefix(unsignedPrePeginTx);
     const depositorSignedPeginTxHex = ensureHexPrefix(depositorSignedPeginTx);
 
-    const payoutScriptPubKey = await this.resolvePayoutScriptPubKey(
-      depositorPayoutBtcAddress,
+    // Only read the wallet address if the caller didn't supply one — avoids
+    // an unnecessary adapter prompt on the common explicit-address path.
+    const resolvedPayoutAddress =
+      depositorPayoutBtcAddress ?? (await this.config.btcWallet.getAddress());
+    const payoutScriptPubKey = this.resolvePayoutScriptPubKey(
+      verifiedBtcPubkeyRaw,
+      resolvedPayoutAddress,
     );
 
     // Step 3: Calculate pegin tx hash and derive vault ID, then check if it already exists
@@ -1081,7 +1186,9 @@ export class PeginManager {
       );
     }
 
-    // Step 4: Query required pegin fee from the contract
+    // Step 4: Query required pegin fee and current VP commission from chain.
+    // Both reads happen at submit time to minimise drift between display and
+    // consequence; per the validation-layer rule, no caching.
     const publicClient = this.config.publicClient;
 
     let peginFee: bigint;
@@ -1100,6 +1207,12 @@ export class PeginManager {
       );
     }
 
+    const maxAcceptableCommissionBps =
+      await this.resolveMaxAcceptableCommissionBps(
+        vaultProvider,
+        params.quotedCommissionBps,
+      );
+
     // Step 5: Encode the contract call data
     const callData = encodeFunctionData({
       abi: BTCVaultRegistryABI,
@@ -1111,6 +1224,7 @@ export class PeginManager {
         unsignedPrePeginTxHex,
         depositorSignedPeginTxHex,
         vaultProvider,
+        maxAcceptableCommissionBps,
         hashlock,
         htlcVout,
         payoutScriptPubKey,
@@ -1152,15 +1266,20 @@ export class PeginManager {
       handleContractError(error); // always throws (return type: never)
     }
 
-    // Step 8: Wait for transaction receipt and verify it was not reverted
-    const receipt = await publicClient.waitForTransactionReceipt({
+    // Step 8: Wait for transaction receipt and verify it was not reverted.
+    // Smart-account-aware wrapper so Safe-style multisigs work alongside
+    // Externally Owned Accounts (EOAs — wallets controlled by a single
+    // private key, e.g. MetaMask). The EOA path is unchanged.
+    const receipt = await waitForTransactionReceiptSmartAware({
+      publicClient,
+      walletAddress: this.config.ethWallet.account.address,
       hash: ethTxHash,
       timeout: RECEIPT_TIMEOUT_MS,
     });
     if (receipt.status === "reverted") {
       handleContractError(
         new Error(
-          `Transaction reverted. Hash: ${ethTxHash}. ` +
+          `Transaction reverted. Hash: ${receipt.transactionHash}. ` +
             `Check the transaction on block explorer for details.`,
         ),
       );
@@ -1205,16 +1324,22 @@ export class PeginManager {
           `Reconnect the original account or call signProofOfPossession() again.`,
       );
     }
-    await this.assertPopMatchesBtcWallet(popSignature);
+    // The raw (parity-preserving) pubkey is required to validate P2WPKH
+    // payout addresses; the x-only form on `popSignature` would let an
+    // attacker substitute the opposite-parity P2WPKH address.
+    const verifiedBtcPubkeyRaw =
+      await this.assertPopMatchesBtcWallet(popSignature);
     const btcPopSignature = popSignature.btcPopSignature;
 
-    // Step 2: Resolve per-request payout scriptPubKey.
-    const resolvedPayoutScripts: Hex[] = [];
-    for (const req of requests) {
-      resolvedPayoutScripts.push(
-        await this.resolvePayoutScriptPubKey(req.depositorPayoutBtcAddress),
-      );
-    }
+    // Step 2: Resolve per-request payout scriptPubKey. The verified pubkey
+    // comes from the just-checked PoP; `depositorPayoutBtcAddress` is
+    // required per-request, so no wallet read is needed here.
+    const resolvedPayoutScripts: Hex[] = requests.map((req) =>
+      this.resolvePayoutScriptPubKey(
+        verifiedBtcPubkeyRaw,
+        req.depositorPayoutBtcAddress,
+      ),
+    );
 
     // Step 3: Pre-compute vault IDs and check for duplicates
     const vaultResults: BatchPeginResultItem[] = [];
@@ -1238,7 +1363,8 @@ export class PeginManager {
       vaultResults.push({ vaultId, peginTxHash });
     }
 
-    // Step 4: Query pegin fee and compute total
+    // Step 4: Query pegin fee, compute total, and read current VP commission.
+    // Commission read happens at submit time per the validation-layer rule.
     const publicClient = this.config.publicClient;
 
     let peginFee: bigint;
@@ -1257,6 +1383,12 @@ export class PeginManager {
       );
     }
     const totalFee = peginFee * BigInt(requests.length);
+
+    const maxAcceptableCommissionBps =
+      await this.resolveMaxAcceptableCommissionBps(
+        vaultProvider,
+        params.quotedCommissionBps,
+      );
 
     // Step 5: Build BatchPeginRequest[] tuple array. Depositor BTC pubkey,
     // PoP, and Pre-PegIn tx hex are shared across the batch (carried on
@@ -1283,7 +1415,12 @@ export class PeginManager {
     const callData = encodeFunctionData({
       abi: BTCVaultRegistryABI,
       functionName: "submitPeginRequestBatch",
-      args: [depositorEthAddress, vaultProvider, batchRequests],
+      args: [
+        depositorEthAddress,
+        vaultProvider,
+        maxAcceptableCommissionBps,
+        batchRequests,
+      ],
     });
 
     // Step 7: Estimate gas
@@ -1315,14 +1452,20 @@ export class PeginManager {
     }
 
     // Step 9: Wait for receipt
-    const receipt = await publicClient.waitForTransactionReceipt({
+    // Use the smart-account-aware wrapper so Safe-style wallets (whose
+    // `eth_sendTransaction` returns a `safeTxHash`, not a real tx hash) work
+    // alongside Externally Owned Accounts (EOAs — wallets controlled by a
+    // single private key, e.g. MetaMask). The EOA path is unchanged.
+    const receipt = await waitForTransactionReceiptSmartAware({
+      publicClient,
+      walletAddress: this.config.ethWallet.account.address,
       hash: ethTxHash,
       timeout: RECEIPT_TIMEOUT_MS,
     });
     if (receipt.status === "reverted") {
       handleContractError(
         new Error(
-          `Batch transaction reverted. Hash: ${ethTxHash}. ` +
+          `Batch transaction reverted. Hash: ${receipt.transactionHash}. ` +
             `Check the transaction on block explorer for details.`,
         ),
       );
@@ -1332,6 +1475,47 @@ export class PeginManager {
       ethTxHash: receipt.transactionHash,
       vaults: vaultResults,
     };
+  }
+
+  // Anchor to quoted+headroom when supplied (refuse if chain drifted past it);
+  // otherwise fall back to chain-current+headroom — see #1691.
+  private async resolveMaxAcceptableCommissionBps(
+    vaultProvider: Address,
+    quotedCommissionBps?: number,
+  ): Promise<number> {
+    let currentBps: number;
+    try {
+      const reader = new ViemVaultRegistryReader(
+        this.config.publicClient,
+        this.config.vaultContracts.btcVaultRegistry,
+      );
+      currentBps = await reader.getVaultProviderCommission(vaultProvider);
+    } catch (error) {
+      throw new Error(
+        "Failed to query vault provider commission from the contract. " +
+          "Please check your network connection and that the contract address is correct.",
+        { cause: error },
+      );
+    }
+
+    if (quotedCommissionBps !== undefined) {
+      if (currentBps > quotedCommissionBps + COMMISSION_BPS_HEADROOM) {
+        throw new Error(
+          `Vault provider commission changed since quote: quoted ${quotedCommissionBps} bps, ` +
+            `chain currently reports ${currentBps} bps (allowed drift ${COMMISSION_BPS_HEADROOM} bps). ` +
+            `Please refresh to see the new commission and try again.`,
+        );
+      }
+      return Math.min(
+        quotedCommissionBps + COMMISSION_BPS_HEADROOM,
+        MAX_ACCEPTABLE_COMMISSION_BPS_CAP,
+      );
+    }
+
+    return Math.min(
+      currentBps + COMMISSION_BPS_HEADROOM,
+      MAX_ACCEPTABLE_COMMISSION_BPS_CAP,
+    );
   }
 
   /**
@@ -1361,34 +1545,54 @@ export class PeginManager {
   }
 
   /**
-   * Resolve the BTC payout address to a scriptPubKey hex for the contract.
+   * Resolve the BTC scriptPubKey to register as the depositor's payout sink.
    *
-   * If a payout address is provided, converts it directly.
-   * If omitted, uses the wallet's address and validates it against the
-   * wallet's public key to guard against a compromised wallet provider.
+   * `address` is validated against the verified depositor pubkey, sourced
+   * from `assertPopMatchesBtcWallet`'s return value rather than
+   * `popSignature.depositorBtcPubkey` (which is x-only, parity stripped).
+   * For wallets that expose a compressed key this preserves y-parity end to
+   * end. For Taproot wallets that only expose an x-only key, the helper
+   * itself fails closed for P2WPKH — the parity is unknowable, so the
+   * payout sink must be a P2TR address derived from that same x.
+   *
+   * The helper does not call into the wallet so the batch path can resolve
+   * many requests without any extra adapter reads. Threat closed: a
+   * state-race or stale FE state that lets a non-wallet address reach the
+   * on-chain payout-script registration.
    */
-  private async resolvePayoutScriptPubKey(
-    depositorPayoutBtcAddress?: string,
-  ): Promise<Hex> {
-    let address: string;
-
-    if (depositorPayoutBtcAddress) {
-      address = depositorPayoutBtcAddress;
-    } else {
-      address = await this.config.btcWallet.getAddress();
-      const walletPubkey = await this.config.btcWallet.getPublicKeyHex();
+  private resolvePayoutScriptPubKey(
+    verifiedDepositorBtcPubkeyRaw: string,
+    address: string,
+  ): Hex {
+    if (
+      !isAddressFromPublicKey(
+        address,
+        verifiedDepositorBtcPubkeyRaw,
+        this.config.btcNetwork,
+      )
+    ) {
+      // Diagnostic carve-out: x-only key + P2WPKH address always fails (y-parity
+      // is unknowable from x-only). Surface a specific, actionable message so
+      // Taproot-wallet integrators don't have to chase the generic mismatch.
+      const isXOnlyKey =
+        stripHexPrefix(verifiedDepositorBtcPubkeyRaw).length ===
+        X_ONLY_PUBKEY_HEX_LEN;
       if (
-        !isAddressFromPublicKey(
-          address,
-          walletPubkey,
-          this.config.btcNetwork,
-        )
+        isXOnlyKey &&
+        isP2wpkhAddressForNetwork(address, this.config.btcNetwork)
       ) {
         throw new Error(
-          "The BTC address from your wallet does not match the wallet's public key. " +
-            "Please ensure your wallet is using a supported address type (Taproot or Native SegWit).",
+          `BTC payout address "${address}" is a P2WPKH (Native SegWit) address, ` +
+            `but the connected wallet only exposes an x-only public key. ` +
+            `P2WPKH validation requires a compressed key with known y-parity. ` +
+            `Use a P2TR (Taproot) payout address instead.`,
         );
       }
+      throw new Error(
+        `BTC payout address "${address}" is not derived from the connected ` +
+          `wallet's public key. The payout sink must be controlled by the same ` +
+          `key that signs the pegin; refusing to register a mismatched address.`,
+      );
     }
 
     const network = getNetwork(this.config.btcNetwork);
@@ -1433,12 +1637,19 @@ export class PeginManager {
     };
   }
 
+  /**
+   * Confirm the connected BTC wallet still matches the PoP it produced, and
+   * return the wallet's *raw* pubkey hex (parity-preserving form, as the
+   * wallet adapter returns it). The raw form is required by callers that
+   * validate Native SegWit / P2WPKH addresses, since P2WPKH is derived from
+   * a parity-bearing compressed key — an x-only form would let an attacker
+   * substitute the opposite-parity P2WPKH address.
+   */
   private async assertPopMatchesBtcWallet(
     popSignature: PopSignature,
-  ): Promise<void> {
-    const currentBtcPubkey = normalizeXOnlyPubkey(
-      await this.config.btcWallet.getPublicKeyHex(),
-    );
+  ): Promise<string> {
+    const currentBtcPubkeyRaw = await this.config.btcWallet.getPublicKeyHex();
+    const currentBtcPubkey = normalizeXOnlyPubkey(currentBtcPubkeyRaw);
     // Normalize the PoP-embedded key the same way in case a consumer
     // serialized it through a path that changed casing or re-added 0x.
     const popBtcPubkey = normalizeXOnlyPubkey(popSignature.depositorBtcPubkey);
@@ -1449,6 +1660,7 @@ export class PeginManager {
           `Reconnect the original wallet or call signProofOfPossession() again.`,
       );
     }
+    return currentBtcPubkeyRaw;
   }
 
   /**
@@ -1468,4 +1680,137 @@ export class PeginManager {
   getVaultContractAddress(): Address {
     return this.config.vaultContracts.btcVaultRegistry;
   }
+}
+
+/**
+ * Representative byte lengths used by {@link estimateSubmitPeginRequestBatchGas}
+ * when synthesizing calldata before the depositor has signed anything. Sized
+ * to approximate the real broadcast values so EIP-2028 calldata gas (16 per
+ * non-zero byte, 4 per zero byte) lands close to the real estimate.
+ */
+const DUMMY_POP_SIGNATURE_BYTES = 80;
+const DUMMY_UNSIGNED_PRE_PEGIN_TX_BYTES = 250;
+const DUMMY_SIGNED_PEGIN_TX_BYTES = 300;
+const DUMMY_PAYOUT_SCRIPTPUBKEY_BYTES = 22;
+const DUMMY_FILLER_BYTE = "ab";
+
+/**
+ * Build a `depositorSignedPeginTx` placeholder whose derived vault ID is
+ * unique to (depositor, batch index). Real BTC transactions parse the txid
+ * from their byte content, so embedding the depositor address + index makes
+ * every dummy request produce a vault ID outside the user's existing set —
+ * the contract's vault-uniqueness check then doesn't revert during
+ * `estimateGas`.
+ */
+function buildDummyDepositorSignedPeginTx(
+  depositorEthAddress: Address,
+  index: number,
+): Hex {
+  const filler = DUMMY_FILLER_BYTE.repeat(DUMMY_SIGNED_PEGIN_TX_BYTES);
+  const addressBytes = stripHexPrefix(depositorEthAddress).toLowerCase();
+  const indexBytes = index.toString(16).padStart(8, "0");
+  const marker = `${addressBytes}${indexBytes}`;
+  const suffix = filler.slice(marker.length);
+  return `0x${marker}${suffix}` as Hex;
+}
+
+function buildDummyBatchPeginRequest(
+  depositorEthAddress: Address,
+  index: number,
+): {
+  depositorBtcPubKey: Hex;
+  btcPopSignature: Hex;
+  unsignedPrePeginTx: Hex;
+  depositorSignedPeginTx: Hex;
+  hashlock: Hex;
+  htlcVout: number;
+  referralCode: number;
+  depositorPayoutBtcAddress: Hex;
+  depositorWotsPkHash: Hex;
+} {
+  const repeat = (bytes: number): Hex =>
+    `0x${DUMMY_FILLER_BYTE.repeat(bytes)}` as Hex;
+
+  return {
+    depositorBtcPubKey: repeat(32),
+    btcPopSignature: repeat(DUMMY_POP_SIGNATURE_BYTES),
+    unsignedPrePeginTx: repeat(DUMMY_UNSIGNED_PRE_PEGIN_TX_BYTES),
+    depositorSignedPeginTx: buildDummyDepositorSignedPeginTx(
+      depositorEthAddress,
+      index,
+    ),
+    hashlock: repeat(32),
+    htlcVout: index,
+    referralCode: NO_REFERRAL_CODE,
+    depositorPayoutBtcAddress: repeat(DUMMY_PAYOUT_SCRIPTPUBKEY_BYTES),
+    depositorWotsPkHash: repeat(32),
+  };
+}
+
+export interface EstimateSubmitPeginRequestBatchGasParams {
+  publicClient: PublicClient;
+  btcVaultRegistry: Address;
+  depositorEthAddress: Address;
+  vaultProvider: Address;
+  batchSize: number;
+}
+
+/**
+ * Estimate gas for a `submitPeginRequestBatch` call before the depositor has
+ * signed anything. Synthesizes calldata using representative dummy bytes for
+ * fields the depositor would normally produce (signed PegIn tx, PoP sig,
+ * WOTS hash, payout script). The estimate is approximate — calldata-byte
+ * gas is correct, contract-side branches that depend on the real values may
+ * diverge — but it lands within the usual gas-estimate margin.
+ *
+ * Passes {@link MAX_ACCEPTABLE_COMMISSION_BPS_CAP} for the
+ * `maxAcceptableCommissionBps` argument so the simulation does not revert on
+ * the contract's commission-drift check regardless of the VP's current
+ * commission. The real submit path resolves an accurate, drift-checked value
+ * via {@link PeginManager.resolveMaxAcceptableCommissionBps}.
+ *
+ * Throws if the contract reverts during simulation; callers should treat the
+ * thrown error as "unable to estimate" and decide how to surface it.
+ */
+export async function estimateSubmitPeginRequestBatchGas(
+  params: EstimateSubmitPeginRequestBatchGasParams,
+): Promise<bigint> {
+  const { publicClient, btcVaultRegistry, depositorEthAddress, vaultProvider, batchSize } =
+    params;
+
+  if (batchSize <= 0) {
+    throw new Error(
+      `estimateSubmitPeginRequestBatchGas requires batchSize >= 1 (received ${batchSize})`,
+    );
+  }
+
+  const peginFee = (await publicClient.readContract({
+    address: btcVaultRegistry,
+    abi: BTCVaultRegistryABI,
+    functionName: "getPegInFee",
+    args: [vaultProvider],
+  })) as bigint;
+  const totalFee = peginFee * BigInt(batchSize);
+
+  const requests = Array.from({ length: batchSize }, (_, i) =>
+    buildDummyBatchPeginRequest(depositorEthAddress, i),
+  );
+
+  const callData = encodeFunctionData({
+    abi: BTCVaultRegistryABI,
+    functionName: "submitPeginRequestBatch",
+    args: [
+      depositorEthAddress,
+      vaultProvider,
+      MAX_ACCEPTABLE_COMMISSION_BPS_CAP,
+      requests,
+    ],
+  });
+
+  return publicClient.estimateGas({
+    to: btcVaultRegistry,
+    data: callData,
+    value: totalFee,
+    account: depositorEthAddress,
+  });
 }

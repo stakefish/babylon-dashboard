@@ -409,13 +409,14 @@ export class WasmPrePeginTx {
      * * `pegin_amounts` - Array of pegin amounts in satoshis (one per hashlock).
      *   Must have the same length as `hashlocks`.
      * * `timelock_refund` - CSV timelock for the refund path (must be non-zero)
-     * * `fee_rate` - Fee rate in sat/vB (from contract offchain params)
+     * * `fee_rate` - TX-graph fee rate in sat/vB; sizes `depositor_claim_value`
+     * * `min_pegin_fee_rate` - Minimum PegIn fee rate in sat/vB; sizes the PegIn tx fee
      * * `num_local_challengers` - Number of local challengers (from contract params)
      * * `council_quorum` - M in M-of-N council multisig (from contract params)
      * * `council_size` - N in M-of-N council multisig (from contract params)
      * * `network` - Network name: "mainnet", "testnet", "regtest", or "signet"
      */
-    constructor(depositor: string, vault_provider: string, vault_keepers: string[], universal_challengers: string[], hashlocks: string[], pegin_amounts: BigUint64Array, timelock_refund: number, fee_rate: bigint, num_local_challengers: number, council_quorum: number, council_size: number, network: string, auth_anchor_hash?: string | null);
+    constructor(depositor: string, vault_provider: string, vault_keepers: string[], universal_challengers: string[], hashlocks: string[], pegin_amounts: BigUint64Array, timelock_refund: number, fee_rate: bigint, min_pegin_fee_rate: bigint, num_local_challengers: number, council_quorum: number, council_size: number, network: string, auth_anchor_hash?: string | null);
     /**
      * Returns the transaction as hex-encoded bytes.
      */
@@ -458,6 +459,42 @@ export function computeAssertClaimerSighashes(graph_json: string): string;
  * * `fee_rate` - Fee rate in sat/vB from the contract
  */
 export function computeMinClaimValue(num_local_challengers: number, num_universal_challengers: number, council_quorum: number, council_size: number, fee_rate: bigint): bigint;
+
+/**
+ * Computes the minimum PegIn (activation) transaction fee (in satoshis)
+ * that the protocol requires the future PegIn tx to pay.
+ *
+ * `peginFee = peginTxVsize(num_vks, num_ucs) × min_pegin_fee_rate`, where
+ * the vsize comes from a Taproot script-path-spend weight prediction whose
+ * witness shape depends on the VK + UC signer count. Each HTLC output the
+ * depositor funds in the Pre-PegIn tx must reserve at least this fee
+ * inside its value (`htlcValue = peginAmount + depositorClaimValue +
+ * minPeginFee`), or the VP cannot afford to broadcast the PegIn at
+ * activation time.
+ *
+ * Usage in JS:
+ * ```js
+ * const minPeginFee = computeMinPeginFee(numVks, numUcs, minPeginFeeRate);
+ * ```
+ *
+ * # Arguments
+ *
+ * * `num_vks` - Number of vault keepers (must satisfy `1 <= num_vks <= 99`;
+ *   `VaultKeepers` is required to be non-empty in this protocol)
+ * * `num_ucs` - Number of universal challengers (must satisfy `num_ucs <= 99`;
+ *   may be 0, in which case the returned fee reflects a strictly smaller
+ *   hashlock script with the UC multisig block omitted)
+ * * `min_pegin_fee_rate` - Minimum PegIn fee rate in sat/vB (protocol param)
+ *
+ * # Errors
+ *
+ * Returns an error string when:
+ * * `num_vks == 0` or either count exceeds the estimator's seeding range
+ *   (`> 99`), where the underlying dummy connector cannot be constructed.
+ * * The `vsize × fee_rate` multiplication overflows `u64` (only possible at
+ *   degenerate fee rates).
+ */
+export function computeMinPeginFee(num_vks: number, num_ucs: number, min_pegin_fee_rate: bigint): bigint;
 
 /**
  * Computes the sighash for the claimer's NoPayout transaction for a specific
@@ -529,6 +566,21 @@ export function computePeginInputSighash(pegin_json: string, htlc_connector_json
  * 32-byte vault identifier (hex-encoded string)
  */
 export function deriveVaultId(pegin_tx_hash: Uint8Array, depositor: Uint8Array): string;
+
+/**
+ * Derive the 32-byte `authAnchor` shared across a Pre-PegIn (frozen, on-chain-binding).
+ */
+export function expandAuthAnchor(root: Uint8Array): Uint8Array;
+
+/**
+ * Derive the 32-byte `hashlockSecret` for HTLC `htlcVout` (frozen, on-chain-binding).
+ */
+export function expandHashlockSecret(root: Uint8Array, htlc_vout: number): Uint8Array;
+
+/**
+ * Derive the 64-byte `wotsSeed` for HTLC `htlcVout` (frozen, on-chain-binding).
+ */
+export function expandWotsSeed(root: Uint8Array, htlc_vout: number): Uint8Array;
 
 /**
  * Initialize panic hook for better error messages in the browser console.

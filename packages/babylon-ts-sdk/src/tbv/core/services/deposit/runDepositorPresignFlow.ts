@@ -9,8 +9,6 @@
  */
 
 import type { Network } from "@babylonlabs-io/babylon-tbv-rust-wasm";
-import * as bitcoin from "bitcoinjs-lib";
-import { Buffer } from "buffer";
 
 import type { BitcoinWallet } from "../../../../shared/wallets/interfaces";
 import { DaemonStatus } from "../../clients/vault-provider/types";
@@ -73,6 +71,8 @@ export interface PayoutSigningContext {
   network: Network;
   /** On-chain registered depositor payout scriptPubKey (hex) */
   registeredPayoutScriptPubKey: string;
+  /** VP commission (bps) from `BTCVaultRegistry`; caps the VP-claimer payout commission output. */
+  commissionBps: number;
 }
 
 export interface RunDepositorPresignFlowParams {
@@ -107,6 +107,7 @@ const MAX_POLLING_TIMEOUT_MS = 20 * 60 * 1000;
 const POST_PAYOUT_STATUSES: ReadonlySet<DaemonStatus> = new Set([
   DaemonStatus.PENDING_ACKS,
   DaemonStatus.PENDING_ACTIVATION,
+  DaemonStatus.ACTIVATED_PENDING_BROADCAST,
   DaemonStatus.ACTIVATED,
 ]);
 
@@ -136,58 +137,84 @@ function prepareTransactionsForSigning(
 }
 
 /**
- * Derive BIP-86 P2TR scriptPubKey hex from an x-only public key.
- * Requires bitcoinjs-lib ECC to be initialized by the caller.
+ * Canonical x-only lowercase form, used for all claimer pubkey set-equality
+ * comparisons in this module. `processPublicKeyToXOnly` already strips any
+ * `0x` prefix; the lowercase here removes case-sensitivity (the VP-response
+ * schema validator accepts uppercase hex, and `processPublicKeyToXOnly`
+ * preserves the case of already-x-only 64-char input).
  */
-function deriveBip86ScriptPubKey(xOnlyPubkeyHex: string): string {
-  const { output } = bitcoin.payments.p2tr({
-    internalPubkey: Buffer.from(xOnlyPubkeyHex, "hex"),
-  });
-  if (!output) {
-    throw new Error("Failed to derive BIP-86 P2TR scriptPubKey");
-  }
-  return output.toString("hex");
+function normalizeClaimerPubkey(pubkey: string): string {
+  return processPublicKeyToXOnly(pubkey).toLowerCase();
 }
 
 /**
- * Resolve the expected payout scriptPubKey for a given claimer.
+ * Reject VP-supplied `response.txs` whose non-depositor claimer set does not
+ * exactly equal `{vaultProviderBtcPubkey} ∪ vaultKeeperBtcPubkeys`.
  *
- * - VP/Depositor claimer: payout goes to the depositor's registered payout address
- * - VK claimer: payout goes to a BIP-86 P2TR address derived from the VK's pubkey
+ * The expected set is derived from on-chain context (sourced by the caller
+ * from the registry/contract reads that populate PayoutSigningContext). A
+ * malicious or buggy VP could otherwise omit registered vault keepers from
+ * the response; the depositor would sign only the supplied subset and submit
+ * a partial presignature map. If the VP later disappears, the omitted
+ * keepers cannot exercise their payout recovery branch and BTC can lock.
  *
- * Note: BIP-86 derivation for VK claimers requires bitcoinjs-lib's ECC to be initialized.
+ * The depositor's own claimer entry (if present in `response.txs`) is
+ * filtered out before diffing — its Payout PSBT is built locally and signed
+ * separately via signDepositorGraph, so its presence in `response.txs` is
+ * permitted but not required. Duplicate detection runs on the full supplied
+ * list *before* the depositor filter, so a response containing
+ * `[VP, VK, depositor, depositor]` is rejected as malformed.
  */
-function resolvePayoutScriptPubKey(
-  claimerPubkeyXOnly: string,
-  context: PayoutSigningContext,
-): string {
-  const claimer = stripHexPrefix(claimerPubkeyXOnly).toLowerCase();
-  const vpPubkey = stripHexPrefix(
-    context.vaultProviderBtcPubkey,
-  ).toLowerCase();
-  const depositorPubkey = stripHexPrefix(
-    context.depositorBtcPubkey,
-  ).toLowerCase();
-
-  if (claimer === vpPubkey || claimer === depositorPubkey) {
-    return context.registeredPayoutScriptPubKey;
-  }
-
-  // Verify claimer is a known vault keeper
-  const isVaultKeeper = context.vaultKeeperBtcPubkeys.some(
-    (vk) => stripHexPrefix(vk).toLowerCase() === claimer,
-  );
-  if (!isVaultKeeper) {
+function assertNonDepositorClaimerSetMatches(
+  suppliedTxs: ClaimerTransactions[],
+  expectedVpPubkey: string,
+  expectedVkPubkeys: string[],
+  depositorPubkeyXOnly: string,
+): void {
+  const depositor = normalizeClaimerPubkey(depositorPubkeyXOnly);
+  const expectedList = [
+    normalizeClaimerPubkey(expectedVpPubkey),
+    ...expectedVkPubkeys.map(normalizeClaimerPubkey),
+  ];
+  const expected = new Set(expectedList);
+  if (expected.size !== expectedList.length) {
     throw new Error(
-      `Unknown claimer pubkey ${claimer}: not VP, depositor, or a registered vault keeper`,
+      "Cannot validate claimer set: signing context contains duplicate vault provider or vault keeper key",
+    );
+  }
+  if (expected.has(depositor)) {
+    throw new Error(
+      "Cannot validate claimer set: depositor key overlaps with vault provider or vault keeper set",
     );
   }
 
-  // VK claimer: derive BIP-86 P2TR scriptPubKey from the VK's x-only pubkey
-  const scriptPubKey = deriveBip86ScriptPubKey(claimer);
-  return `0x${scriptPubKey}`;
+  const suppliedAll = suppliedTxs.map((tx) =>
+    normalizeClaimerPubkey(tx.claimer_pubkey),
+  );
+  if (new Set(suppliedAll).size !== suppliedAll.length) {
+    throw new Error(
+      "Presign response contains duplicate claimer entries",
+    );
+  }
+
+  const suppliedNonDepositor = suppliedAll.filter((k) => k !== depositor);
+  const suppliedSet = new Set(suppliedNonDepositor);
+  const missing = expectedList.filter((c) => !suppliedSet.has(c));
+  const extra = suppliedNonDepositor.filter((c) => !expected.has(c));
+  if (missing.length > 0 || extra.length > 0) {
+    throw new Error(
+      `Presign response claimer set does not match expected (vault provider ∪ vault keepers)` +
+        (missing.length > 0 ? ` (missing: ${missing.join(", ")})` : "") +
+        (extra.length > 0 ? ` (unexpected: ${extra.join(", ")})` : ""),
+    );
+  }
 }
 
+/**
+ * Build the `SignPayoutParams` for a single claimer. Role/script resolution
+ * happens inside `buildPayoutPsbt`; here we only forward the claimer pubkey
+ * and the per-vault context fields.
+ */
 function buildPayoutSigningInput(
   tx: PreparedTransaction,
   context: PayoutSigningContext,
@@ -201,10 +228,9 @@ function buildPayoutSigningInput(
     universalChallengerBtcPubkeys: context.universalChallengerBtcPubkeys,
     depositorBtcPubkey: context.depositorBtcPubkey,
     timelockPegin: context.timelockPegin,
-    registeredPayoutScriptPubKey: resolvePayoutScriptPubKey(
-      tx.claimerPubkeyXOnly,
-      context,
-    ),
+    registeredPayoutScriptPubKey: context.registeredPayoutScriptPubKey,
+    claimerBtcPubkey: tx.claimerPubkeyXOnly,
+    commissionBps: context.commissionBps,
   };
 }
 
@@ -310,13 +336,25 @@ export async function runDepositorPresignFlow(
   signal?.throwIfAborted();
 
   // Phase 3: Sign VP/VK claimer payout transactions
+  // Fail-fast: assert the supplied non-depositor claimer set exactly equals
+  // the on-chain-derived {VP} ∪ {VKs} before any wallet prompts run. The
+  // depositor's own entry is permitted but not required (its payout is
+  // signed separately via signDepositorGraph in Phase 4).
+  const depositorPkNormalized = normalizeClaimerPubkey(depositorPk);
+  assertNonDepositorClaimerSetMatches(
+    response.txs,
+    signingContext.vaultProviderBtcPubkey,
+    signingContext.vaultKeeperBtcPubkeys,
+    depositorPk,
+  );
   // Filter out the depositor's own claimer entry — its payout is signed
   // separately via signDepositorGraph (Phase 4) using VP-provided PSBTs.
   // Including it here would cause a redundant wallet signing prompt whose
   // result is discarded when the depositor graph signature overwrites it.
-  const depositorPkNormalized = processPublicKeyToXOnly(depositorPk);
+  // Compare on the normalized form so an uppercase-hex depositor entry in
+  // the VP response is still filtered out consistently with the assertion.
   const nonDepositorTxs = response.txs.filter(
-    (tx) => processPublicKeyToXOnly(tx.claimer_pubkey) !== depositorPkNormalized,
+    (tx) => normalizeClaimerPubkey(tx.claimer_pubkey) !== depositorPkNormalized,
   );
   const preparedTransactions = prepareTransactionsForSigning(nonDepositorTxs);
   const claimerSignatures = await signPayoutTransactions(

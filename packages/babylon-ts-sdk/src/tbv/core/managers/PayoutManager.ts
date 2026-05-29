@@ -20,7 +20,7 @@ import type {
 } from "../../../shared/wallets";
 import { createTaprootScriptPathSignOptions } from "../utils/signing";
 import {
-  assertPayoutOutputMatchesRegistered,
+  assertPsbtUnsignedTxMatches,
   buildPayoutPsbt,
   extractPayoutSignature,
   validateWalletPubkey,
@@ -89,6 +89,17 @@ interface SignPayoutBaseParams {
    * correct depositor payout address before signing.
    */
   registeredPayoutScriptPubKey: string;
+
+  /**
+   * The claimer's x-only BTC public key for this payout (64-char hex, no prefix).
+   * Forwarded to {@link buildPayoutPsbt} for per-role output validation.
+   */
+  claimerBtcPubkey: string;
+
+  /**
+   * VP commission in basis points (`1..=9999`). Forwarded to {@link buildPayoutPsbt}.
+   */
+  commissionBps: number;
 }
 
 /**
@@ -184,12 +195,6 @@ export class PayoutManager {
   async signPayoutTransaction(
     params: SignPayoutParams,
   ): Promise<PayoutSignatureResult> {
-    // Validate payout TX outputs pay to the registered depositor payout address
-    this.validatePayoutOutputs(
-      params.payoutTxHex,
-      params.registeredPayoutScriptPubKey,
-    );
-
     // Validate wallet pubkey matches depositor and get both formats
     const walletPubkeyRaw = await this.config.btcWallet.getPublicKeyHex();
     const { depositorPubkey } = validateWalletPubkey(
@@ -197,7 +202,9 @@ export class PayoutManager {
       params.depositorBtcPubkey,
     );
 
-    // Build unsigned PSBT for Payout (uses Assert tx)
+    // Build unsigned PSBT for Payout (uses Assert tx). Per-role output
+    // validation happens inside buildPayoutPsbt against the resolved input
+    // values.
     const payoutPsbt = await buildPayoutPsbt({
       payoutTxHex: params.payoutTxHex,
       peginTxHex: params.peginTxHex,
@@ -208,6 +215,9 @@ export class PayoutManager {
       universalChallengerBtcPubkeys: params.universalChallengerBtcPubkeys,
       timelockPegin: params.timelockPegin,
       network: this.config.network,
+      claimerBtcPubkey: params.claimerBtcPubkey,
+      registeredPayoutScriptPubKey: params.registeredPayoutScriptPubKey,
+      commissionBps: params.commissionBps,
     });
 
     // Sign PSBT via wallet (Taproot script-path spend, input 0 only)
@@ -215,6 +225,11 @@ export class PayoutManager {
       payoutPsbt.psbtHex,
       createTaprootScriptPathSignOptions(walletPubkeyRaw, 1),
     );
+
+    assertPsbtUnsignedTxMatches({
+      requestedPsbtHex: payoutPsbt.psbtHex,
+      returnedPsbtHex: signedPsbtHex,
+    });
 
     // Extract Schnorr signature
     const signature = extractPayoutSignature(signedPsbtHex, depositorPubkey);
@@ -275,12 +290,6 @@ export class PayoutManager {
     const depositorPubkeys: string[] = [];
 
     for (const tx of transactions) {
-      // Validate payout TX outputs pay to the registered depositor payout address
-      this.validatePayoutOutputs(
-        tx.payoutTxHex,
-        tx.registeredPayoutScriptPubKey,
-      );
-
       // Validate wallet pubkey matches depositor
       const { depositorPubkey } = validateWalletPubkey(
         walletPubkeyRaw,
@@ -288,7 +297,8 @@ export class PayoutManager {
       );
       depositorPubkeys.push(depositorPubkey);
 
-      // Build Payout PSBT
+      // Build Payout PSBT (output validation runs inside buildPayoutPsbt
+      // against resolved input values).
       const payoutPsbt = await buildPayoutPsbt({
         payoutTxHex: tx.payoutTxHex,
         peginTxHex: tx.peginTxHex,
@@ -299,6 +309,9 @@ export class PayoutManager {
         universalChallengerBtcPubkeys: tx.universalChallengerBtcPubkeys,
         timelockPegin: tx.timelockPegin,
         network: this.config.network,
+        claimerBtcPubkey: tx.claimerBtcPubkey,
+        registeredPayoutScriptPubKey: tx.registeredPayoutScriptPubKey,
+        commissionBps: tx.commissionBps,
       });
       psbtsToSign.push(payoutPsbt.psbtHex);
       signOptions.push(createTaprootScriptPathSignOptions(walletPubkeyRaw, 1));
@@ -325,6 +338,10 @@ export class PayoutManager {
 
     for (let i = 0; i < transactions.length; i++) {
       const depositorPubkey = depositorPubkeys[i];
+      assertPsbtUnsignedTxMatches({
+        requestedPsbtHex: psbtsToSign[i],
+        returnedPsbtHex: signedPsbts[i],
+      });
       const payoutSignature = extractPayoutSignature(
         signedPsbts[i],
         depositorPubkey,
@@ -339,27 +356,4 @@ export class PayoutManager {
     return results;
   }
 
-  /**
-   * Validates that the payout transaction's largest output pays to the
-   * registered depositor payout address (scriptPubKey).
-   *
-   * This prevents two attack vectors from a malicious vault provider:
-   * 1. Substituting a completely different payout address
-   * 2. Including a dust output to the correct address while routing
-   *    the actual funds to an attacker-controlled address
-   *
-   * @param payoutTxHex - Raw payout transaction hex
-   * @param registeredPayoutScriptPubKey - On-chain registered scriptPubKey (hex, with or without 0x prefix)
-   * @throws Error if scriptPubKey is invalid hex
-   * @throws Error if the largest output does not pay to the registered address
-   */
-  private validatePayoutOutputs(
-    payoutTxHex: string,
-    registeredPayoutScriptPubKey: string,
-  ): void {
-    assertPayoutOutputMatchesRegistered(
-      payoutTxHex,
-      registeredPayoutScriptPubKey,
-    );
-  }
 }

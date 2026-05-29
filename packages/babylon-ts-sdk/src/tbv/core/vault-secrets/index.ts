@@ -12,11 +12,12 @@
  * @module tbv/core/vault-secrets
  */
 
+/** @stability frozen — owned by btc-vault Rust via babylon-tbv-rust-wasm; see CLAUDE.md §4 + wrapper JSDoc for failure modes. */
 export {
   expandAuthAnchor,
   expandHashlockSecret,
   expandWotsSeed,
-} from "./expand";
+} from "@babylonlabs-io/babylon-tbv-rust-wasm";
 
 export { buildFundingOutpointsCommitment, buildVaultContext } from "./context";
 

@@ -1,13 +1,26 @@
 import { Psbt, address as btcAddress, networks } from "bitcoinjs-lib";
 
 import { isAccountChangeEvent, DISCONNECT_EVENT, removeProviderListener } from "@/constants/walletEvents";
-import type { BTCConfig, IBTCProvider, InscriptionIdentifier, SignPsbtOptions, WalletInfo } from "@/core/types";
+import type { BTCConfig, IBTCProvider, InscriptionIdentifier, ProgressReporter, SignPsbtOptions, WalletInfo } from "@/core/types";
 import { Network } from "@/core/types";
 import { initBTCCurve } from "@/core/utils/initBTCCurve";
 import { resolveUseTweakedSigner } from "@/core/utils/psbtOptionsMapper";
+import { withTimeout } from "@/core/utils/withTimeout";
 import { ERROR_CODES, WalletError, isUserRejectionMessage } from "@/error";
 
 import logo from "./logo.svg";
+import { MIN_UNISAT_VERSION, checkUnisatVersion } from "./version";
+
+// Timeout budget for non-interactive UniSat reads (`getVersion`, `getChain`,
+// `getPublicKey`). These take no user interaction, so if the extension hasn't
+// answered in this window it is locked / asleep / mid-injection — fail with a
+// recoverable error instead of hanging the connect flow forever.
+const UNISAT_RPC_TIMEOUT_MS = 10_000;
+
+// Timeout budget for interactive UniSat prompts (`requestAccounts`,
+// `switchChain`). Generous enough that a human approving in the extension is
+// never cut off, but still bounds an extension that never surfaces its popup.
+const UNISAT_PROMPT_TIMEOUT_MS = 60_000;
 
 enum UnisatChainEnum {
   BITCOIN_SIGNET = "BITCOIN_SIGNET",
@@ -70,9 +83,22 @@ export class UnisatProvider implements IBTCProvider {
     this.provider = wallet;
   }
 
-  connectWallet = async (): Promise<void> => {
+  // Builds the rejection used when a UniSat call exceeds its timeout budget.
+  // Surfaced as CONNECTION_FAILED (not a version/network problem) with an
+  // actionable recovery instruction.
+  private timeoutError = (operation: string): WalletError =>
+    new WalletError({
+      code: ERROR_CODES.CONNECTION_FAILED,
+      message: `Unisat Wallet did not respond while ${operation}. Open the extension to confirm it is unlocked, then try again.`,
+      wallet: WALLET_PROVIDER_NAME,
+    });
+
+  connectWallet = async (onProgress?: ProgressReporter): Promise<void> => {
+    onProgress?.("Connecting Unisat", "Approve the connection request in your Unisat extension");
     try {
-      await this.provider.requestAccounts();
+      await withTimeout(this.provider.requestAccounts(), UNISAT_PROMPT_TIMEOUT_MS, () =>
+        this.timeoutError("requesting accounts"),
+      );
     } catch (error) {
       if ((error as Error)?.message?.includes("rejected")) {
         throw new WalletError({
@@ -89,18 +115,32 @@ export class UnisatProvider implements IBTCProvider {
       }
     }
 
+    // Run after requestAccounts so origin permission is already granted —
+    // getVersion() then resolves synchronously off PlatformEnv.VERSION with
+    // no further user prompt.
+    onProgress?.("Checking Unisat version");
+    await this.ensureSupportedVersion();
+
     // Unisat silently returns a wrong-network (or empty) account if the wallet
     // is on a chain the dApp does not target. Align the wallet to the configured
     // network before reading the address/pubkey so the connection cannot succeed
     // with a stale mainnet account when signet is required (and vice-versa).
-    await this.ensureExpectedChain();
+    const didSwitchChain = await this.ensureExpectedChain(onProgress);
 
     // Use requestAccounts (not getAccounts) so per-chain dApp approval is
     // re-established after a chain switch. requestAccounts is idempotent on
     // already-authorized chains, so this does not produce an extra prompt.
-    const accounts: string[] = await this.provider.requestAccounts();
+    onProgress?.(
+      "Finalizing connection",
+      didSwitchChain ? "Approve the connection request in your Unisat extension" : undefined,
+    );
+    const accounts: string[] = await withTimeout(this.provider.requestAccounts(), UNISAT_PROMPT_TIMEOUT_MS, () =>
+      this.timeoutError("requesting accounts"),
+    );
     const address = accounts[0];
-    const publicKeyHex = await this.provider.getPublicKey();
+    const publicKeyHex: string = await withTimeout(this.provider.getPublicKey(), UNISAT_RPC_TIMEOUT_MS, () =>
+      this.timeoutError("reading the public key"),
+    );
 
     if (publicKeyHex && address) {
       this.walletInfo = {
@@ -116,10 +156,60 @@ export class UnisatProvider implements IBTCProvider {
     }
   };
 
-  private ensureExpectedChain = async (): Promise<void> => {
+  private ensureSupportedVersion = async (): Promise<void> => {
+    // Missing method = an old build that pre-dates getVersion().
+    if (typeof this.provider.getVersion !== "function") {
+      throw new WalletError({
+        code: ERROR_CODES.INCOMPATIBLE_WALLET_VERSION,
+        message: `Your Unisat Wallet extension is out of date. Please update to version ${MIN_UNISAT_VERSION} or later and try again.`,
+        wallet: WALLET_PROVIDER_NAME,
+      });
+    }
+
+    // Locked wallet / busy / transient RPC error — not an upgrade issue, so
+    // surface as CONNECTION_FAILED rather than telling the user to update.
+    let raw: unknown;
+    try {
+      raw = await withTimeout(this.provider.getVersion(), UNISAT_RPC_TIMEOUT_MS, () =>
+        this.timeoutError("reading its version"),
+      );
+    } catch (error) {
+      throw new WalletError({
+        code: ERROR_CODES.CONNECTION_FAILED,
+        message: (error as Error)?.message || "Failed to read Unisat Wallet version",
+        wallet: WALLET_PROVIDER_NAME,
+      });
+    }
+
+    const result = checkUnisatVersion(raw);
+    if (result === "ok") return;
+
+    if (result === "below") {
+      throw new WalletError({
+        code: ERROR_CODES.INCOMPATIBLE_WALLET_VERSION,
+        message: `Your Unisat Wallet extension is out of date (${raw}). Please update to version ${MIN_UNISAT_VERSION} or later and try again.`,
+        wallet: WALLET_PROVIDER_NAME,
+        version: raw as string,
+      });
+    }
+
+    // Non-canonical version string (e.g. `v1.7.14`, `1.7.14-beta`, fork
+    // build): fail closed without claiming "out of date" — could be a fresh
+    // build that happens to emit a non-standard format.
+    throw new WalletError({
+      code: ERROR_CODES.INCOMPATIBLE_WALLET_VERSION,
+      message: `Unable to verify your Unisat Wallet version${typeof raw === "string" ? ` (got "${raw}")` : ""}. Please install the official Unisat Wallet ${MIN_UNISAT_VERSION} or later and try again.`,
+      wallet: WALLET_PROVIDER_NAME,
+    });
+  };
+
+  private ensureExpectedChain = async (onProgress?: ProgressReporter): Promise<boolean> => {
+    onProgress?.("Checking Bitcoin network");
     let currentChain: UnisatChainResponse;
     try {
-      currentChain = await this.provider.getChain();
+      currentChain = await withTimeout(this.provider.getChain(), UNISAT_RPC_TIMEOUT_MS, () =>
+        this.timeoutError("reading its network"),
+      );
     } catch (error) {
       throw new WalletError({
         code: ERROR_CODES.CONNECTION_FAILED,
@@ -128,7 +218,7 @@ export class UnisatProvider implements IBTCProvider {
       });
     }
 
-    if (mapUnisatChainToNetwork(currentChain.enum) === this.config.network) return;
+    if (mapUnisatChainToNetwork(currentChain.enum) === this.config.network) return false;
 
     const expectedChain = mapNetworkToUnisatChain(this.config.network);
     const targetLabel = this.config.networkName || this.config.network;
@@ -142,7 +232,10 @@ export class UnisatProvider implements IBTCProvider {
     }
 
     try {
-      await this.provider.switchChain(expectedChain);
+      onProgress?.(`Switching to ${targetLabel}`, "Approve the network switch in your Unisat extension");
+      await withTimeout(this.provider.switchChain(expectedChain), UNISAT_PROMPT_TIMEOUT_MS, () =>
+        this.timeoutError(`switching to ${targetLabel}`),
+      );
     } catch (error) {
       const errorMessage = (error as Error)?.message || "";
       if (isUserRejectionMessage(errorMessage)) {
@@ -158,6 +251,8 @@ export class UnisatProvider implements IBTCProvider {
         wallet: WALLET_PROVIDER_NAME,
       });
     }
+
+    return true;
   };
 
   getAddress = async (): Promise<string> => {
@@ -364,7 +459,9 @@ export class UnisatProvider implements IBTCProvider {
   }
 
   getNetwork = async (): Promise<Network> => {
-    const chainInfo: UnisatChainResponse = await this.provider.getChain();
+    const chainInfo: UnisatChainResponse = await withTimeout(this.provider.getChain(), UNISAT_RPC_TIMEOUT_MS, () =>
+      this.timeoutError("reading its network"),
+    );
 
     switch (chainInfo.enum) {
       case UnisatChainEnum.BITCOIN_MAINNET:

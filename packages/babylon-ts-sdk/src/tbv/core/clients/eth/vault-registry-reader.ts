@@ -20,6 +20,12 @@ import type {
 } from "./types";
 
 /**
+ * Inclusive upper bound the BTCVaultRegistry contract enforces on a vault
+ * provider's commission (the contract check is `< 10000`).
+ */
+const MAX_VP_COMMISSION_BPS = 9999;
+
+/**
  * Concrete vault registry reader using viem.
  *
  * Usage:
@@ -109,6 +115,8 @@ export class ViemVaultRegistryReader implements VaultRegistryReader {
       depositorPopSignature: Hex;
       prePeginTxHash: Hex;
       vaultProviderCommissionBps: number;
+      claimExpiredUntil: bigint;
+      vaultCoreVersion: number;
     };
 
     const offchainParamsVersion = Number(result.offchainParamsVersion);
@@ -126,7 +134,107 @@ export class ViemVaultRegistryReader implements VaultRegistryReader {
       depositorPopSignature: result.depositorPopSignature,
       prePeginTxHash: result.prePeginTxHash,
       vaultProviderCommissionBps: result.vaultProviderCommissionBps,
+      claimExpiredUntil: result.claimExpiredUntil,
+      vaultCoreVersion: result.vaultCoreVersion,
     };
+  }
+
+  async getProtocolInfoBatch(
+    vaultIds: readonly Hex[],
+  ): Promise<VaultProtocolInfo[]> {
+    if (vaultIds.length === 0) return [];
+
+    const results = await this.publicClient.multicall({
+      contracts: vaultIds.map((vaultId) => ({
+        address: this.contractAddress,
+        abi: BTCVaultRegistryABI as Abi,
+        functionName: "getBtcVaultProtocolInfo" as const,
+        args: [vaultId] as const,
+      })),
+      allowFailure: false,
+    });
+
+    return results.map((info, i) => {
+      const result = info as unknown as {
+        depositorSignedPeginTx: Hex;
+        universalChallengersVersion: number;
+        appVaultKeepersVersion: number;
+        offchainParamsVersion: number;
+        verifiedAt: bigint;
+        depositorWotsPkHash: Hex;
+        hashlock: Hex;
+        htlcVout: number;
+        depositorPopSignature: Hex;
+        prePeginTxHash: Hex;
+        vaultProviderCommissionBps: number;
+        claimExpiredUntil: bigint;
+        vaultCoreVersion: number;
+      };
+      if (
+        !result.depositorSignedPeginTx ||
+        result.depositorSignedPeginTx === "0x"
+      ) {
+        throw new Error(
+          `Vault ${vaultIds[i]} not found on-chain or has no pegin transaction`,
+        );
+      }
+      const offchainParamsVersion = Number(result.offchainParamsVersion);
+      assertValidOffchainParamsVersion(offchainParamsVersion);
+      return {
+        depositorSignedPeginTx: result.depositorSignedPeginTx,
+        universalChallengersVersion: result.universalChallengersVersion,
+        appVaultKeepersVersion: result.appVaultKeepersVersion,
+        offchainParamsVersion,
+        verifiedAt: result.verifiedAt,
+        depositorWotsPkHash: result.depositorWotsPkHash,
+        hashlock: result.hashlock,
+        htlcVout: result.htlcVout,
+        depositorPopSignature: result.depositorPopSignature,
+        prePeginTxHash: result.prePeginTxHash,
+        vaultProviderCommissionBps: result.vaultProviderCommissionBps,
+        claimExpiredUntil: result.claimExpiredUntil,
+        vaultCoreVersion: result.vaultCoreVersion,
+      };
+    });
+  }
+
+  /**
+   * Read the protocol pegin fee (in wei) for a given vault provider.
+   * Mirrors the `getPegInFee(address)` view on BTCVaultRegistry.
+   */
+  async getPegInFee(vaultProvider: Address): Promise<bigint> {
+    return (await this.publicClient.readContract({
+      address: this.contractAddress,
+      abi: BTCVaultRegistryABI,
+      functionName: "getPegInFee",
+      args: [vaultProvider],
+    })) as bigint;
+  }
+
+  /**
+   * Read a vault provider's current commission in basis points from
+   * BTCVaultRegistry. The contract enforces `commissionBps < 10000`, so the
+   * legitimate range is `[0, 9999]`; anything outside indicates a wrong
+   * contract address or ABI drift and is surfaced as an error rather than
+   * trusted.
+   */
+  async getVaultProviderCommission(vaultProvider: Address): Promise<number> {
+    // viem infers `number` from the `uint16` return in the `as const` ABI.
+    const bps = await this.publicClient.readContract({
+      address: this.contractAddress,
+      abi: BTCVaultRegistryABI,
+      functionName: "getVaultProviderCommission",
+      args: [vaultProvider],
+    });
+
+    if (!Number.isInteger(bps) || bps < 0 || bps > MAX_VP_COMMISSION_BPS) {
+      throw new Error(
+        `getVaultProviderCommission returned ${bps} bps for ${vaultProvider}, ` +
+          `outside the protocol range [0, ${MAX_VP_COMMISSION_BPS}]`,
+      );
+    }
+
+    return bps;
   }
 
   async getVaultData(vaultId: Hex): Promise<VaultData> {

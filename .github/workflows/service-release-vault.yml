@@ -1,0 +1,164 @@
+name: vault-publish
+
+on:
+  push:
+    branches:
+      - "main"
+      - "release/v1.x"
+    tags:
+      - "vault/*"
+  workflow_dispatch:
+
+# For github OIDC authentication to AWS
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  lint_test:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2 https://github.com/actions/checkout/releases/tag/v6.0.2
+
+      - name: Set up Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0 https://github.com/actions/setup-node/releases/tag/v4.4.0
+        with:
+          node-version: 24
+
+      - name: Install Corepack
+        run: npm install -g corepack && corepack enable
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Test
+        run: pnpm run test
+
+      - name: Build
+        run: pnpm run build
+
+  s3_publish:
+    needs: [lint_test]
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - environment: vault-devnet
+            aws_account: 537927626649
+          - environment: vault-staging-devnet
+            aws_account: 537927626649
+          - environment: vault-testnet
+            aws_account: 615368094160
+            prod: true
+
+    # Prod environments will fail OIDC on feature branches; allow failure so devnet jobs aren't blocked
+    continue-on-error: ${{ matrix.prod == true }}
+    environment: ${{ matrix.environment }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2 https://github.com/actions/checkout/releases/tag/v6.0.2
+
+      - name: Set up Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0 https://github.com/actions/setup-node/releases/tag/v4.4.0
+        with:
+          node-version: 24
+
+      - name: Configure AWS credentials (assume per-account role)
+        uses: aws-actions/configure-aws-credentials@7474bc4690e29a8392af63c5b98e7449536d5c3a # v4.3.1 https://github.com/aws-actions/configure-aws-credentials/releases/tag/v4.3.1
+        with:
+          role-to-assume: arn:aws:iam::${{ matrix.aws_account }}:role/gha-s3-frontend-push
+          role-session-name: gh-babylon-toolkit-vault-push
+          aws-region: ap-east-1
+
+      - name: Install Corepack
+        run: npm install -g corepack && corepack enable
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build project
+        run: pnpm run build
+        env:
+          NODE_OPTIONS: "--max-old-space-size=8192" # 8GB node memory limit
+          # Bitcoin Network Configuration (Vault)
+          NEXT_PUBLIC_BTC_NETWORK: ${{ vars.NEXT_PUBLIC_BTC_NETWORK }}
+          NEXT_PUBLIC_MEMPOOL_API: ${{ vars.NEXT_PUBLIC_MEMPOOL_API }}
+          # Ethereum Network Configuration (Vault)
+          NEXT_PUBLIC_ETH_CHAINID: ${{ vars.NEXT_PUBLIC_ETH_CHAINID }}
+          NEXT_PUBLIC_ETH_RPC_URL: ${{ vars.NEXT_PUBLIC_ETH_RPC_URL }}
+          # GraphQL Endpoint
+          NEXT_PUBLIC_TBV_GRAPHQL_ENDPOINT: ${{ vars.NEXT_PUBLIC_TBV_GRAPHQL_ENDPOINT }}
+          # Vault Provider Proxy
+          NEXT_PUBLIC_TBV_VP_PROXY_URL: ${{ vars.NEXT_PUBLIC_TBV_VP_PROXY_URL }}
+          NEXT_PUBLIC_TBV_VP_EXPLORER_URL: ${{ vars.NEXT_PUBLIC_TBV_VP_EXPLORER_URL }}
+          # Auxiliary APIs
+          NEXT_PUBLIC_TBV_SIDECAR_API_URL: ${{ vars.NEXT_PUBLIC_TBV_SIDECAR_API_URL }}
+          NEXT_PUBLIC_TBV_ORDINALS_API_URL: ${{ vars.NEXT_PUBLIC_TBV_ORDINALS_API_URL }}
+          NEXT_PUBLIC_TBV_UTILS_API: ${{ vars.NEXT_PUBLIC_TBV_UTILS_API }}
+          # Trustless Bitcoin Vault (TBV) Contracts
+          NEXT_PUBLIC_TBV_BTC_VAULT_REGISTRY: ${{ vars.NEXT_PUBLIC_TBV_BTC_VAULT_REGISTRY }}
+          NEXT_PUBLIC_TBV_AAVE_ADAPTER: ${{ vars.NEXT_PUBLIC_TBV_AAVE_ADAPTER }}
+          NEXT_PUBLIC_TBV_BTC_PRICE_FEED: ${{ vars.NEXT_PUBLIC_TBV_BTC_PRICE_FEED }}
+          # Build Metadata
+          NEXT_PUBLIC_COMMIT_HASH: ${{ github.sha }}
+          NEXT_PUBLIC_CANONICAL: ${{ vars.NEXT_PUBLIC_CANONICAL }}
+          # Wallet Configuration
+          NEXT_PUBLIC_REOWN_PROJECT_ID: ${{ vars.NEXT_PUBLIC_REOWN_PROJECT_ID }}
+          # Sentry Configuration
+          SENTRY_ORG: ${{ vars.SENTRY_ORG }}
+          SENTRY_PROJECT: ${{ vars.SENTRY_PROJECT }}
+          SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
+          SENTRY_URL: ${{ vars.SENTRY_URL }}
+          SENTRY_RELEASE: ${{ github.sha }}
+          SENTRY_DIST: ${{ github.run_id }}
+          SENTRY_ENVIRONMENT: ${{ matrix.environment }}
+          NEXT_PUBLIC_SENTRY_DSN: ${{ vars.NEXT_PUBLIC_SENTRY_DSN }}
+          NEXT_PUBLIC_RELEASE_ID: ${{ github.sha }}
+          NEXT_PUBLIC_DIST_ID: ${{ github.run_id }}
+          NEXT_PUBLIC_SENTRY_ENVIRONMENT: ${{ matrix.environment }}
+          # Analytics
+          GA4_MEASUREMENT_ID: ${{ vars.GA4_MEASUREMENT_ID }}
+          # Feature Flags
+          NEXT_PUBLIC_FF_DISABLE_VAULT_CAP: ${{ vars.NEXT_PUBLIC_FF_DISABLE_VAULT_CAP }}
+          NEXT_PUBLIC_FF_SIMPLIFIED_TERMS: ${{ vars.NEXT_PUBLIC_FF_SIMPLIFIED_TERMS }}
+          NEXT_PUBLIC_FF_ENABLE_LIQUIDATION_NOTIFICATIONS: ${{ vars.NEXT_PUBLIC_FF_ENABLE_LIQUIDATION_NOTIFICATIONS }}
+          NEXT_PUBLIC_FF_DISABLE_DEPOSIT: ${{ vars.NEXT_PUBLIC_FF_DISABLE_DEPOSIT }}
+          NEXT_PUBLIC_FF_DISABLE_BORROW: ${{ vars.NEXT_PUBLIC_FF_DISABLE_BORROW }}
+          NEXT_PUBLIC_FF_FORCE_PARTIAL_LIQUIDATION_SPLIT: ${{ vars.NEXT_PUBLIC_FF_FORCE_PARTIAL_LIQUIDATION_SPLIT }}
+          NEXT_PUBLIC_FF_POSITION_DEBUG_PANEL: ${{ vars.NEXT_PUBLIC_FF_POSITION_DEBUG_PANEL }}
+          # Misc
+          NEXT_PUBLIC_DISPLAY_TESTING_MESSAGES: ${{ vars.NEXT_PUBLIC_DISPLAY_TESTING_MESSAGES }}
+          NEXT_PUBLIC_REPLAYS_RATE: ${{ vars.NEXT_PUBLIC_REPLAYS_RATE }}
+
+      - name: Copy all index.html to fix path for activity, app/aave
+        run: |
+          cd services/vault/dist
+          cp index.html activity
+          mkdir -p app
+          cp index.html app/aave
+
+      - name: Generate sha256sum checksum
+        run: |
+          cd services/vault/dist
+          FILES_CHECKSUM_PATH="/tmp/vault-${{ matrix.environment }}-${{ github.sha }}-files-checksum.txt"
+          GLOBAL_CHECKSUM_PATH="/tmp/vault-${{ matrix.environment }}-${{ github.sha }}-global-checksum.txt"
+          find . -type f -exec sha256sum {} \; | sort > $FILES_CHECKSUM_PATH # sort is for make sure the order on different OS is the same
+          sha256sum $FILES_CHECKSUM_PATH | cut -d' ' -f1 > $GLOBAL_CHECKSUM_PATH # cut is for remove the filename from the output
+
+      - name: Archive output
+        run: tar -czvf /tmp/vault-${{ matrix.environment }}-${{ github.sha }}.tar.gz -C services/vault/dist .
+
+      - name: Upload to S3 with commit sha
+        run: |
+          aws s3 cp /tmp/vault-${{ matrix.environment }}-${{ github.sha }}.tar.gz s3://${{ vars.S3_PUBLIC_BUCKET_NEW }}/vault/${{ matrix.environment }}/${{ github.sha }}.tar.gz
+          aws s3 cp /tmp/vault-${{ matrix.environment }}-${{ github.sha }}-files-checksum.txt s3://${{ vars.S3_CHECKSUM_BUCKET_NEW }}/vault/${{ matrix.environment }}/${{ github.sha }}-files-checksum.txt
+          aws s3 cp /tmp/vault-${{ matrix.environment }}-${{ github.sha }}-global-checksum.txt s3://${{ vars.S3_CHECKSUM_BUCKET_NEW }}/vault/${{ matrix.environment }}/${{ github.sha }}-global-checksum.txt
+
+      - name: Upload to S3 with Git Tag
+        if: startsWith(github.ref, 'refs/tags/')
+        run: |
+          aws s3 cp /tmp/vault-${{ matrix.environment }}-${{ github.sha }}.tar.gz s3://${{ vars.S3_PUBLIC_BUCKET_NEW }}/vault/${{ matrix.environment }}/${{ github.ref_name }}.tar.gz
+          aws s3 cp /tmp/vault-${{ matrix.environment }}-${{ github.sha }}-files-checksum.txt s3://${{ vars.S3_CHECKSUM_BUCKET_NEW }}/vault/${{ matrix.environment }}/${{ github.ref_name }}-files-checksum.txt
+          aws s3 cp /tmp/vault-${{ matrix.environment }}-${{ github.sha }}-global-checksum.txt s3://${{ vars.S3_CHECKSUM_BUCKET_NEW }}/vault/${{ matrix.environment }}/${{ github.ref_name }}-global-checksum.txt

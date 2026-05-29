@@ -11,10 +11,12 @@
  */
 
 import type { Network } from "@babylonlabs-io/babylon-tbv-rust-wasm";
-import { Psbt } from "bitcoinjs-lib";
+import { Psbt, Transaction } from "bitcoinjs-lib";
 import type { Address, Hex } from "viem";
 
 import type { SignPsbtOptions } from "../../../../shared/wallets/interfaces/BitcoinWallet";
+import { findAuthAnchorOpReturn } from "../../managers/pegin";
+import { assertPsbtUnsignedTxMatches } from "../../primitives/psbt/assertPsbtUnsignedTxMatches";
 import { buildRefundPsbt } from "../../primitives/psbt/refund";
 import {
   processPublicKeyToXOnly,
@@ -41,6 +43,31 @@ const PUBKEY_HEX_RE = /^(?:0x)?(?:[0-9a-fA-F]{64}|[0-9a-fA-F]{66})$/;
 // This is protocol-owned knowledge; callers don't parameterise it.
 export const REFUND_VSIZE = 160;
 
+// Hard upper bound on the per-vbyte fee rate the SDK will sign a refund at.
+// Defense-in-depth: a compromised mempool endpoint can legally return up to
+// 10_000 sat/vB (see mempoolApi.ts `MAX_FEE_RATE`), which on a 160-vbyte
+// refund would burn up to 1.6M sats in miner fees.
+//
+// Sizing: during the April 2024 halving / Runes launch `fastestFee` peaked
+// around 1,800 sat/vB, and `halfHourFee` tracked close to it during the
+// worst of the congestion (~1,000–1,500 sat/vB range — the half-hour
+// bucket converges with the fastest bucket when the queue is deep enough).
+// 2000 leaves ~1.3× margin over that historical extreme so the cap doesn't
+// gate legitimate refunds during a comparable event, while still blocking
+// the obvious malicious case (10_000) by 5×. Small-vault burn is bounded
+// separately by REFUND_MAX_FEE_FRACTION_* below, so the rate cap is free
+// to be set generously here.
+export const REFUND_MAX_FEE_RATE_SATS_VB = 2000;
+
+// Hard upper bound on the absolute refund fee as a fraction of the vault
+// amount. Protects small vaults where even a moderate fee rate burns a
+// disproportionate share (e.g. on a 100k-sat vault, 500 sat/vB would burn
+// 80%). The fraction cap binds before the rate cap whenever the vault is
+// small. Expressed as numerator/denominator to keep arithmetic in bigint
+// and avoid float-precision drift in the comparison.
+export const REFUND_MAX_FEE_FRACTION_NUMERATOR = 10n;
+export const REFUND_MAX_FEE_FRACTION_DENOMINATOR = 100n;
+
 /**
  * Network fee (sats) the SDK will charge for a refund tx at the given
  * sat/vB rate. Mirrors the internal computation in
@@ -60,7 +87,6 @@ export function estimateRefundFeeSats(feeRateSatsVb: number): bigint {
 // (Not the taproot leaf index; the leaf is encoded into the PSBT by the
 // WASM PSBT builder based on the refund script path.)
 const REFUND_INPUT_COUNT = 1;
-const MAX_VOUT = 0xffff;
 const BIP68_ERROR_RE = /non-BIP68-final/i;
 
 function assertBytes32(value: string, label: string): void {
@@ -77,11 +103,31 @@ function assertBytes32(value: string, label: string): void {
 }
 
 /**
+ * One vault's per-HTLC binding in a Pre-PegIn batch. Carries the fields
+ * needed to reconstruct the WASM `WasmPrePeginTx` template byte-for-byte
+ * against the funded transaction.
+ */
+export interface VaultBatchEntry {
+  /** SHA-256 hashlock commitment for this vault (bytes32, 0x-prefixed). */
+  hashlock: Hex;
+  /** HTLC output value in satoshis for this vault. */
+  amount: bigint;
+  /** Index of this vault's HTLC output in the funded Pre-PegIn tx. */
+  htlcVout: number;
+}
+
+/**
  * Authoritative vault fields needed to build a refund. Versioning fields,
  * the hashlock, and htlcVout must come from the on-chain contract (never the
  * indexer). The amount + `unsignedPrePeginTxHex` + `depositorBtcPubkey` can
  * come from the indexer since they are not security-critical for signing
  * (the PSBT builder re-derives the HTLC script from on-chain params).
+ *
+ * `batch` is the full, vout-ordered HTLC vector for the Pre-PegIn (one
+ * entry per sibling vault that shares this funded transaction). For a
+ * single-vault deposit this is a length-1 array. For batched deposits
+ * (e.g. the Aave split) the orchestrator passes every sibling through
+ * so the WASM template matches the funded tx's shape.
  */
 export interface VaultRefundData {
   hashlock: Hex;
@@ -101,6 +147,13 @@ export interface VaultRefundData {
   unsignedPrePeginTxHex: string;
   /** Depositor's BTC public key (x-only or compressed hex; 0x prefix optional). */
   depositorBtcPubkey: string;
+  /**
+   * Full vout-ordered HTLC vector for the funded Pre-PegIn (one entry
+   * per sibling vault, including the target vault). Must satisfy
+   * `batch[i].htlcVout === i` for all i, and the target's `htlcVout` /
+   * `hashlock` / `amount` must equal `batch[vault.htlcVout]`.
+   */
+  batch: ReadonlyArray<VaultBatchEntry>;
 }
 
 /**
@@ -121,6 +174,7 @@ export interface RefundPrePeginContext {
   universalChallengerPubkeys: readonly string[];
   timelockRefund: number;
   feeRate: bigint;
+  minPeginFeeRate: bigint;
   numLocalChallengers: number;
   councilQuorum: number;
   councilSize: number;
@@ -181,13 +235,49 @@ function assertNonNegativeInteger(value: number, label: string): void {
 
 function validateVaultRefundData(v: VaultRefundData): void {
   assertBytes32(v.hashlock, "hashlock");
-  if (
-    !Number.isInteger(v.htlcVout) ||
-    v.htlcVout < 0 ||
-    v.htlcVout > MAX_VOUT
-  ) {
+  if (!Number.isInteger(v.htlcVout) || v.htlcVout < 0) {
     throw new Error(
-      `htlcVout must be an integer 0-${MAX_VOUT}, got ${v.htlcVout}`,
+      `htlcVout must be a non-negative integer, got ${v.htlcVout}`,
+    );
+  }
+  // Batch shape — one entry per sibling HTLC, vout-ordered and
+  // contiguous from 0. The reconstructed WASM template uses these
+  // arrays directly: any gap, duplicate, or mis-ordering against the
+  // funded tx would produce an unspendable refund. The target's
+  // (hashlock, amount, htlcVout) must equal the corresponding batch
+  // entry so the orchestrator and the caller can't disagree about
+  // which output is being refunded.
+  if (!Array.isArray(v.batch) || v.batch.length === 0) {
+    throw new Error("batch must be a non-empty array of HTLC entries");
+  }
+  if (v.htlcVout >= v.batch.length) {
+    throw new Error(
+      `htlcVout ${v.htlcVout} is out of range for batch of size ${v.batch.length}`,
+    );
+  }
+  for (let i = 0; i < v.batch.length; i++) {
+    const entry = v.batch[i];
+    assertBytes32(entry.hashlock, `batch[${i}].hashlock`);
+    if (!Number.isInteger(entry.htlcVout) || entry.htlcVout !== i) {
+      throw new Error(
+        `batch[${i}].htlcVout must equal ${i} (contiguous vout-ordered vector), got ${entry.htlcVout}`,
+      );
+    }
+    if (typeof entry.amount !== "bigint" || entry.amount <= 0n) {
+      throw new Error(
+        `batch[${i}].amount must be a positive bigint, got ${entry.amount}`,
+      );
+    }
+  }
+  const targetEntry = v.batch[v.htlcVout];
+  if (targetEntry.hashlock.toLowerCase() !== v.hashlock.toLowerCase()) {
+    throw new Error(
+      `batch[${v.htlcVout}].hashlock (${targetEntry.hashlock}) does not match target hashlock (${v.hashlock})`,
+    );
+  }
+  if (targetEntry.amount !== v.amount) {
+    throw new Error(
+      `batch[${v.htlcVout}].amount (${targetEntry.amount}) does not match target amount (${v.amount})`,
     );
   }
   // Version fields flow directly into on-chain script derivation via
@@ -236,6 +326,11 @@ function validateRefundPrePeginContext(c: RefundPrePeginContext): void {
   if (typeof c.feeRate !== "bigint" || c.feeRate <= 0n) {
     throw new Error(
       `protocol feeRate must be a positive bigint, got ${c.feeRate}`,
+    );
+  }
+  if (typeof c.minPeginFeeRate !== "bigint" || c.minPeginFeeRate <= 0n) {
+    throw new Error(
+      `minPeginFeeRate must be a positive bigint, got ${c.minPeginFeeRate}`,
     );
   }
   if (
@@ -319,7 +414,31 @@ export async function buildAndBroadcastRefund<
   if (!Number.isFinite(feeRate) || feeRate <= 0) {
     throw new Error(`feeRate must be a positive number, got ${feeRate}`);
   }
+  // Rate cap: fail closed before PSBT construction if the seeded value
+  // exceeds the safety ceiling. A compromised mempool API (or upstream
+  // proxy / BGP hijack) can otherwise drive `halfHourFee` to the API's
+  // 10_000 sat/vB ceiling and burn the refund as miner fee.
+  if (feeRate > REFUND_MAX_FEE_RATE_SATS_VB) {
+    throw new Error(
+      `feeRate ${feeRate} sat/vB exceeds refund safety cap ` +
+        `${REFUND_MAX_FEE_RATE_SATS_VB} sat/vB; refusing to sign refund.`,
+    );
+  }
   const refundFee = BigInt(Math.ceil(feeRate * REFUND_VSIZE));
+  // Fraction cap: even within the rate ceiling, refuse to sign if the
+  // absolute fee would consume more than the configured percentage of the
+  // vault amount. Protects small vaults from disproportionate burn.
+  const maxFeeByFraction =
+    (vault.amount * REFUND_MAX_FEE_FRACTION_NUMERATOR) /
+    REFUND_MAX_FEE_FRACTION_DENOMINATOR;
+  if (refundFee > maxFeeByFraction) {
+    throw new Error(
+      `Refund fee ${refundFee} sats exceeds the per-vault safety cap ` +
+        `of ${maxFeeByFraction} sats ` +
+        `(${REFUND_MAX_FEE_FRACTION_NUMERATOR}/${REFUND_MAX_FEE_FRACTION_DENOMINATOR} ` +
+        `of vault.amount=${vault.amount}); refusing to sign refund.`,
+    );
+  }
   signal?.throwIfAborted();
 
   // `vault.depositorBtcPubkey` may arrive as wallet-native compressed sec1
@@ -329,6 +448,47 @@ export async function buildAndBroadcastRefund<
   const xOnlyDepositorPubkey = processPublicKeyToXOnly(
     vault.depositorBtcPubkey,
   );
+
+  const cleanFundedPrePeginTxHex = stripHexPrefix(vault.unsignedPrePeginTxHex);
+
+  // Production peg-ins (PeginManager) commit an OP_RETURN <PUSH32
+  // SHA256(authAnchor)> output at `vout = hashlocks.length`. The
+  // reconstructed unfunded template carries `batch.length` HTLC outputs,
+  // so the OP_RETURN — when present — must sit at exactly that vout.
+  // Legacy non-auth-anchored Pre-PegIns return `undefined` from the
+  // finder; the template then has no OP_RETURN either, which is a
+  // matching configuration.
+  const found = findAuthAnchorOpReturn(cleanFundedPrePeginTxHex);
+  if (found !== undefined && found.vout !== vault.batch.length) {
+    throw new Error(
+      `Auth-anchor OP_RETURN at vout ${found.vout} does not match batch size ` +
+        `(${vault.batch.length} HTLC outputs expect the anchor at vout ${vault.batch.length}). ` +
+        `Refund refused — sibling HTLC vector is incomplete.`,
+    );
+  }
+  const authAnchorHash = found?.hash;
+
+  // Independent structural check on the funded tx: it must carry at
+  // least N HTLC outputs (one per batch entry). If the anchor is
+  // present we've already pinned its position above, which transitively
+  // proves the tx has ≥ N+1 outputs; if the anchor is absent (legacy)
+  // we still need ≥ N to spend `htlcVout = N-1`.
+  let parsedFundedTx: Transaction;
+  try {
+    parsedFundedTx = Transaction.fromHex(cleanFundedPrePeginTxHex);
+  } catch (e) {
+    throw new Error(
+      `Failed to parse funded Pre-PegIn transaction hex: ${e instanceof Error ? e.message : String(e)}`,
+    );
+  }
+  if (parsedFundedTx.outs.length < vault.batch.length) {
+    throw new Error(
+      `Funded Pre-PegIn tx has ${parsedFundedTx.outs.length} outputs but batch ` +
+        `requires at least ${vault.batch.length} HTLC outputs. ` +
+        `Refund refused — funded tx shape disagrees with sibling vector.`,
+    );
+  }
+
   const { psbtHex } = await buildRefundPsbt({
     prePeginParams: {
       depositorPubkey: xOnlyDepositorPubkey,
@@ -336,16 +496,18 @@ export async function buildAndBroadcastRefund<
       vaultKeeperPubkeys: ctx.vaultKeeperPubkeys.map(stripHexPrefix),
       universalChallengerPubkeys:
         ctx.universalChallengerPubkeys.map(stripHexPrefix),
-      hashlocks: [stripHexPrefix(vault.hashlock)],
+      hashlocks: vault.batch.map((b) => stripHexPrefix(b.hashlock)),
       timelockRefund: ctx.timelockRefund,
-      pegInAmounts: [vault.amount],
+      pegInAmounts: vault.batch.map((b) => b.amount),
       feeRate: ctx.feeRate,
+      minPeginFeeRate: ctx.minPeginFeeRate,
       numLocalChallengers: ctx.numLocalChallengers,
       councilQuorum: ctx.councilQuorum,
       councilSize: ctx.councilSize,
       network: ctx.network,
+      authAnchorHash,
     },
-    fundedPrePeginTxHex: stripHexPrefix(vault.unsignedPrePeginTxHex),
+    fundedPrePeginTxHex: cleanFundedPrePeginTxHex,
     htlcVout: vault.htlcVout,
     refundFee,
     // buildRefundPsbt's top-level `hashlock` param is documented as "no 0x
@@ -361,6 +523,12 @@ export async function buildAndBroadcastRefund<
     REFUND_INPUT_COUNT,
   );
   const signedPsbtHex = await signPsbt(psbtHex, signOptions);
+
+  assertPsbtUnsignedTxMatches({
+    requestedPsbtHex: psbtHex,
+    returnedPsbtHex: signedPsbtHex,
+  });
+
   const signedTxHex = finalizeAndExtract(signedPsbtHex);
   signal?.throwIfAborted();
 

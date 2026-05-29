@@ -21,7 +21,7 @@ import { Buffer } from "buffer";
 import { Psbt, Transaction } from "bitcoinjs-lib";
 
 import { TAPSCRIPT_LEAF_VERSION, hexToUint8Array, uint8ArrayToHex } from "../utils/bitcoin";
-import type { PrePeginParams } from "./pegin";
+import { normalizeAuthAnchorHash, type PrePeginParams } from "./pegin";
 
 /**
  * Parameters for building a refund PSBT
@@ -72,7 +72,35 @@ export async function buildRefundPsbt(
   const { prePeginParams, fundedPrePeginTxHex, htlcVout, refundFee, hashlock } =
     params;
 
-  const unfundedTx = new WasmPrePeginTx(
+  // The 14th positional arg `auth_anchor_hash` is `Option<String>` in
+  // the Rust WASM constructor (the 9th arg `min_pegin_fee_rate` requires
+  // the two-rate constructor from btc-vault #1930). Production peg-ins
+  // (PeginManager) always commit an OP_RETURN <PUSH32 SHA256(authAnchor)>
+  // output at `vout = hashlocks.length`; the unfunded template must
+  // include it so `fromFundedTransaction` aligns with the funded tx.
+  // Normalize identically to the peg-in primitives (`0x` strip,
+  // lowercase, length/charset validation) so a direct primitive caller
+  // reusing successful peg-in params doesn't hand unnormalized bytes to
+  // WASM. Pass `undefined` for legacy non-auth-anchored Pre-PegIns.
+  const normalizedAuthAnchorHash = normalizeAuthAnchorHash(
+    prePeginParams.authAnchorHash,
+  );
+  const unfundedTx = new (WasmPrePeginTx as unknown as new (
+    depositor: string,
+    vault_provider: string,
+    vault_keepers: string[],
+    universal_challengers: string[],
+    hashlocks: string[],
+    pegin_amounts: BigUint64Array,
+    timelock_refund: number,
+    fee_rate: bigint,
+    min_pegin_fee_rate: bigint,
+    num_local_challengers: number,
+    council_quorum: number,
+    council_size: number,
+    network: string,
+    auth_anchor_hash?: string,
+  ) => typeof WasmPrePeginTx.prototype)(
     prePeginParams.depositorPubkey,
     prePeginParams.vaultProviderPubkey,
     prePeginParams.vaultKeeperPubkeys,
@@ -81,14 +109,28 @@ export async function buildRefundPsbt(
     new BigUint64Array(prePeginParams.pegInAmounts),
     prePeginParams.timelockRefund,
     prePeginParams.feeRate,
+    prePeginParams.minPeginFeeRate,
     prePeginParams.numLocalChallengers,
     prePeginParams.councilQuorum,
     prePeginParams.councilSize,
     prePeginParams.network,
+    normalizedAuthAnchorHash,
   );
 
   let fundedTx: WasmPrePeginTx | null = null;
   try {
+    // Cross-check the reconstructed unfunded template against the funded
+    // transaction: the WASM template's HTLC scriptPubKey at `htlcVout`
+    // must equal the bytes the funded tx carries at the same output.
+    // If they disagree, the template was reconstructed from the wrong
+    // (hashlocks, amounts) vector — signing it would produce a refund
+    // that does not spend the on-chain HTLC the depositor expects.
+    // This is the explicit invariant the audit recommends: never sign a
+    // refund whose template doesn't match the on-chain output bytes.
+    const expectedHtlcScriptPubKey = unfundedTx
+      .getHtlcScriptPubKey(htlcVout)
+      .toLowerCase();
+
     fundedTx = unfundedTx.fromFundedTransaction(fundedPrePeginTxHex);
 
     const refundTxHex = fundedTx.buildRefundTx(refundFee, htlcVout);
@@ -113,6 +155,18 @@ export async function buildRefundPsbt(
       throw new Error(
         `HTLC output at vout ${htlcVout} not found in funded Pre-PegIn tx ` +
           `(tx has ${prePeginTx.outs.length} outputs)`,
+      );
+    }
+
+    const actualHtlcScriptPubKey = uint8ArrayToHex(
+      new Uint8Array(htlcOutput.script),
+    ).toLowerCase();
+    if (actualHtlcScriptPubKey !== expectedHtlcScriptPubKey) {
+      throw new Error(
+        `HTLC scriptPubKey mismatch at vout ${htlcVout}: reconstructed ` +
+          `template expects ${expectedHtlcScriptPubKey}, funded tx carries ` +
+          `${actualHtlcScriptPubKey}. Refund refused — the (hashlocks, ` +
+          `pegInAmounts) vector does not match the on-chain commitment.`,
       );
     }
 

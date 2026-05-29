@@ -24,6 +24,25 @@ export type OnChainBtcPubkey = string & {
   readonly [onChainBtcPubkeyBrand]: true;
 };
 
+/**
+ * Mirrors `IBTCVaultRegistry.BTCVaultStatus` in BTCVaultRegistry.sol exactly.
+ * Use this when consuming `status` from `getVaultBasicInfo` /
+ * `getBtcVaultBasicInfo`.
+ *
+ * Do NOT confuse with the app-side `ContractStatus` enum
+ * (`services/deposit/peginState.ts`) — that one is for the indexer and
+ * extends this with values 5-7, reassigning 4 to LIQUIDATED. Reading an
+ * on-chain status through `ContractStatus[n]` for labels will mislabel
+ * Expired(4) as LIQUIDATED.
+ */
+export enum OnChainBtcVaultStatus {
+  PENDING = 0,
+  VERIFIED = 1,
+  ACTIVE = 2,
+  REDEEMED = 3,
+  EXPIRED = 4,
+}
+
 /** Basic vault info from BTCVaultRegistry.getBtcVaultBasicInfo */
 export interface VaultBasicInfo {
   depositor: Address;
@@ -48,6 +67,10 @@ export interface VaultProtocolInfo {
   depositorPopSignature: Hex;
   prePeginTxHash: Hex;
   vaultProviderCommissionBps: number;
+  /** Block deadline (uint256) for depositor reclaim. TODO(#1690): wire to refund flow. */
+  claimExpiredUntil: bigint;
+  /** Vault core version (uint16) stamped at registration. VP-side gating only — see #1690. */
+  vaultCoreVersion: number;
 }
 
 /** Combined vault data (basic + protocol) */
@@ -60,8 +83,18 @@ export interface VaultData {
 export interface VaultRegistryReader {
   getVaultBasicInfo(vaultId: Hex): Promise<VaultBasicInfo>;
   getVaultProtocolInfo(vaultId: Hex): Promise<VaultProtocolInfo>;
+  getProtocolInfoBatch(vaultIds: readonly Hex[]): Promise<VaultProtocolInfo[]>;
   getVaultData(vaultId: Hex): Promise<VaultData>;
   getVaultProviderBtcPubKey(vpAddress: Address): Promise<OnChainBtcPubkey>;
+  /** Read the protocol pegin fee (in wei) for a given vault provider. */
+  getPegInFee(vaultProvider: Address): Promise<bigint>;
+  /**
+   * Read a vault provider's current commission in basis points.
+   *
+   * Validates the contract-enforced `[0, 9999]` range — an out-of-range
+   * value signals a wrong contract address or ABI drift, not a real rate.
+   */
+  getVaultProviderCommission(vaultProvider: Address): Promise<number>;
   /**
    * Read `offchainParamsVersion` for many vaults in a single multicall.
    * Returns versions in the same order as the input. Throws if any vault
@@ -89,6 +122,12 @@ export interface TBVProtocolParams {
   pegInAckTimeout: bigint;
   pegInActivationTimeout: bigint;
   maxHtlcOutputCount: number;
+  /**
+   * Number of blocks added to the activation deadline as a grace window
+   * during which a depositor may still reclaim an expired pegin via the
+   * HTLC preimage. Source: `IProtocolParams.TBVProtocolParams.expiredPegInGraceBlocks`.
+   */
+  expiredPegInGraceBlocks: bigint;
 }
 
 /**
@@ -110,7 +149,7 @@ export interface VersionedOffchainParams {
   tRefund: number;
   tStale: number;
   minPeginFeeRate: bigint;
-  proverProgramVersion: number;
+  proverCircuitVersion: number;
   minPrepeginDepth: number;
 }
 
@@ -124,6 +163,7 @@ export interface PegInConfiguration {
   pegInAckTimeout: bigint;
   pegInActivationTimeout: bigint;
   maxHtlcOutputCount: number;
+  expiredPegInGraceBlocks: bigint;
   timelockPegin: number;
   timelockRefund: number;
   minVpCommissionBps: number;

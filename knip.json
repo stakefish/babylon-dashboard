@@ -1,0 +1,26 @@
+{
+  "$schema": "https://unpkg.com/knip@5/schema.json",
+  "workspaces": {
+    "packages/babylon-ts-sdk": {
+      "entry": [
+        "src/index.ts",
+        "src/tbv/index.ts",
+        "src/tbv/core/index.ts",
+        "src/tbv/core/primitives/index.ts",
+        "src/tbv/core/utils/index.ts",
+        "src/tbv/core/clients/index.ts",
+        "src/tbv/core/services/index.ts",
+        "src/tbv/core/managers/index.ts",
+        "src/tbv/core/contracts/index.ts",
+        "src/tbv/core/vault-secrets/index.ts",
+        "src/tbv/integrations/aave/index.ts",
+        "src/shared/index.ts",
+        "src/testing/index.ts",
+        "src/**/*.test.ts",
+        "src/**/__tests__/**/*.ts",
+        "src/test/**/*.ts"
+      ],
+      "project": ["src/**/*.ts"]
+    }
+  }
+}

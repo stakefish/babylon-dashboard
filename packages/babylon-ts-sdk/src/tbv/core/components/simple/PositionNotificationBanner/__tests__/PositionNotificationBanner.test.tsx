@@ -1,0 +1,373 @@
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { fireEvent, render, screen } from "@testing-library/react";
+import type { ReactNode } from "react";
+import { beforeEach, describe, expect, it, vi } from "vitest";
+
+import type { CalculatorResult } from "@/applications/aave/positionNotifications";
+
+import { PositionNotificationBanner } from "../PositionNotificationBanner";
+
+// ---------------------------------------------------------------------------
+// Mocks
+// ---------------------------------------------------------------------------
+
+vi.mock("@/config/env", () => ({
+  ENV: {
+    BTC_VAULT_REGISTRY: "0x1234567890123456789012345678901234567890",
+    AAVE_ADAPTER: "0x1234567890123456789012345678901234567890",
+    GRAPHQL_ENDPOINT: "https://test.example.com/graphql",
+  },
+}));
+
+vi.mock("@/config/network", () => ({
+  getNetworkConfigETH: vi.fn(() => ({ chainId: 11155111, name: "sepolia" })),
+  getNetworkConfigBTC: vi.fn(() => ({
+    network: "signet",
+    mempoolApiUrl: "https://mempool.space/signet/api",
+  })),
+  getETHChain: vi.fn(() => ({ id: 11155111, name: "Sepolia" })),
+}));
+
+vi.mock("@/clients/eth-contract/client", () => ({
+  ethClient: { readContract: vi.fn(), getTransactionReceipt: vi.fn() },
+}));
+
+// Mock core-ui to avoid ESM transformation issues in test environment
+vi.mock("@babylonlabs-io/core-ui", () => ({
+  Text: (props: Record<string, unknown>) => {
+    const { children, ...rest } = props;
+    return <span {...rest}>{children as ReactNode}</span>;
+  },
+  Button: (props: Record<string, unknown>) => {
+    const { children, ...rest } = props;
+    return <button {...rest}>{children as ReactNode}</button>;
+  },
+}));
+
+// Mock the ReorderSuccessModal to avoid deep dependency chain
+vi.mock("../../ReorderVaults", () => ({
+  ReorderSuccessModal: (props: Record<string, unknown>) =>
+    props.isOpen ? (
+      <div data-testid="reorder-success-modal">Success</div>
+    ) : null,
+}));
+
+const mockExecuteReorder = vi.fn().mockResolvedValue(true);
+vi.mock("@/applications/aave/hooks/useReorderVaults", () => ({
+  useReorderVaults: () => ({
+    executeReorder: mockExecuteReorder,
+    isProcessing: false,
+  }),
+}));
+
+const mockApplyReorderedOrder = vi.fn();
+vi.mock("@/applications/aave/context", () => ({
+  useReorderOverride: () => ({
+    reorderedOrder: null,
+    applyReorderedOrder: mockApplyReorderedOrder,
+    clearReorderedOrder: vi.fn(),
+  }),
+}));
+
+const mockReorderVerificationContext = {
+  CF: 0.7,
+  THF: 1.1,
+  maxLB: 1.05,
+  btcPrice: 60_000,
+  totalDebtUsd: 10_000,
+};
+
+const mockUsePositionNotifications = vi.fn(() => ({
+  result: null,
+  status: "ready" as const,
+  isLoading: false,
+  reorderVerificationContext: mockReorderVerificationContext as
+    | typeof mockReorderVerificationContext
+    | null,
+}));
+
+vi.mock("@/applications/aave/hooks/usePositionNotifications", () => ({
+  usePositionNotifications: () => mockUsePositionNotifications(),
+}));
+
+vi.mock("wagmi", () => ({
+  useAccount: () => ({ address: "0xTestAddress" }),
+}));
+
+// ---------------------------------------------------------------------------
+// Test fixtures
+// ---------------------------------------------------------------------------
+
+function makeBaseResult(
+  overrides: Partial<CalculatorResult> = {},
+): CalculatorResult {
+  return {
+    groups: [
+      {
+        index: 1,
+        vaults: [{ id: "v-1", name: "Vault 1", btc: 0.65 }],
+        combinedBtc: 0.65,
+        liquidationPrice: 50000,
+        distancePct: 10,
+        targetSeizureBtc: 0.28,
+        overSeizureBtc: 0.37,
+        isFullLiquidation: false,
+        debtToRepay: 10000,
+        liquidatorProfitUsd: 500,
+        debtRepaid: 10000,
+        fairnessDebtRepay: 0,
+        fairnessPaymentUsd: 0,
+        debtRemainingAfter: 34000,
+        btcRemainingAfter: 0.35,
+      },
+    ],
+    currentHF: 1.2,
+    collateralValue: 40000,
+    targetSeizureBtc: 0.28,
+    warnings: [],
+    suggestedVaultOrder: null,
+    ...overrides,
+  };
+}
+
+const SUGGESTED_ORDER = [
+  { id: "0xabc", name: "Vault 2", btc: 0.6 },
+  { id: "0xdef", name: "Vault 1", btc: 0.1 },
+];
+
+function makeQueryClient() {
+  return new QueryClient({
+    defaultOptions: { queries: { retry: false } },
+  });
+}
+
+function Wrapper({ children }: { children: ReactNode }) {
+  return (
+    <QueryClientProvider client={makeQueryClient()}>
+      {children}
+    </QueryClientProvider>
+  );
+}
+
+function renderBanner(
+  result: CalculatorResult | null,
+  onDeposit = vi.fn(),
+  onRepay = vi.fn(),
+) {
+  return render(
+    <Wrapper>
+      <PositionNotificationBanner
+        result={result}
+        onDeposit={onDeposit}
+        onRepay={onRepay}
+      />
+    </Wrapper>,
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+describe("PositionNotificationBanner", () => {
+  const onDeposit = vi.fn();
+  const onRepay = vi.fn();
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("renders nothing when result is null", () => {
+    const { container } = renderBanner(null, onDeposit, onRepay);
+    expect(container.innerHTML).toBe("");
+  });
+
+  it("renders green banner when no warnings and order is optimal", () => {
+    renderBanner(makeBaseResult(), onDeposit, onRepay);
+    const banner = screen.getByTestId("position-notification-banner");
+    expect(banner.dataset.severity).toBe("green");
+    expect(screen.getByText("Position optimally structured")).toBeTruthy();
+    expect(screen.queryByText("Apply Suggested Order")).toBeNull();
+  });
+
+  it("renders red banner with Add Collateral + Repay Debt for an urgent warning", () => {
+    const result = makeBaseResult({
+      warnings: [
+        {
+          type: "urgent",
+          title: "Liquidation is 3.0% away",
+          detail: "BTC needs to drop only 3%.",
+        },
+      ],
+    });
+    renderBanner(result, onDeposit, onRepay);
+
+    const banner = screen.getByTestId("position-notification-banner");
+    expect(banner.dataset.severity).toBe("red");
+    expect(screen.getByText("Add Collateral")).toBeTruthy();
+    expect(screen.getByText("Repay Debt")).toBeTruthy();
+    expect(screen.queryByText("Apply Suggested Order")).toBeNull();
+  });
+
+  it("renders soft banner for a weird-params advisory with no actions", () => {
+    const result = makeBaseResult({
+      warnings: [
+        {
+          type: "weird-params",
+          title: "Protocol parameters don't compute",
+          detail: "THF must be greater than expected HF.",
+          tone: "soft",
+        },
+      ],
+    });
+    renderBanner(result, onDeposit, onRepay);
+
+    const banner = screen.getByTestId("position-notification-banner");
+    expect(banner.dataset.severity).toBe("soft");
+    expect(screen.getByText("Protocol parameters don't compute")).toBeTruthy();
+    expect(screen.queryByText("Add Collateral")).toBeNull();
+    expect(screen.queryByText("Apply Suggested Order")).toBeNull();
+  });
+
+  it("renders soft reorder note + Apply Suggested Order for a healthy but suboptimal position", () => {
+    const result = makeBaseResult({ suggestedVaultOrder: SUGGESTED_ORDER });
+    renderBanner(result, onDeposit, onRepay);
+
+    const banner = screen.getByTestId("position-notification-banner");
+    expect(banner.dataset.severity).toBe("soft");
+    expect(
+      screen.getByText("BTC Vaults aren't in the safest liquidation order"),
+    ).toBeTruthy();
+    expect(screen.getByText("Apply Suggested Order")).toBeTruthy();
+    // Reorder-only — no collateral/repay actions.
+    expect(screen.queryByText("Add Collateral")).toBeNull();
+    expect(screen.queryByText("Repay Debt")).toBeNull();
+  });
+
+  it("shows Add Collateral, Repay Debt and Apply Suggested Order when urgent + suboptimal", () => {
+    const result = makeBaseResult({
+      warnings: [
+        { type: "urgent", title: "Liquidation is 4.3% away", detail: "..." },
+      ],
+      suggestedVaultOrder: SUGGESTED_ORDER,
+    });
+    renderBanner(result, onDeposit, onRepay);
+
+    expect(screen.getByText("Add Collateral")).toBeTruthy();
+    expect(screen.getByText("Repay Debt")).toBeTruthy();
+    expect(screen.getByText("Apply Suggested Order")).toBeTruthy();
+  });
+
+  it("calls onDeposit when Add Collateral is clicked", () => {
+    const result = makeBaseResult({
+      warnings: [{ type: "urgent", title: "Critical", detail: "..." }],
+    });
+    renderBanner(result, onDeposit, onRepay);
+
+    fireEvent.click(screen.getByText("Add Collateral"));
+    expect(onDeposit).toHaveBeenCalled();
+  });
+
+  it("calls onRepay when Repay Debt is clicked", () => {
+    const result = makeBaseResult({
+      warnings: [{ type: "urgent", title: "Critical", detail: "..." }],
+    });
+    renderBanner(result, onDeposit, onRepay);
+
+    fireEvent.click(screen.getByText("Repay Debt"));
+    expect(onRepay).toHaveBeenCalled();
+  });
+
+  it("calls executeReorder with vault IDs and verification context when Apply Suggested Order is clicked", () => {
+    const result = makeBaseResult({ suggestedVaultOrder: SUGGESTED_ORDER });
+    renderBanner(result, onDeposit, onRepay);
+
+    fireEvent.click(screen.getByText("Apply Suggested Order"));
+    expect(mockExecuteReorder).toHaveBeenCalledWith(["0xabc", "0xdef"], {
+      suggestedOrderContext: mockReorderVerificationContext,
+    });
+  });
+
+  it("does not call executeReorder when the verification context is unavailable", () => {
+    mockUsePositionNotifications.mockReturnValueOnce({
+      result: null,
+      status: "ready" as const,
+      isLoading: false,
+      reorderVerificationContext: null,
+    });
+    const result = makeBaseResult({ suggestedVaultOrder: SUGGESTED_ORDER });
+    renderBanner(result, onDeposit, onRepay);
+
+    fireEvent.click(screen.getByText("Apply Suggested Order"));
+    expect(mockExecuteReorder).not.toHaveBeenCalled();
+  });
+
+  it("renders secondary warnings below the primary warning", () => {
+    const result = makeBaseResult({
+      warnings: [
+        { type: "urgent", title: "Liquidation can trigger now", detail: "..." },
+        {
+          type: "weird-params",
+          title: "Protocol parameters don't compute",
+          detail: "...",
+          tone: "soft",
+        },
+      ],
+    });
+    renderBanner(result, onDeposit, onRepay);
+
+    expect(screen.getByText("Liquidation can trigger now")).toBeTruthy();
+    expect(screen.getByText("Protocol parameters don't compute")).toBeTruthy();
+  });
+
+  it("renders yellow stale-price banner when statusOverride is stale-price", () => {
+    render(
+      <Wrapper>
+        <PositionNotificationBanner
+          statusOverride="stale-price"
+          onDeposit={onDeposit}
+          onRepay={onRepay}
+        />
+      </Wrapper>,
+    );
+
+    const banner = screen.getByTestId("position-notification-banner");
+    expect(banner.dataset.severity).toBe("yellow");
+    expect(
+      screen.getByText("Position notifications temporarily unavailable"),
+    ).toBeTruthy();
+  });
+
+  it("stale-price banner has no action buttons", () => {
+    render(
+      <Wrapper>
+        <PositionNotificationBanner
+          statusOverride="stale-price"
+          onDeposit={onDeposit}
+          onRepay={onRepay}
+        />
+      </Wrapper>,
+    );
+
+    expect(screen.queryByText("Add Collateral")).toBeNull();
+    expect(screen.queryByText("Repay Debt")).toBeNull();
+    expect(screen.queryByText("Apply Suggested Order")).toBeNull();
+  });
+
+  it("renders nothing for dust (hidden severity)", () => {
+    const result = makeBaseResult({
+      warnings: [
+        {
+          type: "dust",
+          title: "Position too small to model",
+          detail: "Too small for analysis.",
+        },
+      ],
+    });
+    const { container } = renderBanner(result, onDeposit, onRepay);
+
+    expect(
+      container.querySelector("[data-testid='position-notification-banner']"),
+    ).toBeNull();
+  });
+});

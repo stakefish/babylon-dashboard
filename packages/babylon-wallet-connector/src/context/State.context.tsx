@@ -1,5 +1,6 @@
 import { type PropsWithChildren, createContext, useEffect, useMemo, useState } from "react";
 
+import { WALLET_MODAL_OPEN_EVENT } from "@/constants/walletEvents";
 import type { IChain, IWallet } from "@/core/types";
 
 export type Screen<T extends string = string> = {
@@ -26,7 +27,7 @@ export interface State {
 export interface Actions {
   open?: () => void;
   close?: () => void;
-  displayLoader?: (message?: string) => void;
+  displayLoader?: (message?: string, description?: string) => void;
   displayChains?: () => void;
   displayWallets?: (chain: string) => void;
   displayInscriptions?: () => void;
@@ -90,6 +91,13 @@ export function StateProvider({ children, chains }: PropsWithChildren<StateProvi
   const actions: Actions = useMemo(
     () => ({
       open: () => {
+        // Let late-injection re-detection (useWalletRedetection) re-check for
+        // wallets that injected after the initial detection before the user
+        // sees the wallet list — otherwise a slow extension shows as a
+        // download link until the next reload.
+        if (typeof window !== "undefined") {
+          window.dispatchEvent(new Event(WALLET_MODAL_OPEN_EVENT));
+        }
         setState((state) => ({ ...state, visible: true }));
       },
 
@@ -101,8 +109,8 @@ export function StateProvider({ children, chains }: PropsWithChildren<StateProvi
         setState(({ chains }) => ({ ...defaultState, chains }));
       },
 
-      displayLoader: (message = "") => {
-        setState((state) => ({ ...state, screen: { type: "LOADER", params: { message } } }));
+      displayLoader: (message = "", description = "") => {
+        setState((state) => ({ ...state, screen: { type: "LOADER", params: { message, description } } }));
       },
 
       displayTermsOfService: () => {

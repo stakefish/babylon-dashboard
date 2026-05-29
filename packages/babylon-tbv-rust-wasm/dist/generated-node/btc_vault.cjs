@@ -1211,7 +1211,8 @@ class WasmPrePeginTx {
      * * `pegin_amounts` - Array of pegin amounts in satoshis (one per hashlock).
      *   Must have the same length as `hashlocks`.
      * * `timelock_refund` - CSV timelock for the refund path (must be non-zero)
-     * * `fee_rate` - Fee rate in sat/vB (from contract offchain params)
+     * * `fee_rate` - TX-graph fee rate in sat/vB; sizes `depositor_claim_value`
+     * * `min_pegin_fee_rate` - Minimum PegIn fee rate in sat/vB; sizes the PegIn tx fee
      * * `num_local_challengers` - Number of local challengers (from contract params)
      * * `council_quorum` - M in M-of-N council multisig (from contract params)
      * * `council_size` - N in M-of-N council multisig (from contract params)
@@ -1224,13 +1225,14 @@ class WasmPrePeginTx {
      * @param {BigUint64Array} pegin_amounts
      * @param {number} timelock_refund
      * @param {bigint} fee_rate
+     * @param {bigint} min_pegin_fee_rate
      * @param {number} num_local_challengers
      * @param {number} council_quorum
      * @param {number} council_size
      * @param {string} network
      * @param {string | null} [auth_anchor_hash]
      */
-    constructor(depositor, vault_provider, vault_keepers, universal_challengers, hashlocks, pegin_amounts, timelock_refund, fee_rate, num_local_challengers, council_quorum, council_size, network, auth_anchor_hash) {
+    constructor(depositor, vault_provider, vault_keepers, universal_challengers, hashlocks, pegin_amounts, timelock_refund, fee_rate, min_pegin_fee_rate, num_local_challengers, council_quorum, council_size, network, auth_anchor_hash) {
         const ptr0 = passStringToWasm0(depositor, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
         const len0 = WASM_VECTOR_LEN;
         const ptr1 = passStringToWasm0(vault_provider, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
@@ -1247,7 +1249,7 @@ class WasmPrePeginTx {
         const len6 = WASM_VECTOR_LEN;
         var ptr7 = isLikeNone(auth_anchor_hash) ? 0 : passStringToWasm0(auth_anchor_hash, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
         var len7 = WASM_VECTOR_LEN;
-        const ret = wasm.wasmprepegintx_new(ptr0, len0, ptr1, len1, ptr2, len2, ptr3, len3, ptr4, len4, ptr5, len5, timelock_refund, fee_rate, num_local_challengers, council_quorum, council_size, ptr6, len6, ptr7, len7);
+        const ret = wasm.wasmprepegintx_new(ptr0, len0, ptr1, len1, ptr2, len2, ptr3, len3, ptr4, len4, ptr5, len5, timelock_refund, fee_rate, min_pegin_fee_rate, num_local_challengers, council_quorum, council_size, ptr6, len6, ptr7, len7);
         if (ret[2]) {
             throw takeFromExternrefTable0(ret[1]);
         }
@@ -1346,6 +1348,53 @@ function computeMinClaimValue(num_local_challengers, num_universal_challengers, 
     return BigInt.asUintN(64, ret[0]);
 }
 exports.computeMinClaimValue = computeMinClaimValue;
+
+/**
+ * Computes the minimum PegIn (activation) transaction fee (in satoshis)
+ * that the protocol requires the future PegIn tx to pay.
+ *
+ * `peginFee = peginTxVsize(num_vks, num_ucs) × min_pegin_fee_rate`, where
+ * the vsize comes from a Taproot script-path-spend weight prediction whose
+ * witness shape depends on the VK + UC signer count. Each HTLC output the
+ * depositor funds in the Pre-PegIn tx must reserve at least this fee
+ * inside its value (`htlcValue = peginAmount + depositorClaimValue +
+ * minPeginFee`), or the VP cannot afford to broadcast the PegIn at
+ * activation time.
+ *
+ * Usage in JS:
+ * ```js
+ * const minPeginFee = computeMinPeginFee(numVks, numUcs, minPeginFeeRate);
+ * ```
+ *
+ * # Arguments
+ *
+ * * `num_vks` - Number of vault keepers (must satisfy `1 <= num_vks <= 99`;
+ *   `VaultKeepers` is required to be non-empty in this protocol)
+ * * `num_ucs` - Number of universal challengers (must satisfy `num_ucs <= 99`;
+ *   may be 0, in which case the returned fee reflects a strictly smaller
+ *   hashlock script with the UC multisig block omitted)
+ * * `min_pegin_fee_rate` - Minimum PegIn fee rate in sat/vB (protocol param)
+ *
+ * # Errors
+ *
+ * Returns an error string when:
+ * * `num_vks == 0` or either count exceeds the estimator's seeding range
+ *   (`> 99`), where the underlying dummy connector cannot be constructed.
+ * * The `vsize × fee_rate` multiplication overflows `u64` (only possible at
+ *   degenerate fee rates).
+ * @param {number} num_vks
+ * @param {number} num_ucs
+ * @param {bigint} min_pegin_fee_rate
+ * @returns {bigint}
+ */
+function computeMinPeginFee(num_vks, num_ucs, min_pegin_fee_rate) {
+    const ret = wasm.computeMinPeginFee(num_vks, num_ucs, min_pegin_fee_rate);
+    if (ret[2]) {
+        throw takeFromExternrefTable0(ret[1]);
+    }
+    return BigInt.asUintN(64, ret[0]);
+}
+exports.computeMinPeginFee = computeMinPeginFee;
 
 /**
  * Computes the sighash for the claimer's NoPayout transaction for a specific
@@ -1539,6 +1588,62 @@ function deriveVaultId(pegin_tx_hash, depositor) {
     }
 }
 exports.deriveVaultId = deriveVaultId;
+
+/**
+ * Derive the 32-byte `authAnchor` shared across a Pre-PegIn (frozen, on-chain-binding).
+ * @param {Uint8Array} root
+ * @returns {Uint8Array}
+ */
+function expandAuthAnchor(root) {
+    const ptr0 = passArray8ToWasm0(root, wasm.__wbindgen_malloc);
+    const len0 = WASM_VECTOR_LEN;
+    const ret = wasm.expandAuthAnchor(ptr0, len0);
+    if (ret[3]) {
+        throw takeFromExternrefTable0(ret[2]);
+    }
+    var v2 = getArrayU8FromWasm0(ret[0], ret[1]).slice();
+    wasm.__wbindgen_free(ret[0], ret[1] * 1, 1);
+    return v2;
+}
+exports.expandAuthAnchor = expandAuthAnchor;
+
+/**
+ * Derive the 32-byte `hashlockSecret` for HTLC `htlcVout` (frozen, on-chain-binding).
+ * @param {Uint8Array} root
+ * @param {number} htlc_vout
+ * @returns {Uint8Array}
+ */
+function expandHashlockSecret(root, htlc_vout) {
+    const ptr0 = passArray8ToWasm0(root, wasm.__wbindgen_malloc);
+    const len0 = WASM_VECTOR_LEN;
+    const ret = wasm.expandHashlockSecret(ptr0, len0, htlc_vout);
+    if (ret[3]) {
+        throw takeFromExternrefTable0(ret[2]);
+    }
+    var v2 = getArrayU8FromWasm0(ret[0], ret[1]).slice();
+    wasm.__wbindgen_free(ret[0], ret[1] * 1, 1);
+    return v2;
+}
+exports.expandHashlockSecret = expandHashlockSecret;
+
+/**
+ * Derive the 64-byte `wotsSeed` for HTLC `htlcVout` (frozen, on-chain-binding).
+ * @param {Uint8Array} root
+ * @param {number} htlc_vout
+ * @returns {Uint8Array}
+ */
+function expandWotsSeed(root, htlc_vout) {
+    const ptr0 = passArray8ToWasm0(root, wasm.__wbindgen_malloc);
+    const len0 = WASM_VECTOR_LEN;
+    const ret = wasm.expandWotsSeed(ptr0, len0, htlc_vout);
+    if (ret[3]) {
+        throw takeFromExternrefTable0(ret[2]);
+    }
+    var v2 = getArrayU8FromWasm0(ret[0], ret[1]).slice();
+    wasm.__wbindgen_free(ret[0], ret[1] * 1, 1);
+    return v2;
+}
+exports.expandWotsSeed = expandWotsSeed;
 
 /**
  * Initialize panic hook for better error messages in the browser console.

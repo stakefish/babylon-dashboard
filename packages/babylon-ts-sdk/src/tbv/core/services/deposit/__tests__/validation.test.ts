@@ -5,8 +5,16 @@
 import { describe, expect, it } from "vitest";
 
 import {
+<<<<<<<< HEAD:packages/babylon-ts-sdk/src/tbv/core/services/deposit/__tests__/validation.test.ts
   isDepositAmountValid,
   validateDepositAmount,
+========
+  type DepositCtaParams,
+  getDepositButtonLabel,
+  getDepositCtaState,
+  maxBelowMinimum,
+  maxBelowMinimumLabel,
+>>>>>>>> main:services/vault/src/services/deposit/__tests__/validations.test.ts
   validateMultiVaultDepositInputs,
   validateProviderSelection,
   validateRemainingCapacity,
@@ -15,76 +23,6 @@ import {
 } from "../validation";
 
 describe("Deposit Validations", () => {
-  describe("validateDepositAmount", () => {
-    const minDeposit = 10000n; // 0.0001 BTC
-
-    it("should accept valid deposit amount", () => {
-      const result = validateDepositAmount(100000n, minDeposit);
-
-      expect(result.valid).toBe(true);
-      expect(result.error).toBeUndefined();
-    });
-
-    it("should reject zero amount", () => {
-      const result = validateDepositAmount(0n, minDeposit);
-
-      expect(result.valid).toBe(false);
-      expect(result.error).toContain("greater than zero");
-    });
-
-    it("should reject negative amount", () => {
-      const result = validateDepositAmount(-1000n, minDeposit);
-
-      expect(result.valid).toBe(false);
-      expect(result.error).toContain("greater than zero");
-    });
-
-    it("should reject amount below minimum", () => {
-      const result = validateDepositAmount(5000n, minDeposit);
-
-      expect(result.valid).toBe(false);
-      expect(result.error).toContain("Minimum deposit");
-    });
-
-    it("should accept exact minimum amount", () => {
-      const result = validateDepositAmount(minDeposit, minDeposit);
-
-      expect(result.valid).toBe(true);
-    });
-
-    it("should accept very large amounts when no maxDeposit", () => {
-      const veryLargeAmount = 21_000_000_00_000_000n; // 21M BTC
-      const result = validateDepositAmount(veryLargeAmount, minDeposit);
-
-      expect(result.valid).toBe(true);
-    });
-
-    it("should reject amount exceeding maxDeposit", () => {
-      const maxDeposit = 100_000_000n; // 1 BTC
-      const result = validateDepositAmount(
-        200_000_000n,
-        minDeposit,
-        maxDeposit,
-      );
-
-      expect(result.valid).toBe(false);
-      expect(result.error).toContain("Maximum deposit");
-    });
-
-    it("should accept exact maxDeposit amount", () => {
-      const maxDeposit = 100_000_000n;
-      const result = validateDepositAmount(maxDeposit, minDeposit, maxDeposit);
-
-      expect(result.valid).toBe(true);
-    });
-
-    it("should ignore maxDeposit when zero", () => {
-      const result = validateDepositAmount(200_000_000n, minDeposit, 0n);
-
-      expect(result.valid).toBe(true);
-    });
-  });
-
   describe("validateProviderSelection", () => {
     const availableProviders = [
       "0x1234567890abcdef1234567890abcdef12345678",
@@ -146,169 +84,17 @@ describe("Deposit Validations", () => {
     });
   });
 
-  describe("isDepositAmountValid", () => {
-    const minDeposit = 10000n;
-    const btcBalance = 1000000n; // 0.01 BTC
-
-    it("should return true for valid deposit within all constraints", () => {
-      const result = isDepositAmountValid({
-        amountSats: 100000n,
-        minDeposit,
-        btcBalance,
-        estimatedFeeSats: 1000n,
-        depositorClaimValue: 5000n,
-      });
-      expect(result).toBe(true);
-    });
-
-    it("should return false for zero amount", () => {
-      const result = isDepositAmountValid({
-        amountSats: 0n,
-        minDeposit,
-        btcBalance,
-      });
-      expect(result).toBe(false);
-    });
-
-    it("should return false for amount below minimum", () => {
-      const result = isDepositAmountValid({
-        amountSats: 5000n, // below 10000n min
-        minDeposit,
-        btcBalance,
-      });
-      expect(result).toBe(false);
-    });
-
-    it("should return false for amount exceeding balance", () => {
-      const result = isDepositAmountValid({
-        amountSats: btcBalance + 1n,
-        minDeposit,
-        btcBalance,
-      });
-      expect(result).toBe(false);
-    });
-
-    it("should return true for exact minimum amount", () => {
-      const result = isDepositAmountValid({
-        amountSats: minDeposit,
-        minDeposit,
-        btcBalance,
-        estimatedFeeSats: 0n,
-        depositorClaimValue: 0n,
-      });
-      expect(result).toBe(true);
-    });
-
-    it("should return false when estimatedFeeSats is absent", () => {
-      const result = isDepositAmountValid({
-        amountSats: 100000n,
-        minDeposit,
-        btcBalance,
-        depositorClaimValue: 5000n,
-      });
-      expect(result).toBe(false);
-    });
-
-    it("should return false when depositorClaimValue is absent", () => {
-      const result = isDepositAmountValid({
-        amountSats: 100000n,
-        minDeposit,
-        btcBalance,
-        estimatedFeeSats: 5000n,
-      });
-      expect(result).toBe(false);
-    });
-
-    it("should return true for exact balance amount with zero fees", () => {
-      const result = isDepositAmountValid({
-        amountSats: btcBalance,
-        minDeposit,
-        btcBalance,
-        estimatedFeeSats: 0n,
-        depositorClaimValue: 0n,
-      });
-      expect(result).toBe(true);
-    });
-
-    it("should return false when amount + fees exceed balance", () => {
-      const result = isDepositAmountValid({
-        amountSats: 990000n,
-        minDeposit,
-        btcBalance,
-        estimatedFeeSats: 20000n,
-        depositorClaimValue: 0n,
-      });
-      // 990000 + 20000 = 1010000 > 1000000
-      expect(result).toBe(false);
-    });
-
-    it("should return false when amount + fees + claimValue exceed balance", () => {
-      const result = isDepositAmountValid({
-        amountSats: 900000n,
-        minDeposit,
-        btcBalance,
-        estimatedFeeSats: 5000n,
-        depositorClaimValue: 100000n,
-      });
-      // 900000 + 5000 + 100000 = 1005000 > 1000000
-      expect(result).toBe(false);
-    });
-
-    it("should return true when amount + fees + claimValue fit within balance", () => {
-      const result = isDepositAmountValid({
-        amountSats: 900000n,
-        minDeposit,
-        btcBalance,
-        estimatedFeeSats: 5000n,
-        depositorClaimValue: 50000n,
-      });
-      // 900000 + 5000 + 50000 = 955000 < 1000000
-      expect(result).toBe(true);
-    });
-
-    it("should accept very large amounts if balance allows and no maxDeposit", () => {
-      const largeBalance = 21_000_000_00_000_000n; // 21M BTC
-      const result = isDepositAmountValid({
-        amountSats: largeBalance,
-        minDeposit,
-        btcBalance: largeBalance,
-        estimatedFeeSats: 0n,
-        depositorClaimValue: 0n,
-      });
-      expect(result).toBe(true);
-    });
-
-    it("should return false for amount exceeding maxDeposit", () => {
-      const maxDeposit = 500000n;
-      const result = isDepositAmountValid({
-        amountSats: 600000n,
-        minDeposit,
-        maxDeposit,
-        btcBalance,
-        estimatedFeeSats: 0n,
-        depositorClaimValue: 0n,
-      });
-      expect(result).toBe(false);
-    });
-
-    it("should return true for amount at exact maxDeposit", () => {
-      const maxDeposit = 500000n;
-      const result = isDepositAmountValid({
-        amountSats: maxDeposit,
-        minDeposit,
-        maxDeposit,
-        btcBalance,
-        estimatedFeeSats: 0n,
-        depositorClaimValue: 0n,
-      });
-      expect(result).toBe(true);
-    });
-  });
-
   describe("validateMultiVaultDepositInputs", () => {
     const validInputs = {
       vaultAmounts: [50_000n, 50_000n],
+<<<<<<<< HEAD:packages/babylon-ts-sdk/src/tbv/core/services/deposit/__tests__/validation.test.ts
       confirmedUTXOs: [{ txid: "0xabc", vout: 0, value: 200_000 }],
+========
+      selectedProviders: ["0x1234567890abcdef1234567890abcdef12345678"],
+      confirmedUTXOs: [
+        { txid: "0xabc", vout: 0, value: 200_000, scriptPubKey: "0xdef" },
+      ] as UTXO[],
+>>>>>>>> main:services/vault/src/services/deposit/__tests__/validations.test.ts
       vaultProviderBtcPubkey: "a".repeat(64),
       vaultKeeperBtcPubkeys: ["b".repeat(64)],
       universalChallengerBtcPubkeys: ["c".repeat(64)],
@@ -347,6 +133,58 @@ describe("Deposit Validations", () => {
         }),
       ).not.toThrow();
     });
+<<<<<<<< HEAD:packages/babylon-ts-sdk/src/tbv/core/services/deposit/__tests__/validation.test.ts
+========
+
+    it("throws when more than 2 vaults are requested", () => {
+      expect(() =>
+        validateMultiVaultDepositInputs({
+          ...validInputs,
+          vaultAmounts: [30_000n, 30_000n, 30_000n],
+        }),
+      ).toThrow("Maximum 2 BTC Vaults supported");
+    });
+
+    it("throws when BTC wallet is not connected", () => {
+      expect(() =>
+        validateMultiVaultDepositInputs({
+          ...validInputs,
+          btcAddress: undefined,
+        }),
+      ).toThrow("BTC wallet not connected");
+    });
+
+    it("throws when ETH wallet is not connected", () => {
+      expect(() =>
+        validateMultiVaultDepositInputs({
+          ...validInputs,
+          depositorEthAddress: undefined,
+        }),
+      ).toThrow("ETH wallet not connected");
+    });
+
+    it("throws when no providers are selected", () => {
+      expect(() =>
+        validateMultiVaultDepositInputs({
+          ...validInputs,
+          selectedProviders: [],
+        }),
+      ).toThrow("At least one vault provider required");
+    });
+
+    it("throws when multiple providers are selected", () => {
+      expect(() =>
+        validateMultiVaultDepositInputs({
+          ...validInputs,
+          selectedProviders: [
+            "0x1234567890abcdef1234567890abcdef12345678",
+            "0xabcdef1234567890abcdef1234567890abcdef12",
+          ],
+        }),
+      ).toThrow("Multiple providers not yet supported");
+    });
+  });
+>>>>>>>> main:services/vault/src/services/deposit/__tests__/validations.test.ts
 
     it("throws when vaultProviderBtcPubkey is invalid", () => {
       expect(() =>
@@ -385,11 +223,42 @@ describe("Deposit Validations", () => {
     });
   });
 
+<<<<<<<< HEAD:packages/babylon-ts-sdk/src/tbv/core/services/deposit/__tests__/validation.test.ts
   describe("validateRemainingCapacity", () => {
     it("passes when the requested amount fits within effective remaining", () => {
       expect(
         validateRemainingCapacity({ amount: 5n, effectiveRemaining: 10n }),
       ).toEqual({ valid: true });
+========
+  describe("getDepositCtaState", () => {
+    const readyParams: DepositCtaParams = {
+      amountSats: 100000n,
+      minDeposit: 10000n,
+      btcBalance: 1000000n,
+      estimatedFeeSats: 1000n,
+      depositorClaimValue: 5000n,
+      isDepositDisabled: false,
+      isGeoBlocked: false,
+      isAddressBlocked: false,
+      isWalletConnected: true,
+      hasProvider: true,
+      isFeeError: false,
+      feeError: null,
+      feeDisabled: false,
+      ordinalsCheckPending: false,
+      hasWalletConnectionError: false,
+      isReconnectingWallet: false,
+      maxDepositSats: null,
+      effectiveRemaining: null,
+      capUnavailable: false,
+      minPeginFee: 500n,
+      minPeginFeeError: null,
+    };
+
+    it("returns enabled 'Deposit' when all conditions are met", () => {
+      const result = getDepositCtaState(readyParams);
+      expect(result).toEqual({ disabled: false, label: "Deposit" });
+>>>>>>>> main:services/vault/src/services/deposit/__tests__/validations.test.ts
     });
 
     it("passes when there is no cap (effectiveRemaining is null)", () => {
@@ -410,10 +279,41 @@ describe("Deposit Validations", () => {
       expect(result.error).toMatch(/supply cap reached/i);
     });
 
+<<<<<<<< HEAD:packages/babylon-ts-sdk/src/tbv/core/services/deposit/__tests__/validation.test.ts
     it("rejects with a vault-too-large error when amount exceeds remaining", () => {
       const result = validateRemainingCapacity({
         amount: 20n,
         effectiveRemaining: 5n,
+========
+    it("returns 'Wallet not eligible' when address is blocked", () => {
+      const result = getDepositCtaState({
+        ...readyParams,
+        isAddressBlocked: true,
+      });
+      expect(result).toEqual({
+        disabled: true,
+        label: "Wallet not eligible",
+      });
+    });
+
+    it("prioritizes geo-blocked over address-blocked", () => {
+      const result = getDepositCtaState({
+        ...readyParams,
+        isGeoBlocked: true,
+        isAddressBlocked: true,
+      });
+      expect(result.label).toBe("Service unavailable in your region");
+    });
+
+    it("returns 'Connect your wallet' when wallet is not connected", () => {
+      const result = getDepositCtaState({
+        ...readyParams,
+        isWalletConnected: false,
+      });
+      expect(result).toEqual({
+        disabled: true,
+        label: "Connect your wallet",
+>>>>>>>> main:services/vault/src/services/deposit/__tests__/validations.test.ts
       });
       expect(result.valid).toBe(false);
       expect(result.error).toMatch(/exceeds remaining capacity/i);
@@ -426,6 +326,7 @@ describe("Deposit Validations", () => {
       expect(result.valid).toBe(true);
     });
 
+<<<<<<<< HEAD:packages/babylon-ts-sdk/src/tbv/core/services/deposit/__tests__/validation.test.ts
     it("rejects empty amounts array", () => {
       const result = validateVaultAmounts([]);
       expect(result.valid).toBe(false);
@@ -455,6 +356,58 @@ describe("Deposit Validations", () => {
     it("accepts valid 64-char hex pubkey", () => {
       const result = validateVaultProviderPubkey("a".repeat(64));
       expect(result.valid).toBe(true);
+========
+    it("returns enabled 'Reconnect Wallet' when wallet liveness probe failed", () => {
+      const result = getDepositCtaState({
+        ...readyParams,
+        hasWalletConnectionError: true,
+      });
+      expect(result).toEqual({ disabled: false, label: "Reconnect Wallet" });
+    });
+
+    it("returns disabled 'Reconnecting Wallet...' while reconnect is in flight", () => {
+      const result = getDepositCtaState({
+        ...readyParams,
+        hasWalletConnectionError: true,
+        isReconnectingWallet: true,
+      });
+      expect(result).toEqual({
+        disabled: true,
+        label: "Reconnecting Wallet...",
+      });
+    });
+
+    it("prioritizes wallet-not-connected over reconnect CTA", () => {
+      const result = getDepositCtaState({
+        ...readyParams,
+        isWalletConnected: false,
+        hasWalletConnectionError: true,
+      });
+      expect(result.label).toBe("Connect your wallet");
+    });
+
+    it("returns 'Select a vault provider' when provider is missing", () => {
+      const result = getDepositCtaState({
+        ...readyParams,
+        hasProvider: false,
+      });
+      expect(result).toEqual({
+        disabled: true,
+        label: "Select a vault provider",
+      });
+    });
+
+    it("returns fee error message when fee estimation fails", () => {
+      const result = getDepositCtaState({
+        ...readyParams,
+        isFeeError: true,
+        feeError: "Network congestion",
+      });
+      expect(result).toEqual({
+        disabled: true,
+        label: "Network congestion",
+      });
+>>>>>>>> main:services/vault/src/services/deposit/__tests__/validations.test.ts
     });
 
     it("accepts valid pubkey with 0x prefix", () => {
@@ -476,6 +429,302 @@ describe("Deposit Validations", () => {
     it("rejects non-hex characters", () => {
       const result = validateVaultProviderPubkey("g".repeat(64));
       expect(result.valid).toBe(false);
+    });
+
+    it("disables with inscription-check label while ordinals check is pending", () => {
+      const result = getDepositCtaState({
+        ...readyParams,
+        ordinalsCheckPending: true,
+      });
+      expect(result).toEqual({
+        disabled: true,
+        label: "Checking for inscriptions...",
+      });
+    });
+
+    it("returns 'Insufficient balance' when amount exceeds the fee-adjusted max", () => {
+      const result = getDepositCtaState({
+        ...readyParams,
+        amountSats: 100001n,
+        maxDepositSats: 100000n,
+      });
+      expect(result).toEqual({
+        disabled: true,
+        label: "Insufficient balance",
+      });
+    });
+
+    it("shows 'Insufficient balance' over 'Select a vault provider' when amount exceeds the fee-adjusted max", () => {
+      const result = getDepositCtaState({
+        ...readyParams,
+        amountSats: 100001n,
+        maxDepositSats: 100000n,
+        hasProvider: false,
+      });
+      expect(result.label).toBe("Insufficient balance");
+    });
+
+    it("allows an amount equal to the fee-adjusted max", () => {
+      const result = getDepositCtaState({
+        ...readyParams,
+        amountSats: 100000n,
+        maxDepositSats: 100000n,
+      });
+      expect(result).toEqual({ disabled: false, label: "Deposit" });
+    });
+
+    it("shows the cap message, not 'Insufficient balance', when the supply cap is the binding max", () => {
+      // The supply cap is the limiter: maxDepositSats is clamped to
+      // effectiveRemaining, so an over-cap amount also exceeds maxDepositSats.
+      // The wallet has ample balance, so "Insufficient balance" would be wrong.
+      const result = getDepositCtaState({
+        ...readyParams,
+        amountSats: 800_000n,
+        maxDepositSats: 500_000n,
+        effectiveRemaining: 500_000n,
+      });
+      expect(result).toEqual({
+        disabled: true,
+        label: "Vault size exceeds remaining capacity (0.005 BTC)",
+      });
+    });
+
+    it("shows 'Insufficient balance' when the fee-adjusted max (not the cap) is the limiter", () => {
+      // maxDepositSats is below effectiveRemaining, so the limit is balance/fees
+      // rather than the supply cap — "Insufficient balance" is the right label.
+      const result = getDepositCtaState({
+        ...readyParams,
+        amountSats: 100_001n,
+        maxDepositSats: 100_000n,
+        effectiveRemaining: 500_000n,
+      });
+      expect(result).toEqual({
+        disabled: true,
+        label: "Insufficient balance",
+      });
+    });
+
+    it("prioritizes amount label over ordinals-pending", () => {
+      const result = getDepositCtaState({
+        ...readyParams,
+        amountSats: 0n,
+        ordinalsCheckPending: true,
+      });
+      expect(result.label).toBe("Enter an amount");
+    });
+
+    it("disables with cap-unavailable label when capUnavailable is true", () => {
+      const result = getDepositCtaState({
+        ...readyParams,
+        capUnavailable: true,
+      });
+      expect(result).toEqual({
+        disabled: true,
+        label: "Unable to verify supply cap — please try again",
+      });
+    });
+
+    it("returns 'Supply cap reached' when effectiveRemaining is zero", () => {
+      const result = getDepositCtaState({
+        ...readyParams,
+        effectiveRemaining: 0n,
+      });
+      expect(result).toEqual({
+        disabled: true,
+        label: "Supply cap reached — deposits temporarily paused",
+      });
+    });
+
+    it("returns 'Vault size exceeds remaining capacity' when amount > effectiveRemaining", () => {
+      // Amount + fee + claim (806_000) still fits readyParams.btcBalance
+      // (1_000_000), so this test isolates the cap branch from the balance
+      // check. effectiveRemaining 500_000 sats = "0.005" via
+      // formatSatoshisToBtc (trailing zeros stripped).
+      const result = getDepositCtaState({
+        ...readyParams,
+        amountSats: 800_000n,
+        effectiveRemaining: 500_000n,
+      });
+      expect(result).toEqual({
+        disabled: true,
+        label: "Vault size exceeds remaining capacity (0.005 BTC)",
+      });
+    });
+
+    it("allows an amount equal to effectiveRemaining", () => {
+      const result = getDepositCtaState({
+        ...readyParams,
+        amountSats: 500_000n,
+        effectiveRemaining: 500_000n,
+      });
+      expect(result).toEqual({ disabled: false, label: "Deposit" });
+    });
+
+    it("shows the 'capacity below minimum' terminal message when remaining cap < minimum deposit", () => {
+      // cap 0.003 < min 0.005: no amount can clear both bounds. The amount here
+      // (above the cap) would otherwise read "Vault size exceeds remaining
+      // capacity", which is misleading — lowering it just hits the minimum.
+      const result = getDepositCtaState({
+        ...readyParams,
+        minDeposit: 500_000n,
+        effectiveRemaining: 300_000n,
+        amountSats: 400_000n,
+      });
+      expect(result).toEqual({
+        disabled: true,
+        label:
+          "Remaining capacity (0.003 BTC) is below the minimum deposit (0.005 BTC)",
+      });
+    });
+
+    it("shows 'capacity below minimum' regardless of the entered amount (terminal state)", () => {
+      // Same cap < min state, but with no amount entered: still terminal, so it
+      // takes precedence over "Enter an amount".
+      const result = getDepositCtaState({
+        ...readyParams,
+        minDeposit: 500_000n,
+        effectiveRemaining: 300_000n,
+        amountSats: 0n,
+      });
+      expect(result.label).toBe(
+        "Remaining capacity (0.003 BTC) is below the minimum deposit (0.005 BTC)",
+      );
+    });
+
+    it("shows the 'available balance below minimum' terminal message when the fee-adjusted max < minimum deposit", () => {
+      // Balance/fee dimension (not the supply cap): maxDepositSats resolved to a
+      // positive value below the minimum, so no amount can clear both bounds.
+      // The minimum-amount label would be a dead end (the user can't raise past
+      // a max that's below the minimum).
+      const result = getDepositCtaState({
+        ...readyParams,
+        minDeposit: 1_000_000n,
+        maxDepositSats: 960_398n,
+        effectiveRemaining: null,
+        amountSats: 100_000n,
+      });
+      expect(result).toEqual({
+        disabled: true,
+        label: maxBelowMinimumLabel(960_398n, 1_000_000n),
+      });
+    });
+
+    it("shows 'available balance below minimum' regardless of the entered amount (terminal state)", () => {
+      const result = getDepositCtaState({
+        ...readyParams,
+        minDeposit: 1_000_000n,
+        maxDepositSats: 960_398n,
+        effectiveRemaining: null,
+        amountSats: 0n,
+      });
+      expect(result.label).toBe(maxBelowMinimumLabel(960_398n, 1_000_000n));
+    });
+
+    it("prefers the cap message over the balance message when both are below the minimum", () => {
+      // maxDepositSats is clamped to effectiveRemaining, so when the supply cap
+      // is the binding cause both predicates are true — the more specific cap
+      // message must win.
+      const result = getDepositCtaState({
+        ...readyParams,
+        minDeposit: 1_000_000n,
+        effectiveRemaining: 300_000n,
+        maxDepositSats: 300_000n,
+        amountSats: 0n,
+      });
+      expect(result.label).toBe(
+        "Remaining capacity (0.003 BTC) is below the minimum deposit (0.01 BTC)",
+      );
+    });
+
+    it("shows 'Supply cap reached' for an empty form when the cap is fully used (pre-existing precedence)", () => {
+      // Documents that effectiveRemaining === 0n wins over "Enter an amount"
+      // for a zero amount — behavior unchanged by the cap/label reorder.
+      const result = getDepositCtaState({
+        ...readyParams,
+        amountSats: 0n,
+        effectiveRemaining: 0n,
+      });
+      expect(result).toEqual({
+        disabled: true,
+        label: "Supply cap reached — deposits temporarily paused",
+      });
+    });
+
+    it("disables with 'Calculating fees...' when minPeginFee is still loading", () => {
+      const result = getDepositCtaState({
+        ...readyParams,
+        minPeginFee: null,
+      });
+      expect(result).toEqual({
+        disabled: true,
+        label: "Calculating fees...",
+      });
+    });
+
+    it("allows submit at zero amount even when minPeginFee is null (no submit race possible)", () => {
+      // amount = 0n routes to "Enter an amount" via getDepositButtonLabel
+      // before the minPeginFee gate fires, so a freshly-loaded form with
+      // no amount yet shows the right prompt rather than a confusing
+      // "Calculating fees..." label.
+      const result = getDepositCtaState({
+        ...readyParams,
+        amountSats: 0n,
+        minPeginFee: null,
+      });
+      expect(result.label).toBe("Enter an amount");
+    });
+
+    it("disables with 'Fee estimate unavailable' when minPeginFee query errored", () => {
+      const result = getDepositCtaState({
+        ...readyParams,
+        minPeginFeeError: new Error("WASM init failed"),
+      });
+      expect(result).toEqual({
+        disabled: true,
+        label: "Fee estimate unavailable",
+      });
+    });
+
+    it("prioritizes minPeginFee error over loading state", () => {
+      // Both error AND loading would be impossible in practice, but lock in
+      // the precedence so a future regression that surfaces both doesn't
+      // silently fall back to the loading label.
+      const result = getDepositCtaState({
+        ...readyParams,
+        minPeginFee: null,
+        minPeginFeeError: new Error("boom"),
+      });
+      expect(result.label).toBe("Fee estimate unavailable");
+    });
+  });
+
+  describe("maxBelowMinimum", () => {
+    it("is false while the max is still resolving (null)", () => {
+      expect(maxBelowMinimum(null, 1_000_000n)).toBe(false);
+    });
+
+    it("is false when the max resolved to zero (supply cap reached)", () => {
+      expect(maxBelowMinimum(0n, 1_000_000n)).toBe(false);
+    });
+
+    it("is false when the max equals the minimum", () => {
+      expect(maxBelowMinimum(1_000_000n, 1_000_000n)).toBe(false);
+    });
+
+    it("is false when the max is at or above the minimum", () => {
+      expect(maxBelowMinimum(1_500_000n, 1_000_000n)).toBe(false);
+    });
+
+    it("is true when the max is positive but below the minimum", () => {
+      expect(maxBelowMinimum(960_398n, 1_000_000n)).toBe(true);
+    });
+  });
+
+  describe("maxBelowMinimumLabel", () => {
+    it("names the available balance and the minimum deposit", () => {
+      const label = maxBelowMinimumLabel(500_000n, 1_000_000n);
+      expect(label).toContain("Available balance (0.005");
+      expect(label).toContain("is below the minimum deposit (0.01");
     });
   });
 });

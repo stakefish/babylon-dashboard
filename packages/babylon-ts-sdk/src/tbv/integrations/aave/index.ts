@@ -53,6 +53,7 @@ export {
   BPS_TO_PERCENT_DIVISOR,
   BTC_DECIMALS,
   FULL_REPAY_BUFFER_DIVISOR,
+  FULL_REPAY_BUFFER_FRACTION,
   HEALTH_FACTOR_WARNING_THRESHOLD,
   MIN_HEALTH_FACTOR_FOR_BORROW,
   USDC_DECIMALS,
@@ -76,15 +77,19 @@ export {
   buildRepayTx,
   buildWithdrawCollateralsTx,
   getDynamicReserveConfig,
+  getOracleAddress,
   getPosition,
   getPositionSizeParams,
   getReserve,
+  getReservesPrices,
+  getReservesPricesSafe,
   getTargetHealthFactor,
   getUserAccountData,
   getUserPosition,
   getUserTotalDebt,
   hasCollateral,
   hasDebt,
+  type ReservePriceResult,
 } from "./clients/index.js";
 
 // Utilities

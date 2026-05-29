@@ -1,7 +1,19 @@
 import type React from "react";
+import { useEffect, useState } from "react";
 import { twJoin, twMerge } from "tailwind-merge";
+import { Hint } from "../../../components/Hint/Hint";
 import { Slider, type SliderStep } from "../../../components/Slider";
 import { sanitizeNumericInput } from "../../../utils/helpers";
+
+function toNumber(amount: string | number): number {
+  return typeof amount === "number" ? amount : parseFloat(amount);
+}
+
+function formatForInput(amount: string | number): string {
+  const num = toNumber(amount);
+  if (!Number.isFinite(num) || num === 0) return "";
+  return String(num);
+}
 
 interface BalanceDetails {
   balance: number | string;
@@ -13,6 +25,11 @@ interface BalanceDetails {
 interface BottomField {
   label?: string;
   value: string | React.ReactNode;
+  /**
+   * Optional explanatory tooltip rendered as an info-icon adjacent to the
+   * field. Renders nothing when omitted.
+   */
+  tooltip?: React.ReactNode;
 }
 
 export interface AmountSliderProps {
@@ -21,10 +38,10 @@ export interface AmountSliderProps {
   currencyIcon: string;
   currencyName: string;
   onAmountChange?: (e: React.ChangeEvent<HTMLInputElement>) => void; // Optional - if not provided, input is read-only
-  
+
   // Balance details
   balanceDetails?: BalanceDetails;
-  
+
   // Slider
   sliderValue: number;
   sliderMin: number;
@@ -36,12 +53,19 @@ export interface AmountSliderProps {
   sliderVariant?: "primary" | "success" | "warning" | "error" | "rainbow";
   sliderActiveColor?: string;
   sliderBackgroundColor?: string;
-  
+  /**
+   * Disables only the range slider, leaving the amount input and Max button
+   * usable. Use when the slider has no meaningful range yet (e.g. the max is
+   * still loading) but manual entry should remain available. Combined with the
+   * general `disabled` prop, which disables the whole widget.
+   */
+  sliderDisabled?: boolean;
+
   // Bottom fields
   leftField?: BottomField;
   rightField?: BottomField;
   onMaxClick?: () => void;
-  
+
   // General
   disabled?: boolean;
   readOnly?: boolean;
@@ -64,6 +88,7 @@ export function AmountSlider({
   sliderVariant = "primary",
   sliderActiveColor,
   sliderBackgroundColor,
+  sliderDisabled = false,
   leftField,
   rightField,
   onMaxClick,
@@ -72,6 +97,23 @@ export function AmountSlider({
   className,
   inputClassName,
 }: AmountSliderProps) {
+  // Local string mirror so partial decimals like "0." survive a re-render
+  // (a controlled `value={amount}` would collapse "0." back to "0").
+  const [rawInput, setRawInput] = useState<string>(() => formatForInput(amount));
+
+  // Sync from external amount changes (Max, slider, reset). Skip when the
+  // current string already parses to the same number — that's the user
+  // mid-typing case.
+  useEffect(() => {
+    const external = toNumber(amount);
+    const current = parseFloat(rawInput);
+    const sameNumber =
+      (Number.isFinite(current) && current === external) || (!Number.isFinite(current) && !Number.isFinite(external));
+    if (sameNumber) return;
+    setRawInput(formatForInput(amount));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [amount]);
+
   const handleKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
     if (e.key === "ArrowUp" || e.key === "ArrowDown") {
       e.preventDefault();
@@ -81,9 +123,10 @@ export function AmountSlider({
   const handleAmountChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const value = sanitizeNumericInput(e.target.value);
     if (value === undefined) {
-      e.target.value = String(amount);
+      e.target.value = rawInput;
       return;
     }
+    setRawInput(value);
     e.target.value = value;
     onAmountChange?.(e);
   };
@@ -109,13 +152,16 @@ export function AmountSlider({
         <input
           type="text"
           inputMode="decimal"
-          value={amount}
+          value={rawInput}
           onChange={handleAmountChange}
           onKeyDown={handleKeyDown}
           disabled={disabled}
           readOnly={readOnly || !onAmountChange}
           placeholder="0"
-          className={twMerge("w-2/3 bg-transparent text-right text-lg outline-none text-accent-primary", inputClassName)}
+          className={twMerge(
+            "w-2/3 bg-transparent text-right text-lg text-accent-primary outline-none",
+            inputClassName,
+          )}
         />
       </div>
 
@@ -123,13 +169,9 @@ export function AmountSlider({
       <div
         className={twJoin(
           backgroundColor &&
-            "[&_.bbn-slider]:[--slider-inactive-color:var(--slider-bg-color)] dark:[&_.bbn-slider]:[--slider-inactive-color:#5a5a5a]"
+            "[&_.bbn-slider]:[--slider-inactive-color:var(--slider-bg-color)] dark:[&_.bbn-slider]:[--slider-inactive-color:#5a5a5a]",
         )}
-        style={
-          backgroundColor
-            ? ({ "--slider-bg-color": backgroundColor } as React.CSSProperties)
-            : undefined
-        }
+        style={backgroundColor ? ({ "--slider-bg-color": backgroundColor } as React.CSSProperties) : undefined}
       >
         <Slider
           value={sliderValue}
@@ -141,38 +183,39 @@ export function AmountSlider({
           onStepsChange={onSliderStepsChange}
           variant={sliderVariant}
           activeColor={sliderActiveColor}
-          disabled={disabled}
+          disabled={disabled || sliderDisabled}
         />
       </div>
 
       {/* Row 3: Max button + Balance | USD Value */}
       <div className="flex items-center justify-between text-sm">
-        {/* Left: Max button + available amount */}
-        {leftField && onMaxClick && leftField.label?.toLowerCase() === "max" ? (
-          <button
-            type="button"
-            onClick={onMaxClick}
-            disabled={disabled}
-            className="flex items-center gap-2 text-accent-secondary hover:text-accent-primary transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
-          >
-            <span className="cursor-pointer rounded-[8px] border border-gray-300 bg-transparent px-2 py-0.5 text-xs tracking-[0.4px] hover:opacity-90 dark:border-[#2F2F2F] dark:bg-[#2F2F2F]">
-              Max
-            </span>
-            <span>{leftField.value}</span>
-          </button>
-        ) : (
-          leftField && (
-            <span className="text-accent-secondary">
-              {leftField.label && `${leftField.label}: `}
-              {leftField.value}
-            </span>
-          )
+        {/* Left: Max button + available amount (+ optional tooltip) */}
+        {leftField && (
+          <div className="flex items-center gap-2">
+            {onMaxClick && leftField.label?.toLowerCase() === "max" ? (
+              <button
+                type="button"
+                onClick={onMaxClick}
+                disabled={disabled}
+                className="flex items-center gap-2 text-accent-secondary transition-colors hover:text-accent-primary disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                <span className="cursor-pointer rounded-[8px] bg-transparent px-2 py-0.5 text-xs tracking-[0.4px] hover:opacity-90 dark:bg-primary-contrast">
+                  Max
+                </span>
+                <span>{leftField.value}</span>
+              </button>
+            ) : (
+              <span className="text-accent-secondary">
+                {leftField.label && `${leftField.label}: `}
+                {leftField.value}
+              </span>
+            )}
+            {leftField.tooltip && <Hint tooltip={leftField.tooltip} />}
+          </div>
         )}
-        
+
         {/* Right: USD value */}
-        {rightField && (
-          <span className="text-accent-secondary">{rightField.value}</span>
-        )}
+        {rightField && <span className="text-accent-secondary">{rightField.value}</span>}
       </div>
     </div>
   );
