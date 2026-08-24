@@ -18,6 +18,7 @@
   },
   "scripts": {
     "build": "tsc -b --noEmit tsconfig.lib.json && vite build && node scripts/check-dist-types.cjs",
+    "build:ci": "vite build && node scripts/check-dist-types.cjs",
     "format": "prettier --check \"src/**/*.ts\"",
     "format:fix": "prettier --write \"src/**/*.ts\"",
     "lint": "eslint .",
