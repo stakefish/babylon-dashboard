@@ -9,7 +9,8 @@
 # "baseline was generated on a different machine" class of false positive.
 #
 # CAPTURE_ROOT is required; each surface writes into its own subdirectory so
-# the diff step can report them separately.
+# the diff step can report them separately. This fork captures only the
+# Storybook surface - the vault app surface went with services/vault.
 set -euo pipefail
 
 if [ -z "${CAPTURE_ROOT:-}" ]; then
@@ -17,7 +18,7 @@ if [ -z "${CAPTURE_ROOT:-}" ]; then
   exit 1
 fi
 
-mkdir -p "${CAPTURE_ROOT}/vault" "${CAPTURE_ROOT}/storybook"
+mkdir -p "${CAPTURE_ROOT}/storybook"
 
 # --- Storybook (components) -------------------------------------------------
 # The broadest and cheapest surface: every story renders in isolation with no
@@ -36,24 +37,8 @@ VISUAL_OUT_DIR="${CAPTURE_ROOT}/storybook" \
   pnpm --filter @babylonlabs-io/core-ui exec \
   playwright test --config=playwright.visual.config.ts
 
-# --- Vault app (pages) ------------------------------------------------------
-# The vault dev server resolves @babylonlabs-io/core-ui (and ts-sdk,
-# wallet-connector) through their package `exports` to `dist/`, which is
-# gitignored and therefore ABSENT on a fresh runner. Without this build the
-# dev server cannot resolve them and every page captures as a blank frame -
-# it only appears to work on a developer machine that has built before.
-echo "==> Building workspace packages the vault resolves from dist/"
-pnpm exec nx run-many --target=build \
-  --projects=@babylonlabs-io/core-ui,@babylonlabs-io/ts-sdk,@babylonlabs-io/wallet-connector
-
-echo "==> Capturing vault routes"
-VISUAL_OUT_DIR="${CAPTURE_ROOT}/vault" \
-  pnpm --filter @services/vault exec \
-  playwright test --config=playwright.visual.config.ts
-
 echo "==> Capture complete for ${CAPTURE_ROOT}"
 # PNGs only: each surface also writes an expected-screens manifest beside
 # them, and counting directory entries would report one screen more than
 # were taken.
 find "${CAPTURE_ROOT}/storybook" -name '*.png' | wc -l | xargs echo "    storybook screens:"
-find "${CAPTURE_ROOT}/vault" -name '*.png' | wc -l | xargs echo "    vault screens:"
