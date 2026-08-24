@@ -3,7 +3,13 @@
  */
 
 import "@testing-library/jest-dom";
+import { configure } from "@testing-library/react";
 import { afterAll, beforeAll, vi } from "vitest";
+
+// Cold async-gated page renders (e.g. /activity behind AaveConfigProvider)
+// exceed the 1000ms waitFor default under CI load; a passing assertion still
+// returns immediately, so raising the ceiling only helps flakes.
+configure({ asyncUtilTimeout: 4000 });
 
 // Mock the local `@/config` adapter so tests don't pull in env.ts (which
 // reads NEXT_PUBLIC_* and triggers the live network runtime).
@@ -23,6 +29,7 @@ vi.mock("@/config", async () => {
     getBTCNetwork: () => "signet",
     CONTRACTS: {}, // Mock other exports as needed
     ENV: {},
+    FeatureFlags: {},
     getCommitHash: () => "test-commit",
   };
 });
@@ -63,6 +70,17 @@ vi.mock("@/config/network", () => ({
   BTC_SIGNET: "signet",
 }));
 
+// Default-mock the protocol gate hooks. They wrap a React-Query on-chain read,
+// which the many incidental consumers (deposit/borrow/withdraw/repay/activation
+// components and tx hooks) would otherwise require a QueryClient for. The
+// default is an unblocked gate; gating-specific tests override `useProtocolGate`
+// locally with their own `vi.mock` to drive a frozen/paused scope. Plain
+// functions (not vi.fn) so `vi.clearAllMocks()` can't reset them to undefined.
+vi.mock("@/hooks/useProtocolGate", () => ({
+  useProtocolPauseStatus: () => ({ data: undefined, isError: false }),
+  useProtocolGateState: () => ({ protocol: null, aave: null }),
+}));
+
 // Mock the WASM module to avoid syntax errors in tests
 vi.mock("@/utils/btc/wasm", () => ({
   initWasm: vi.fn(),
@@ -75,20 +93,22 @@ vi.mock("@/utils/btc/wasm", () => ({
   }),
 }));
 
-// Mock window.matchMedia
-Object.defineProperty(window, "matchMedia", {
-  writable: true,
-  value: vi.fn().mockImplementation((query) => ({
-    matches: false,
-    media: query,
-    onchange: null,
-    addListener: vi.fn(),
-    removeListener: vi.fn(),
-    addEventListener: vi.fn(),
-    removeEventListener: vi.fn(),
-    dispatchEvent: vi.fn(),
-  })),
-});
+// Mock window.matchMedia (jsdom-only; skipped in the node test environment)
+if (typeof window !== "undefined") {
+  Object.defineProperty(window, "matchMedia", {
+    writable: true,
+    value: vi.fn().mockImplementation((query) => ({
+      matches: false,
+      media: query,
+      onchange: null,
+      addListener: vi.fn(),
+      removeListener: vi.fn(),
+      addEventListener: vi.fn(),
+      removeEventListener: vi.fn(),
+      dispatchEvent: vi.fn(),
+    })),
+  });
+}
 
 // Mock IntersectionObserver
 global.IntersectionObserver = vi.fn().mockImplementation(() => ({
@@ -104,6 +124,29 @@ class ResizeObserverStub {
   disconnect() {}
 }
 global.ResizeObserver = ResizeObserverStub as unknown as typeof ResizeObserver;
+
+// jsdom implements no PointerEvent, so @testing-library falls back to a plain
+// Event and silently drops clientX/clientY — every pointer-driven interaction
+// (e.g. LineChart hover) would read NaN coordinates. MouseEvent carries them
+// and is what React's synthetic pointer events read. Mirrors core-ui's own
+// test setup (packages/babylon-core-ui/src/test/setup.ts).
+if (
+  typeof window !== "undefined" &&
+  typeof window.PointerEvent === "undefined"
+) {
+  class PointerEventStub extends MouseEvent {
+    readonly pointerId: number;
+    readonly pointerType: string;
+
+    constructor(type: string, init: PointerEventInit = {}) {
+      super(type, init);
+      this.pointerId = init.pointerId ?? 1;
+      this.pointerType = init.pointerType ?? "mouse";
+    }
+  }
+
+  window.PointerEvent = PointerEventStub as unknown as typeof PointerEvent;
+}
 
 // Mock crypto for testing
 if (!global.crypto) {

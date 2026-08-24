@@ -20,6 +20,7 @@ import {
 import { keepPreviousData, useQuery } from "@tanstack/react-query";
 import { useEffect, useMemo, useRef } from "react";
 
+import { COPY } from "@/copy";
 import { logger } from "@/infrastructure";
 
 import {
@@ -49,6 +50,15 @@ interface UsePeginPollingQueryParams {
 
 /** Result from polling query */
 interface PollingQueryData {
+  /**
+   * DepositIds this poll actually observed — captured inside the queryFn so it
+   * is always the same snapshot as `errors`. Consumers that diff terminal
+   * transitions (daemon-terminal seeding) must read this, not the live
+   * `depositsToPoll` memo: under `keepPreviousData` a query-key change serves
+   * the previous poll's data, and pairing it with a fresher id set would seed
+   * new vaults against an errors map that could not contain them.
+   */
+  polledIds: string[];
   /** Map of depositId -> error (for deposits with provider connectivity issues) */
   errors: Map<string, Error>;
   /** Set of depositIds where vault provider needs the depositor's WOTS key */
@@ -60,6 +70,8 @@ interface PollingQueryData {
 }
 
 interface UsePeginPollingQueryResult {
+  /** DepositIds observed by the resolved poll — same snapshot as `errors`. */
+  polledIds: string[] | undefined;
   /** Map of depositId -> error */
   errors: Map<string, Error> | undefined;
   /** Set of depositIds needing WOTS key submission */
@@ -72,8 +84,6 @@ interface UsePeginPollingQueryResult {
   isLoading: boolean;
   /** Trigger manual refetch */
   refetch: () => void;
-  /** Deposits that are being polled */
-  depositsToPoll: DepositToPoll[];
 }
 
 /**
@@ -179,7 +189,7 @@ function applyPerDepositError(
   sets.errors.set(depositId, new Error(errorMessage));
 }
 
-function applyPerDepositStatus(
+export function applyPerDepositStatus(
   statusResponse: GetPeginStatusResponse,
   depositId: string,
   sets: DepositSets & { pendingDepositorSignatures: Set<string> },
@@ -213,7 +223,7 @@ function applyPerDepositStatus(
       depositId,
       new TerminalPeginPollingError(
         DaemonStatus.EXPIRED,
-        "This deposit has expired. You may still reclaim within the grace window — see refund options.",
+        COPY.pegin.statusErrors.expired,
       ),
     );
     sets.needsWotsKey.delete(depositId);
@@ -225,7 +235,7 @@ function applyPerDepositStatus(
       depositId,
       new TerminalPeginPollingError(
         DaemonStatus.EXPIRED_CLEANED_UP,
-        "This deposit expired and the grace window has elapsed. No further action is possible.",
+        COPY.pegin.statusErrors.expiredCleanedUp,
       ),
     );
     sets.needsWotsKey.delete(depositId);
@@ -237,7 +247,19 @@ function applyPerDepositStatus(
       depositId,
       new TerminalPeginPollingError(
         DaemonStatus.EXPIRED_IN_CLAIM,
-        "Deposit expired; claim transaction broadcast",
+        COPY.pegin.statusErrors.expiredInClaim,
+      ),
+    );
+    sets.needsWotsKey.delete(depositId);
+    return;
+  }
+
+  if (status === DaemonStatus.INGESTION_REJECTED) {
+    sets.errors.set(
+      depositId,
+      new TerminalPeginPollingError(
+        DaemonStatus.INGESTION_REJECTED,
+        COPY.pegin.statusErrors.ingestionRejected,
       ),
     );
     sets.needsWotsKey.delete(depositId);
@@ -249,7 +271,7 @@ function applyPerDepositStatus(
       depositId,
       new TerminalPeginPollingError(
         DaemonStatus.INVALID_SIG_IN_CONTRACT,
-        "Vault provider posted an invalid pegin signature on-chain; this deposit cannot proceed.",
+        COPY.pegin.statusErrors.invalidSigInContract,
       ),
     );
     sets.needsWotsKey.delete(depositId);
@@ -261,7 +283,7 @@ function applyPerDepositStatus(
       depositId,
       new TerminalPeginPollingError(
         DaemonStatus.AML_REJECTED,
-        "This deposit was rejected by AML screening.",
+        COPY.pegin.statusErrors.amlRejected,
       ),
     );
     sets.needsWotsKey.delete(depositId);
@@ -324,6 +346,7 @@ export function usePeginPollingQuery({
 
       if (!currentBtcPubKey || currentDeposits.length === 0) {
         return {
+          polledIds: [],
           errors: new Map<string, Error>(),
           needsWotsKey: new Set<string>(),
           pendingIngestion: new Set<string>(),
@@ -354,6 +377,7 @@ export function usePeginPollingQuery({
 
       await Promise.all(fetchPromises);
       return {
+        polledIds: currentDeposits.map((d) => d.activity.id),
         errors,
         needsWotsKey,
         pendingIngestion,
@@ -399,12 +423,12 @@ export function usePeginPollingQuery({
   }, [isEnabled, refetch]);
 
   return {
+    polledIds: data?.polledIds,
     errors: data?.errors,
     needsWotsKey: data?.needsWotsKey,
     pendingIngestion: data?.pendingIngestion,
     pendingDepositorSignatures: data?.pendingDepositorSignatures,
     isLoading,
     refetch,
-    depositsToPoll,
   };
 }

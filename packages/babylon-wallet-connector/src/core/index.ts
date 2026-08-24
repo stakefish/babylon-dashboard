@@ -10,21 +10,25 @@ export const createWallet = async <P extends IProvider, C>({ metadata, context, 
     wallet: walletGetter,
     name: nameGetter,
     icon: iconGetter,
+    iconBackground,
     docs = "",
     networks = [],
     createProvider,
     label,
+    hardware,
   } = metadata;
 
   const options: WalletOptions<P> = {
     id,
     name: "",
     icon: "",
+    iconBackground,
     origin: null,
     provider: null,
     docs,
     networks,
     label,
+    hardware,
   };
 
   if (walletGetter) {
@@ -92,7 +96,10 @@ export const createWalletConnector = async <N extends string, P extends IProvide
   );
   const connector = new WalletConnector(metadata.chain, metadata.name, metadata.icon, filteredWallets, config);
 
-  const shouldAutoReconnect = metadata.chain !== "ETH" && connectedWalletId && wallets.some((wallet) => wallet.id === connectedWalletId);
+  const shouldAutoReconnect =
+    metadata.chain !== "ETH" &&
+    connectedWalletId &&
+    wallets.some((wallet) => wallet.id === connectedWalletId && wallet.installed);
 
   if (shouldAutoReconnect) {
     // Fire-and-forget: do NOT await the reconnect handshake. Awaiting it here

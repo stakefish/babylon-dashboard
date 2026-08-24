@@ -12,6 +12,7 @@
  */
 
 import {
+  assertPositiveBigintArray,
   getPrePeginHtlcConnectorInfo,
   initWasm,
   tapInternalPubkey,
@@ -20,7 +21,13 @@ import {
 import { Buffer } from "buffer";
 import { Psbt, Transaction } from "bitcoinjs-lib";
 
-import { TAPSCRIPT_LEAF_VERSION, hexToUint8Array, uint8ArrayToHex } from "../utils/bitcoin";
+import {
+  TAPSCRIPT_LEAF_VERSION,
+  deriveBip86ScriptPubKeyHex,
+  hexToUint8Array,
+  stripHexPrefix,
+  uint8ArrayToHex,
+} from "../utils/bitcoin";
 import { normalizeAuthAnchorHash, type PrePeginParams } from "./pegin";
 
 /**
@@ -85,28 +92,18 @@ export async function buildRefundPsbt(
   const normalizedAuthAnchorHash = normalizeAuthAnchorHash(
     prePeginParams.authAnchorHash,
   );
-  const unfundedTx = new (WasmPrePeginTx as unknown as new (
-    depositor: string,
-    vault_provider: string,
-    vault_keepers: string[],
-    universal_challengers: string[],
-    hashlocks: string[],
-    pegin_amounts: BigUint64Array,
-    timelock_refund: number,
-    fee_rate: bigint,
-    min_pegin_fee_rate: bigint,
-    num_local_challengers: number,
-    council_quorum: number,
-    council_size: number,
-    network: string,
-    auth_anchor_hash?: string,
-  ) => typeof WasmPrePeginTx.prototype)(
+  // Reconstruct the template under the same graph version the Pre-PegIn
+  // was originally built with (the vault's stamped vaultCoreVersion).
+  const unfundedTx = new WasmPrePeginTx(
+    prePeginParams.vaultCoreVersion,
     prePeginParams.depositorPubkey,
     prePeginParams.vaultProviderPubkey,
     prePeginParams.vaultKeeperPubkeys,
     prePeginParams.universalChallengerPubkeys,
     [...prePeginParams.hashlocks],
-    new BigUint64Array(prePeginParams.pegInAmounts),
+    new BigUint64Array(
+      assertPositiveBigintArray(prePeginParams.pegInAmounts, "pegInAmounts"),
+    ),
     prePeginParams.timelockRefund,
     prePeginParams.feeRate,
     prePeginParams.minPeginFeeRate,
@@ -130,12 +127,19 @@ export async function buildRefundPsbt(
     const expectedHtlcScriptPubKey = unfundedTx
       .getHtlcScriptPubKey(htlcVout)
       .toLowerCase();
+    // The reconstructed template's HTLC output value at `htlcVout`,
+    // sized by WASM from the supplied `pegInAmounts` via the protocol
+    // formula `htlcValue = peginAmount + depositorClaimValue + minPeginFee`.
+    // Captured before `fromFundedTransaction` to bind it to the value the
+    // funded tx actually carries (see the cross-check below).
+    const expectedHtlcValue = unfundedTx.getHtlcValue(htlcVout);
 
     fundedTx = unfundedTx.fromFundedTransaction(fundedPrePeginTxHex);
 
     const refundTxHex = fundedTx.buildRefundTx(refundFee, htlcVout);
 
     const htlcConnector = await getPrePeginHtlcConnectorInfo({
+      txGraphVersion: prePeginParams.vaultCoreVersion,
       depositorPubkey: prePeginParams.depositorPubkey,
       vaultProviderPubkey: prePeginParams.vaultProviderPubkey,
       vaultKeeperPubkeys: prePeginParams.vaultKeeperPubkeys,
@@ -167,6 +171,23 @@ export async function buildRefundPsbt(
           `template expects ${expectedHtlcScriptPubKey}, funded tx carries ` +
           `${actualHtlcScriptPubKey}. Refund refused — the (hashlocks, ` +
           `pegInAmounts) vector does not match the on-chain commitment.`,
+      );
+    }
+
+    // Value cross-check (mirrors the script check above): the template's
+    // HTLC value — derived by WASM from `pegInAmounts` via the protocol
+    // formula — must equal the value the funded tx pays at this output.
+    // A caller that hands the full HTLC output value (or any wrong amount)
+    // as `pegInAmounts` would inflate the template value and trip this
+    // guard, rather than silently signing a refund built from a template
+    // that disagrees with the on-chain commitment.
+    const actualHtlcValue = BigInt(htlcOutput.value);
+    if (actualHtlcValue !== expectedHtlcValue) {
+      throw new Error(
+        `HTLC value mismatch at vout ${htlcVout}: reconstructed template ` +
+          `expects ${expectedHtlcValue} sat, funded tx carries ` +
+          `${actualHtlcValue} sat. Refund refused — the pegInAmounts vector ` +
+          `does not match the on-chain commitment.`,
       );
     }
 
@@ -221,12 +242,52 @@ export async function buildRefundPsbt(
       tapInternalKey: Buffer.from(tapInternalPubkey),
     });
 
-    for (const output of refundTx.outs) {
-      psbt.addOutput({
-        script: output.script,
-        value: output.value,
-      });
+    // Output side: pin the single refund output to the depositor's own
+    // BIP-86 P2TR address, mirroring the input-side pinning above. WASM
+    // builds the refund output from the refund leaf's depositor key, so a
+    // correct template always pays exactly one output back to the depositor.
+    // Asserting it here means a malformed template (or a tampered WASM)
+    // cannot redirect the reclaimed funds to a script the depositor does
+    // not control.
+    if (refundTx.outs.length !== 1) {
+      throw new Error(
+        `Refund transaction must have exactly 1 output, got ${refundTx.outs.length}`,
+      );
     }
+    const refundOutput = refundTx.outs[0];
+    const expectedDepositorScriptPubKey = stripHexPrefix(
+      deriveBip86ScriptPubKeyHex(prePeginParams.depositorPubkey),
+    ).toLowerCase();
+    const actualRefundOutputScriptPubKey = uint8ArrayToHex(
+      new Uint8Array(refundOutput.script),
+    ).toLowerCase();
+    if (actualRefundOutputScriptPubKey !== expectedDepositorScriptPubKey) {
+      throw new Error(
+        `Refund output scriptPubKey ${actualRefundOutputScriptPubKey} does not ` +
+          `match the depositor's BIP-86 address ${expectedDepositorScriptPubKey}. ` +
+          `Refund refused — the reclaimed funds would not return to the depositor.`,
+      );
+    }
+
+    // Value: the single refund output must return the full HTLC value minus
+    // exactly the requested fee. The refund is 1-in/1-out (asserted above), so
+    // a value below `htlcValue - refundFee` means WASM applied a larger fee
+    // than requested — the difference would be burned as miner fee. Pin it so
+    // the depositor reclaims the expected amount, not a silently reduced one.
+    const expectedRefundOutputValue = actualHtlcValue - refundFee;
+    if (BigInt(refundOutput.value) !== expectedRefundOutputValue) {
+      throw new Error(
+        `Refund output value ${BigInt(refundOutput.value)} sat does not equal ` +
+          `the HTLC value ${actualHtlcValue} sat minus the requested fee ` +
+          `${refundFee} sat (expected ${expectedRefundOutputValue} sat). ` +
+          `Refund refused — the reclaimed amount would be burned as excess fee.`,
+      );
+    }
+
+    psbt.addOutput({
+      script: refundOutput.script,
+      value: refundOutput.value,
+    });
 
     return { psbtHex: psbt.toHex() };
   } finally {

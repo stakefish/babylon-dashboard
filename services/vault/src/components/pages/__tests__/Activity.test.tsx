@@ -26,6 +26,65 @@ vi.mock("../../../hooks/useActivitiesWithPending", () => ({
   useActivitiesWithPending: (arg: unknown) => useActivitiesWithPendingMock(arg),
 }));
 
+vi.mock("@/config", () => ({
+  getNetworkConfigBTC: () => ({ coinSymbol: "sBTC" }),
+  getBTCNetwork: () => "signet",
+}));
+
+// The empty state pulls in the shared EmptyState, which mounts <Connect/>
+// (heavy wallet-connector graph). Stub it so the page stays a unit test.
+vi.mock("@/components/Wallet", () => ({
+  Connect: () => <button type="button">Connect</button>,
+}));
+
+// The expired-deposit Withdraw reuses the Vaults page's refund machinery,
+// whose graph reaches the WASM package and cannot be transformed here. Stub
+// the hook, its polling/params providers and the modals — the refund flow has
+// its own coverage; these tests are about wallet gating.
+const usePendingDepositsMock = vi.hoisted(() => vi.fn());
+
+vi.mock("@/hooks/usePendingDeposits", () => ({
+  usePendingDeposits: () => {
+    usePendingDepositsMock();
+    return {
+      expiredActivities: [],
+      allActivities: [],
+      ethAddress: undefined,
+      broadcastModal: {},
+      refundModal: { handleRefundClick: vi.fn() },
+    };
+  },
+}));
+
+// The USD sub-line's price source imports the built wallet-connector bundle
+// (for its network enum), which vitest cannot evaluate here, and the live
+// deposit status reads vaults through react-query — neither belongs to the
+// wallet gating this suite checks. An undefined vault read is also what the
+// page sees before the query resolves, so the rows keep their type-derived
+// status.
+vi.mock("@/hooks/usePrices", () => ({
+  usePrices: () => ({ prices: {} }),
+}));
+
+vi.mock("@/hooks/useVaults", () => ({
+  useVaults: () => ({ data: undefined }),
+}));
+
+vi.mock("@/context/ProtocolParamsContext", () => ({
+  ProtocolParamsProvider: ({ children }: { children: React.ReactNode }) =>
+    children,
+}));
+
+vi.mock("@/context/deposit/PeginPollingContext", () => ({
+  PeginPollingProvider: ({ children }: { children: React.ReactNode }) =>
+    children,
+  useDepositPollingResult: () => undefined,
+}));
+
+vi.mock("@/components/simple/PendingDepositModals", () => ({
+  PendingDepositModals: () => null,
+}));
+
 import Activity from "../Activity";
 
 function renderActivity() {
@@ -66,11 +125,7 @@ describe("Activity page — wallet gating", () => {
     expect(
       screen.getByText("Connect your wallet to view your activity"),
     ).toBeInTheDocument();
-    expect(
-      screen.queryByText(
-        "No activity yet. Make your first deposit to get started.",
-      ),
-    ).not.toBeInTheDocument();
+    expect(screen.queryByText("No activity yet")).not.toBeInTheDocument();
 
     expect(useActivitiesWithPendingMock).toHaveBeenCalledWith(undefined);
   });
@@ -92,11 +147,7 @@ describe("Activity page — wallet gating", () => {
     expect(
       screen.getByText("Connect your wallet to view your activity"),
     ).toBeInTheDocument();
-    expect(
-      screen.queryByText(
-        "No activity yet. Make your first deposit to get started.",
-      ),
-    ).not.toBeInTheDocument();
+    expect(screen.queryByText("No activity yet")).not.toBeInTheDocument();
 
     expect(useActivitiesWithPendingMock).toHaveBeenCalledWith(undefined);
   });
@@ -115,11 +166,7 @@ describe("Activity page — wallet gating", () => {
     renderActivity();
 
     expect(screen.getByTestId("activity-empty-state")).toBeInTheDocument();
-    expect(
-      screen.getByText(
-        "No activity yet. Make your first deposit to get started.",
-      ),
-    ).toBeInTheDocument();
+    expect(screen.getByText("No activity yet")).toBeInTheDocument();
     expect(
       screen.queryByText("Connect your wallet to view your activity"),
     ).not.toBeInTheDocument();
@@ -196,5 +243,21 @@ describe("Activity page — wallet gating", () => {
     expect(
       screen.queryByTestId("activity-empty-state"),
     ).not.toBeInTheDocument();
+  });
+
+  it("mounts the deposit lifecycle so an expired deposit can offer its refund", () => {
+    useConnectionMock.mockReturnValue({
+      isConnected: true,
+      btcConnected: true,
+      ethConnected: true,
+    });
+    useETHWalletMock.mockReturnValue({
+      address: "0xabc0000000000000000000000000000000000001",
+      connected: true,
+    });
+
+    renderActivity();
+
+    expect(usePendingDepositsMock).toHaveBeenCalled();
   });
 });

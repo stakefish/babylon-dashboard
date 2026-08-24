@@ -11,6 +11,7 @@ export interface DialogProps extends DetailedHTMLProps<HTMLAttributes<HTMLDivEle
   hasBackdrop?: boolean;
   backdropClassName?: string;
   dialogClassName?: string;
+  disableEscapeClose?: boolean;
 }
 
 export const Dialog = ({
@@ -21,13 +22,18 @@ export const Dialog = ({
   hasBackdrop = true,
   backdropClassName,
   dialogClassName,
+  disableEscapeClose,
   ...restProps
 }: DialogProps) => {
-  const { mounted, unmount } = useModalManager({ open });
+  const { mounted, unmount } = useModalManager({ open, onClose, disableEscapeClose });
 
   return (
     <Portal mounted={mounted}>
-      <div {...restProps} className={twJoin("bbn-dialog-wrapper", className)} data-testid="dialog-wrapper">
+      {/* The testid is a default, so it must precede the spread: after it, a
+          caller passing its own `data-testid` is silently overridden here and
+          cannot address its dialog at all. MobileDialog already spreads last,
+          so the two rendered the same dialog under different testids. */}
+      <div data-testid="dialog-wrapper" {...restProps} className={twJoin("bbn-dialog-wrapper", className)}>
         <div
           className={twJoin("bbn-dialog", open ? "animate-modal-in" : "animate-modal-out", dialogClassName)}
           onAnimationEnd={unmount}

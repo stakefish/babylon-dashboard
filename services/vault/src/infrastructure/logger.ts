@@ -37,24 +37,35 @@ export default {
   error: (
     error: Error,
     { level = "error", tags, data: extra }: ErrorContext = {},
-  ) =>
-    captureException(error, {
+  ) => {
+    // Always mirror to the browser console, scrubbed like the Sentry path
+    // (addresses / tx hex / secrets) with stack frames kept — visible with
+    // Sentry off, alongside Sentry when on.
+    // eslint-disable-next-line no-console -- logger is the one allowed console boundary
+    console.error(scrubString(error.stack ?? error.message ?? String(error)));
+    return captureException(error, {
       level,
       tags: Reflect.has(error, "errorCode")
         ? { ...tags, errorCode: Reflect.get(error, "errorCode") as string }
         : tags,
       extra: extra ? redactData(extra) : extra,
-    }),
+    });
+  },
   event: (
     message: string,
     {
       level = "warning",
       category,
+      tags,
       ...data
-    }: { level?: SeverityLevel } & Context = {},
+    }: {
+      level?: SeverityLevel;
+      tags?: Record<string, string>;
+    } & Context = {},
   ) =>
     captureMessage(scrubString(message), {
       level,
+      tags,
       extra: redactData({ category, ...data }),
     }),
 };

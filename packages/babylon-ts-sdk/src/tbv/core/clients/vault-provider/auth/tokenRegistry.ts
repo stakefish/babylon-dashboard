@@ -17,12 +17,15 @@ export interface VpTokenRegistryInput {
   peginTxid: string;
   authAnchorHex: string;
   pinnedServerPubkey: OnChainBtcPubkey;
+  /** Depositor x-only pubkey (32-byte hex), asserted against each token's CWT `aud`. */
+  expectedAudienceXOnlyPubkey: string;
 }
 
 interface RegistryEntry {
   provider: VpTokenProvider;
   authAnchorHex: string;
   pinnedServerPubkey: OnChainBtcPubkey;
+  expectedAudienceXOnlyPubkey: string;
 }
 
 export class VpTokenRegistry {
@@ -31,9 +34,8 @@ export class VpTokenRegistry {
   /**
    * Return the cached `VpTokenProvider` for `peginTxid` if one exists
    * with matching `authAnchorHex` and `pinnedServerPubkey`, otherwise
-   * construct and cache a fresh provider. A mismatch on either field
-   * throws — silent overwrite would mask derivation drift or VP
-   * pubkey rotation.
+   * construct and cache a fresh provider. A mismatch on either throws —
+   * silent overwrite would mask derivation drift or VP pubkey rotation.
    */
   getOrCreate(input: VpTokenRegistryInput): VpTokenProvider {
     const existing = this.entries.get(input.peginTxid);
@@ -48,6 +50,14 @@ export class VpTokenRegistry {
           `VpTokenRegistry: peginTxid ${input.peginTxid} already bound to pinnedServerPubkey ${existing.pinnedServerPubkey.slice(0, 8)}…; got ${input.pinnedServerPubkey.slice(0, 8)}…`,
         );
       }
+      if (
+        existing.expectedAudienceXOnlyPubkey !==
+        input.expectedAudienceXOnlyPubkey
+      ) {
+        throw new Error(
+          `VpTokenRegistry: peginTxid ${input.peginTxid} already bound to expectedAudienceXOnlyPubkey ${existing.expectedAudienceXOnlyPubkey.slice(0, 8)}…; got ${input.expectedAudienceXOnlyPubkey.slice(0, 8)}…`,
+        );
+      }
       // Refresh the inner transport on every reuse so a VP URL
       // change between calls doesn't leave the cached provider
       // pinned to a dead URL for token refresh.
@@ -60,6 +70,7 @@ export class VpTokenRegistry {
       peginTxid: input.peginTxid,
       authAnchorHex: input.authAnchorHex,
       pinnedServerPubkey: input.pinnedServerPubkey,
+      expectedAudienceXOnlyPubkey: input.expectedAudienceXOnlyPubkey,
       authGatedMethods: AUTH_GATED_METHODS,
       grpcGatedMethods: GRPC_AUTH_GATED_METHODS,
     });
@@ -67,6 +78,7 @@ export class VpTokenRegistry {
       provider,
       authAnchorHex: input.authAnchorHex,
       pinnedServerPubkey: input.pinnedServerPubkey,
+      expectedAudienceXOnlyPubkey: input.expectedAudienceXOnlyPubkey,
     });
     return provider;
   }

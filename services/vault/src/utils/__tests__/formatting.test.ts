@@ -7,17 +7,24 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { getNetworkConfigBTC } from "@/config";
 
 import {
+  formatActivityDateGroup,
+  formatActivityTime,
   formatAmount,
+  formatAprPercent,
   formatBasisPointsAsPercent,
   formatBtcAmount,
+  formatCompactTokenAmount,
   formatCompactUsd,
   formatDateTime,
-  formatLLTV,
-  formatLtvPercent,
+  formatDuration,
+  formatDurationShort,
+  formatLiquidationDistancePercent,
+  formatMeterLabel,
   formatOrdinal,
   formatProviderDisplayName,
   formatTimeAgo,
   formatUsd,
+  formatUsdPrice,
   formatUsdValue,
 } from "../formatting";
 
@@ -146,55 +153,44 @@ describe("Formatting Utilities", () => {
     });
   });
 
-  describe("formatLLTV", () => {
-    it("should format LLTV from wei to percentage (string input)", () => {
-      // 80% = 80 * 1e16 = 800000000000000000
-      expect(formatLLTV("800000000000000000")).toBe("80.0%");
+  describe("formatAprPercent", () => {
+    it("trims trailing zeros after rounding to two decimals", () => {
+      expect(formatAprPercent(3.7)).toBe("3.7%");
     });
 
-    it("should format LLTV from wei to percentage (bigint input)", () => {
-      expect(formatLLTV(800000000000000000n)).toBe("80.0%");
+    it("rounds to two decimals", () => {
+      expect(formatAprPercent(5.861)).toBe("5.86%");
     });
 
-    it("should handle 0% LLTV", () => {
-      expect(formatLLTV(0n)).toBe("0.0%");
+    it("absorbs float noise from the RAY conversion", () => {
+      expect(formatAprPercent(3.6999999999999997)).toBe("3.7%");
     });
 
-    it("should handle 100% LLTV", () => {
-      expect(formatLLTV(1000000000000000000n)).toBe("100.0%");
+    it("renders a positive rate too small to show at two decimals as <0.01%", () => {
+      expect(formatAprPercent(0.0000957)).toBe("<0.01%");
     });
 
-    it("should format to 1 decimal place", () => {
-      // 85.5% = 855000000000000000
-      expect(formatLLTV(855000000000000000n)).toBe("85.5%");
+    it("renders an absolute zero rate as 0%", () => {
+      expect(formatAprPercent(0)).toBe("0%");
     });
   });
 
-  describe("formatLtvPercent", () => {
-    it("formats a typical position to 1 decimal", () => {
-      // Matches the values in the user-report screenshot.
-      expect(formatLtvPercent(1941.26, 2986.56)).toBe("65.0%");
+  describe("formatUsdPrice", () => {
+    it("rounds to whole dollars with thousands separators", () => {
+      expect(formatUsdPrice(88400)).toBe("$88,400");
+      expect(formatUsdPrice(70000.49)).toBe("$70,000");
+      expect(formatUsdPrice(70000.5)).toBe("$70,001");
+    });
+  });
+
+  describe("formatLiquidationDistancePercent", () => {
+    it("formats a positive buffer to one decimal", () => {
+      expect(formatLiquidationDistancePercent(19.23)).toBe("19.2%");
     });
 
-    it("renders exact halves", () => {
-      expect(formatLtvPercent(500, 1000)).toBe("50.0%");
-    });
-
-    it("renders ratios above 100% for underwater positions", () => {
-      expect(formatLtvPercent(1200, 1000)).toBe("120.0%");
-    });
-
-    it("returns '-' when debt is zero (no loan)", () => {
-      expect(formatLtvPercent(0, 1000)).toBe("-");
-    });
-
-    it("returns '-' when collateral is zero (would divide by zero)", () => {
-      expect(formatLtvPercent(100, 0)).toBe("-");
-    });
-
-    it("returns '-' for negative inputs", () => {
-      expect(formatLtvPercent(-1, 1000)).toBe("-");
-      expect(formatLtvPercent(100, -1)).toBe("-");
+    it("clamps a non-positive buffer to 0%", () => {
+      expect(formatLiquidationDistancePercent(0)).toBe("0.0%");
+      expect(formatLiquidationDistancePercent(-4.3)).toBe("0.0%");
     });
   });
 
@@ -398,6 +394,11 @@ describe("Formatting Utilities", () => {
     it("formats millions as '$Nm'", () => {
       expect(formatCompactUsd(1_500_000)).toBe("$1.5m");
     });
+
+    it("keeps the magnitude suffix uppercase when asked", () => {
+      expect(formatCompactUsd(1_500_000, true)).toBe("$1.5M");
+      expect(formatCompactUsd(63_600, true)).toBe("$63.6K");
+    });
   });
 
   describe("formatBasisPointsAsPercent", () => {
@@ -416,5 +417,187 @@ describe("Formatting Utilities", () => {
     it("formats the protocol-maximum commission", () => {
       expect(formatBasisPointsAsPercent(9999)).toBe("99.99%");
     });
+  });
+
+  // Humanized duration for peg-out ETAs: pick the largest sensible unit so a
+  // ~5-day wait reads as "5 days", not "114 hours". Thresholds are on the raw
+  // minutes (< 60 minutes, < 1440 hours, else days); the value within the unit
+  // is rounded to the nearest whole.
+  describe("formatCompactTokenAmount", () => {
+    it("collapses thousands and up into K/M/B suffixes", () => {
+      expect(formatCompactTokenAmount(45200)).toBe("45.2K");
+      expect(formatCompactTokenAmount(1234567)).toBe("1.23M");
+      expect(formatCompactTokenAmount(1500000000)).toBe("1.5B");
+    });
+
+    it("shows amounts below one thousand in full, grouped, up to two decimals", () => {
+      expect(formatCompactTokenAmount(999)).toBe("999");
+      expect(formatCompactTokenAmount(500.25)).toBe("500.25");
+      expect(formatCompactTokenAmount(2.5)).toBe("2.5");
+    });
+
+    it("returns '0' for zero or negative input", () => {
+      expect(formatCompactTokenAmount(0)).toBe("0");
+      expect(formatCompactTokenAmount(-5)).toBe("0");
+    });
+
+    it("rounds to two decimals before the compact threshold so the boundary is consistent", () => {
+      // 999.995 rounds up to 1,000 → compact "1K", not the full "1,000".
+      expect(formatCompactTokenAmount(999.995)).toBe("1K");
+      // Just under the rounding boundary stays in full form.
+      expect(formatCompactTokenAmount(999.99)).toBe("999.99");
+    });
+  });
+
+  describe("formatDuration", () => {
+    it("shows 'less than a minute' at or below zero", () => {
+      expect(formatDuration(0)).toBe("less than a minute");
+      expect(formatDuration(-5)).toBe("less than a minute");
+    });
+
+    it("uses minutes below one hour", () => {
+      expect(formatDuration(1)).toBe("1 minute");
+      expect(formatDuration(45)).toBe("45 minutes");
+      expect(formatDuration(59)).toBe("59 minutes");
+    });
+
+    it("uses hours from one hour up to (but not including) one day", () => {
+      expect(formatDuration(60)).toBe("1 hour");
+      expect(formatDuration(89)).toBe("1 hour"); // round(1.48) = 1
+      expect(formatDuration(90)).toBe("2 hours"); // round(1.5) = 2
+      expect(formatDuration(120)).toBe("2 hours");
+      expect(formatDuration(1439)).toBe("24 hours"); // still < 1 day by threshold
+    });
+
+    it("uses days at one day and above", () => {
+      expect(formatDuration(1440)).toBe("1 day");
+      expect(formatDuration(2880)).toBe("2 days");
+    });
+
+    it("rounds a 684-block assert timelock (~4.75 days) to '5 days'", () => {
+      expect(formatDuration(684 * 10)).toBe("5 days");
+    });
+
+    it("formats a 91-block assert timelock (~15h) in hours", () => {
+      expect(formatDuration(91 * 10)).toBe("15 hours");
+    });
+  });
+
+  describe("formatDurationShort", () => {
+    it("rounds sub-90-minute durations to 5-minute steps", () => {
+      expect(formatDurationShort(30)).toBe("30 min");
+      expect(formatDurationShort(68)).toBe("70 min");
+      expect(formatDurationShort(84)).toBe("85 min");
+    });
+
+    it("switches to half-hour-rounded hours from 90 minutes", () => {
+      expect(formatDurationShort(89)).toBe("1.5 h"); // rounds to 90 → hours
+      expect(formatDurationShort(100)).toBe("1.5 h");
+      expect(formatDurationShort(130)).toBe("2 h");
+      expect(formatDurationShort(170)).toBe("3 h");
+    });
+  });
+});
+
+describe("formatMeterLabel", () => {
+  const labels = {
+    belowOne: "<1% remaining",
+    nearFull: ">99% remaining",
+    exact: (percent: number) => `${percent}% remaining`,
+  };
+
+  it("returns the exact rounded percentage for a mid-range ratio", () => {
+    expect(formatMeterLabel(0.5, labels)).toBe("50% remaining");
+  });
+
+  it("shows the below-one label when a non-zero ratio rounds down to 0%", () => {
+    expect(formatMeterLabel(0.003, labels)).toBe("<1% remaining");
+  });
+
+  it("shows the near-full label when a below-full ratio rounds up to 100%", () => {
+    expect(formatMeterLabel(0.997, labels)).toBe(">99% remaining");
+  });
+
+  it("uses the exact label (not below-one) at exactly 0", () => {
+    expect(formatMeterLabel(0, labels)).toBe("0% remaining");
+  });
+
+  it("uses the exact label (not near-full) at exactly 1", () => {
+    expect(formatMeterLabel(1, labels)).toBe("100% remaining");
+  });
+
+  it("clamps out-of-range ratios before formatting", () => {
+    expect(formatMeterLabel(-0.5, labels)).toBe("0% remaining");
+    expect(formatMeterLabel(1.5, labels)).toBe("100% remaining");
+  });
+});
+
+describe("formatActivityTime", () => {
+  it("formats a date as zero-padded HH:mm:ss (local time)", () => {
+    expect(formatActivityTime(new Date(2025, 8, 8, 9, 5, 3))).toBe("09:05:03");
+  });
+
+  it("handles midnight and end of day", () => {
+    expect(formatActivityTime(new Date(2025, 8, 8, 0, 0, 0))).toBe("00:00:00");
+    expect(formatActivityTime(new Date(2025, 8, 8, 23, 59, 59))).toBe(
+      "23:59:59",
+    );
+  });
+});
+
+describe("formatActivityDateGroup", () => {
+  const labels = { today: "Today", yesterday: "Yesterday" };
+  // Reference "now": Sep 8, 2025, mid-afternoon (local time).
+  const reference = new Date(2025, 8, 8, 15, 30, 0);
+
+  it("labels the same calendar day 'Today' regardless of time", () => {
+    expect(
+      formatActivityDateGroup(new Date(2025, 8, 8, 0, 1, 0), reference, labels),
+    ).toBe("Today");
+    expect(
+      formatActivityDateGroup(
+        new Date(2025, 8, 8, 23, 0, 0),
+        reference,
+        labels,
+      ),
+    ).toBe("Today");
+  });
+
+  it("labels the previous calendar day 'Yesterday'", () => {
+    expect(
+      formatActivityDateGroup(
+        new Date(2025, 8, 7, 23, 0, 0),
+        reference,
+        labels,
+      ),
+    ).toBe("Yesterday");
+  });
+
+  it("labels older days with the explicit YYYY-MM-DD date", () => {
+    expect(
+      formatActivityDateGroup(
+        new Date(2025, 8, 6, 12, 0, 0),
+        reference,
+        labels,
+      ),
+    ).toBe("2025-09-06");
+    expect(
+      formatActivityDateGroup(
+        new Date(2025, 0, 2, 12, 0, 0),
+        reference,
+        labels,
+      ),
+    ).toBe("2025-01-02");
+  });
+
+  it("groups by calendar day, not elapsed 24h windows", () => {
+    // ~2 hours before the reference but on the previous calendar day → Yesterday.
+    expect(
+      formatActivityDateGroup(
+        new Date(2025, 8, 7, 23, 0, 0),
+        reference,
+        labels,
+      ),
+    ).toBe("Yesterday");
   });
 });

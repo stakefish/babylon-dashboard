@@ -1,27 +1,21 @@
 /**
  * PendingDepositModals Component
  *
- * Renders the sign / broadcast / WOTS key / success modals used by the
- * pending deposit section. Uses SimpleDeposit in resume mode for all actions.
+ * Renders the broadcast + refund + emergency-withdraw + success modals used
+ * by the pending deposit section. The shared Pre-PegIn broadcast keeps a
+ * dedicated modal (it's hoisted to a batch-level button); the recovery escape
+ * hatches (HTLC refund, activate-and-redeem withdraw) each own a dedicated
+ * modal; every other per-vault action (WOTS, payout signing, activation,
+ * artifact download) is owned by the deposit multistepper opened from the
+ * card body.
  */
 
-import type { Hex } from "viem";
-
 import { BroadcastSuccessModal } from "@/components/deposit/BroadcastSuccessModal";
+import { EmergencyWithdrawModal } from "@/components/deposit/EmergencyWithdrawModal";
 import { RefundModal } from "@/components/deposit/RefundModal";
-import { usePeginPolling } from "@/context/deposit/PeginPollingContext";
-import type { SignModalData } from "@/hooks/deposit/usePayoutSignModal";
 import type { VaultActivity } from "@/types/activity";
-import type { VaultProvider } from "@/types/vaultProvider";
 
-import { ActivationGate } from "./ActivationGate";
 import SimpleDeposit from "./SimpleDeposit";
-
-interface SignModalState {
-  signingData: SignModalData | null;
-  handleClose: () => void;
-  handleSuccess: () => void;
-}
 
 interface BroadcastModalState {
   broadcastingActivity: VaultActivity | null;
@@ -34,73 +28,36 @@ interface BroadcastModalState {
   handleSuccessClose: () => void;
 }
 
-interface WotsKeyModalState {
-  isOpen: boolean;
-  activity: VaultActivity | null;
-  handleClose: () => void;
-  handleSuccess: () => void;
-}
-
-interface ActivationModalState {
-  activatingActivity: VaultActivity | null;
-  handleClose: () => void;
-  handleSuccess: () => void;
-}
-
 interface RefundModalState {
   refundingActivity: VaultActivity | null;
   handleClose: () => void;
   handleSuccess: () => void;
 }
 
+interface EmergencyWithdrawModalState {
+  withdrawing: {
+    activity: VaultActivity;
+    stuckStateDetected: boolean;
+  } | null;
+  handleClose: () => void;
+  handleSuccess: () => void;
+}
+
 interface PendingDepositModalsProps {
-  signModal: SignModalState;
   broadcastModal: BroadcastModalState;
-  wotsKeyModal: WotsKeyModalState;
-  activationModal: ActivationModalState;
   refundModal: RefundModalState;
-  vaultProviders: VaultProvider[];
-  btcPublicKey: string | undefined;
+  emergencyWithdrawModal: EmergencyWithdrawModalState;
   ethAddress: string | undefined;
 }
 
 export function PendingDepositModals({
-  signModal,
   broadcastModal,
-  wotsKeyModal,
-  activationModal,
   refundModal,
-  vaultProviders,
-  btcPublicKey,
+  emergencyWithdrawModal,
   ethAddress,
 }: PendingDepositModalsProps) {
-  const { refetch: refetchPolling } = usePeginPolling();
-
-  const handleWotsKeySuccess = () => {
-    wotsKeyModal.handleSuccess();
-    refetchPolling();
-  };
-
-  const activatingActivity = activationModal.activatingActivity;
-
   return (
     <>
-      {/* Payout Sign Modal – full-screen with stepper. The render condition
-       *  must guard `ethAddress` too: without it, payout signing's
-       *  localStorage write would key by `"undefined"`, leaving the deposit
-       *  on SIGN_PAYOUT_TRANSACTIONS after a successful sign. */}
-      {signModal.signingData && btcPublicKey && ethAddress && (
-        <SimpleDeposit
-          open
-          resumeMode="sign_payouts"
-          onClose={signModal.handleClose}
-          onResumeSuccess={signModal.handleSuccess}
-          activity={signModal.signingData.activity}
-          btcPublicKey={btcPublicKey}
-          depositorEthAddress={ethAddress as Hex}
-        />
-      )}
-
       {/* Broadcast Modal – full-screen with stepper */}
       {broadcastModal.broadcastingActivity && ethAddress && (
         <SimpleDeposit
@@ -114,36 +71,6 @@ export function PendingDepositModals({
         />
       )}
 
-      {/* WOTS Key Modal – re-derives via wallet deriveContextHash */}
-      {wotsKeyModal.isOpen && wotsKeyModal.activity && (
-        <SimpleDeposit
-          open={wotsKeyModal.isOpen}
-          resumeMode="submit_wots_key"
-          onClose={wotsKeyModal.handleClose}
-          onResumeSuccess={handleWotsKeySuccess}
-          activity={wotsKeyModal.activity}
-          vaultProviders={vaultProviders}
-        />
-      )}
-
-      {/* Activation gate — confirmation + artifact-download nudge, then activate */}
-      {activatingActivity && ethAddress && (
-        <ActivationGate
-          key={activatingActivity.id}
-          activity={activatingActivity}
-          onClose={activationModal.handleClose}
-        >
-          <SimpleDeposit
-            open
-            resumeMode="activate_vault"
-            onClose={activationModal.handleClose}
-            onResumeSuccess={activationModal.handleSuccess}
-            activity={activatingActivity}
-            depositorEthAddress={ethAddress}
-          />
-        </ActivationGate>
-      )}
-
       {/* Refund Modal */}
       {refundModal.refundingActivity && (
         <RefundModal
@@ -151,6 +78,19 @@ export function PendingDepositModals({
           activity={refundModal.refundingActivity}
           onClose={refundModal.handleClose}
           onSuccess={refundModal.handleSuccess}
+        />
+      )}
+
+      {/* Emergency Withdraw Modal (activate-and-redeem escape hatch) */}
+      {emergencyWithdrawModal.withdrawing && (
+        <EmergencyWithdrawModal
+          open={!!emergencyWithdrawModal.withdrawing}
+          activity={emergencyWithdrawModal.withdrawing.activity}
+          stuckStateDetected={
+            emergencyWithdrawModal.withdrawing.stuckStateDetected
+          }
+          onClose={emergencyWithdrawModal.handleClose}
+          onSuccess={emergencyWithdrawModal.handleSuccess}
         />
       )}
 

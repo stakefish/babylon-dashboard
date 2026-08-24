@@ -9,9 +9,23 @@
 export {
   BPS_SCALE,
   FULL_REPAY_BUFFER_DIVISOR,
-  FULL_REPAY_BUFFER_FRACTION,
   MIN_HEALTH_FACTOR_FOR_BORROW,
 } from "@babylonlabs-io/ts-sdk/tbv/integrations/aave";
+
+/**
+ * Fraction of borrow capacity held back so the advertised maximum does not sit
+ * exactly on the health-factor rail.
+ *
+ * Sizing "Max" against `MIN_HEALTH_FACTOR_FOR_BORROW` alone produced a figure
+ * whose projected HF equalled the floor to the last decimal. Debt accrues
+ * interest continuously, so by the time the pre-sign check refetched the
+ * position the projected HF had slipped just under the floor and the borrow was
+ * rejected with "Projected health factor (1.05) would be below 1.05" - a
+ * message that reads as self-contradictory because both numbers are rounded for
+ * display. 0.5% is far above the ~5e-8 relative drift that 30s of accrual at 5%
+ * APR produces, while costing a borrower a negligible amount of capacity.
+ */
+export const BORROW_CAPACITY_HEADROOM = 0.005;
 
 /**
  * Stale time for config queries (5 minutes)
@@ -78,12 +92,29 @@ export const POSITION_STALENESS_THRESHOLD_MS = POSITION_REFETCH_INTERVAL_MS * 3;
 export const MIN_SLIDER_MAX = 0.0001;
 
 /**
+ * Number of discrete steps in the amount sliders (the native range input's
+ * `step` is `max / SLIDER_STEP_COUNT`). Float rounding of that division can
+ * make the far-right position land one step short of max, so "slider at max"
+ * detection uses a one-step tolerance keyed off this same count.
+ */
+export const SLIDER_STEP_COUNT = 1000;
+
+/**
  * Threshold (in USD) below which projected debt is treated as
  * effectively zero for display purposes (showing "-" for health factor
  * instead of an astronomical number). This is a display-only concern
  * and does NOT affect repay routing (full vs partial).
  */
 export const NEAR_ZERO_DEBT_DISPLAY_THRESHOLD = 0.01;
+
+/**
+ * Display ceiling for the health factor. A position only reaches a value this
+ * high with negligible debt relative to collateral — far beyond any realistic
+ * liquidation risk — so at or above it the UI shows "-" ("infinitely healthy")
+ * rather than a meaningless large number or, above ~1e21, the scientific
+ * notation JS `toFixed` produces (e.g. "1.7e+55"). Display-only.
+ */
+export const HEALTH_FACTOR_DISPLAY_CAP = 1000;
 
 /**
  * Fractional threshold (relative to total debt) below which projected
@@ -103,6 +134,16 @@ export const NEAR_ZERO_DEBT_RELATIVE_THRESHOLD = 0.005;
 export const NEAR_ZERO_DEBT_RELATIVE_CAP_USD = 5;
 
 /**
+ * Threshold (in USD) at or above which the position is considered to have
+ * borrow headroom. Remaining capacity below one cent is a float / health-factor
+ * dust residual (the capacity display rounds it to "$0.00"), so a fully-borrowed
+ * position is treated as having no headroom and the Borrow CTA is disabled —
+ * we don't open a borrow flow the user can't complete. Matches the design,
+ * which shows Borrow disabled at $0 capacity.
+ */
+export const MIN_BORROWABLE_USD = 0.01;
+
+/**
  * Loan tab identifiers
  * Used for URL params and tab switching
  */
@@ -117,7 +158,13 @@ export type LoanTab = (typeof LOAN_TAB)[keyof typeof LOAN_TAB];
  * Shared input className for AmountSlider across Aave components
  */
 export const AMOUNT_INPUT_CLASS_NAME =
-  "w-auto min-w-32 rounded-md border border-gray-300 px-2 py-1 dark:border-[#3a3a3a]";
+  "h-12 w-auto min-w-32 rounded-lg bg-neutral-200 px-4 text-xl text-accent-secondary";
+
+/**
+ * Shared Max-button pill styling for AmountSlider across Aave components
+ */
+export const MAX_BUTTON_CLASS_NAME =
+  "bg-neutral-200 text-sm text-accent-secondary dark:bg-neutral-200";
 
 /**
  * Maximum decimal precision JS numbers can faithfully represent for

@@ -9,8 +9,24 @@ import {
 } from "../tokenRegistry";
 
 import {
+  GOLDEN_CWT_AUDIENCE_XONLY,
   GOLDEN_SIGNING_KEY_XONLY,
 } from "./goldenVectors";
+
+// The gating tests drive a real `getToken` acquire, which verifies the
+// server-identity proof and the issued CWT. Both checks are exercised
+// exhaustively in serverIdentity / tokenProvider / verifyDepositorCwt
+// specs; here we only care which bootstrap method the registry-built
+// provider calls, so stub them out to stay independent of the golden
+// fixtures' wall-clock and token bytes.
+vi.mock("../serverIdentity", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../serverIdentity")>()),
+  verifyServerIdentity: vi.fn(),
+}));
+vi.mock("../verifyDepositorCwt", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../verifyDepositorCwt")>()),
+  verifyDepositorCwt: vi.fn(),
+}));
 
 const PEGIN_TXID_A = "a".repeat(64);
 const PEGIN_TXID_B = "b".repeat(64);
@@ -41,6 +57,7 @@ function buildInput(
     peginTxid: PEGIN_TXID_A,
     authAnchorHex: AUTH_ANCHOR_HEX,
     pinnedServerPubkey: PINNED_PUBKEY,
+    expectedAudienceXOnlyPubkey: GOLDEN_CWT_AUDIENCE_XONLY,
     ...overrides,
   };
 }
@@ -102,6 +119,20 @@ describe("VpTokenRegistry", () => {
         buildInput({ pinnedServerPubkey: ALT_PINNED_PUBKEY }),
       ),
     ).toThrow(/already bound to pinnedServerPubkey/);
+  });
+
+  it("throws on getOrCreate with the same peginTxid but a different expectedAudienceXOnlyPubkey", () => {
+    // The token's CWT `aud` is bound to the depositor; a second caller
+    // disagreeing on the depositor pubkey must fail loud rather than
+    // share a provider that would reject the issued token's audience.
+    registry.getOrCreate(
+      buildInput({ expectedAudienceXOnlyPubkey: GOLDEN_CWT_AUDIENCE_XONLY }),
+    );
+    expect(() =>
+      registry.getOrCreate(
+        buildInput({ expectedAudienceXOnlyPubkey: "f".repeat(64) }),
+      ),
+    ).toThrow(/already bound to expectedAudienceXOnlyPubkey/);
   });
 
   it("getOrCreate cache-hit swaps in the new client so URL changes don't leave a stale transport", () => {
@@ -214,5 +245,67 @@ describe("vpTokenRegistry singleton", () => {
     expect(vpTokenRegistry.size).toBe(2);
     (vpTokenRegistry as VpTokenRegistry).clear();
     expect(vpTokenRegistry.size).toBe(0);
+  });
+});
+
+describe("VpTokenRegistry gRPC artifact auth gating", () => {
+  const ARTIFACTS_METHOD = "vaultProvider_requestDepositorClaimerArtifacts";
+
+  let registry: VpTokenRegistry;
+
+  beforeEach(() => {
+    vi.restoreAllMocks();
+    registry = new VpTokenRegistry();
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  /**
+   * Stub `fetch` so a single token-issue acquire succeeds, and return
+   * the JSON-RPC `method` the provider put on the wire. `expires_at` is
+   * derived from the real clock (the registry doesn't expose `now`), so
+   * keep it comfortably in the future to clear the freshness check.
+   */
+  async function issueMethodFor(input: VpTokenRegistryInput): Promise<string> {
+    const expiresAt = Math.floor(Date.now() / 1000) + 3600;
+    const mockFetch = vi.fn().mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({
+          jsonrpc: "2.0",
+          id: 1,
+          result: {
+            token: "issued-token",
+            expires_at: expiresAt,
+            server_identity: {
+              server_pubkey: PINNED_PUBKEY,
+              ephemeral_pubkey: "00".repeat(33),
+              expires_at: expiresAt,
+              signature: "00".repeat(64),
+            },
+          },
+        }),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      ),
+    );
+    vi.stubGlobal("fetch", mockFetch);
+
+    const provider = registry.getOrCreate(input);
+    await provider.getToken(ARTIFACTS_METHOD);
+
+    const body = JSON.parse(String(mockFetch.mock.calls[0]![1]!.body)) as {
+      method: string;
+    };
+    return body.method;
+  }
+
+  it("mints the gRPC bearer for the artifact method", async () => {
+    // The artifact method is always gRPC-subject gated: the proxy
+    // translates it into a gRPC call to vaultd, so it must mint via
+    // `auth_createDepositorTokenGrpc`. A JSON-RPC-subject token would be
+    // rejected by `GrpcAuthInterceptor`.
+    const method = await issueMethodFor(buildInput());
+    expect(method).toBe("auth_createDepositorTokenGrpc");
   });
 });

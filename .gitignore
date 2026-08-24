@@ -4,6 +4,7 @@
 dist
 tmp
 out-tsc
+__pycache__/
 
 # dependencies
 node_modules
@@ -55,3 +56,4 @@ packages/*/.cursor
 !.claude/skills
 
 /todo
+.nx/polygraph

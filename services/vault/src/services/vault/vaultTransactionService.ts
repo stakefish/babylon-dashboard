@@ -8,6 +8,7 @@
 import type { BitcoinWallet } from "@babylonlabs-io/ts-sdk/shared";
 import type {
   BatchPeginRequestItem,
+  DepositTerms,
   PopSignature,
   UTXO as SDKUtxo,
   WotsBlockPublicKey,
@@ -23,16 +24,6 @@ import { CONTRACTS } from "../../config/contracts";
 import { getBTCNetworkForWASM } from "../../config/pegin";
 
 /**
- * UTXO parameters for peg-in transaction
- */
-export interface PeginUTXOParams {
-  fundingTxid: string;
-  fundingVout: number;
-  fundingValue: bigint;
-  fundingScriptPubkey: string;
-}
-
-/**
  * UTXO interface for multi-UTXO support
  * Re-exported from SDK for convenience
  */
@@ -46,6 +37,8 @@ export type UTXO = SDKUtxo;
  * wallet root via `expandHashlockSecret`.
  */
 export interface PreparePeginParams {
+  /** Active vault core (tx-graph) version from `ProtocolParams.activeVaultCoreVersion()` */
+  vaultCoreVersion: number;
   /** Amounts to peg in per vault (satoshis), one per HTLC output */
   pegInAmounts: readonly bigint[];
   /** TX-graph fee rate in sat/vB from contract offchain params; sizes the depositor claim value */
@@ -56,10 +49,14 @@ export interface PreparePeginParams {
   mempoolFeeRate: number;
   changeAddress: string;
   vaultProviderBtcPubkey: string;
+  /** VP commission in basis points; feeds the deposit terms' per-vault commissionFee. */
+  commissionBps: number;
   vaultKeeperBtcPubkeys: string[];
   universalChallengerBtcPubkeys: string[];
   /** CSV timelock in blocks for the PegIn vault output */
   timelockPegin: number;
+  /** btc-vault `timelock_assert` (t2); carried into DepositTerms as its own field. */
+  timelockAssert: number;
   /** CSV timelock in blocks for the Pre-PegIn HTLC refund path */
   timelockRefund: number;
   /** M in M-of-N council multisig */
@@ -115,15 +112,19 @@ export interface PreparePeginResult {
    * terminal flow paths.
    */
   authAnchorHex: string;
+  /** Deposit terms for this Pre-PegIn; forwarded to payout signing. */
+  depositTerms: DepositTerms;
 }
 
 /**
  * Detailed progress for peg-in BTC transaction signing (used by UI layer).
  *
- * A split (multi-vault) deposit produces one peg-in transaction per vault,
- * each signed via the wallet (one batch popup for `signPsbts`-capable
- * wallets, sequential popups otherwise). `total` is the number of peg-in
- * transactions; `completed` advances as each is signed.
+ * A split (multi-vault) deposit produces one peg-in transaction per vault.
+ * A lone peg-in signs via `signPsbt` (`completed` ticks 0 -> 1); a multi-vault
+ * batch signs in one native popup for `signPsbts`-capable wallets (`completed`
+ * jumps 0 -> total around the one call) or sequential popups otherwise
+ * (`completed` advances per signature). `total` is the number of peg-in
+ * transactions.
  */
 export interface PeginSigningProgress {
   /** Number of peg-in transactions signed so far. */
@@ -144,6 +145,15 @@ export interface RegisterPeginBatchOnChainParams {
   requests: BatchPeginRequestItem[];
   /** Proof of possession from signProofOfPossession(). */
   popSignature: PopSignature;
+  /**
+   * VP commission (bps) the depositor was shown at provider selection.
+   * Forwarded to the SDK as the quote that bounds `maxAcceptableCommissionBps`
+   * on-chain: if the on-chain commission has drifted upward beyond the SDK's
+   * allowed headroom between the quote and submit, registration is rejected
+   * instead of silently binding to the new higher value. See
+   * `PeginManager.resolveMaxAcceptableCommissionBps`.
+   */
+  quotedCommissionBps: number;
 }
 
 /**
@@ -194,13 +204,16 @@ export async function preparePeginTransaction(
 ): Promise<PreparePeginResult> {
   const peginManager = createPeginManager(btcWallet, ethWallet);
 
-  const { transaction, depositorBtcPubkey, derivedSecrets } =
+  const { transaction, depositorBtcPubkey, derivedSecrets, depositTerms } =
     await peginManager.preparePegin({
+      vaultCoreVersion: params.vaultCoreVersion,
       amounts: params.pegInAmounts,
       vaultProviderBtcPubkey: params.vaultProviderBtcPubkey,
+      commissionBps: params.commissionBps,
       vaultKeeperBtcPubkeys: params.vaultKeeperBtcPubkeys,
       universalChallengerBtcPubkeys: params.universalChallengerBtcPubkeys,
       timelockPegin: params.timelockPegin,
+      timelockAssert: params.timelockAssert,
       timelockRefund: params.timelockRefund,
       protocolFeeRate: params.protocolFeeRate,
       minPeginFeeRate: params.minPeginFeeRate,
@@ -227,6 +240,7 @@ export async function preparePeginTransaction(
     wotsPkHashes: derivedSecrets.wotsPkHashes,
     htlcSecretHexes: derivedSecrets.htlcSecretHexes,
     authAnchorHex: derivedSecrets.authAnchorHex,
+    depositTerms,
   };
 }
 
@@ -254,6 +268,7 @@ export async function registerPeginBatchOnChain(
     unsignedPrePeginTx: params.unsignedPrePeginTx,
     requests: params.requests,
     popSignature: params.popSignature,
+    quotedCommissionBps: params.quotedCommissionBps,
   });
 
   return {

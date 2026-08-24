@@ -1,113 +1,126 @@
 /**
  * OverviewSection Component
- * Displays overview information including Health Factor, Total Collateral
- * Value, and Amount to Repay. Renders a marketing/explainer panel
- * (DisconnectedOverview) when no wallet is connected.
+ * Displays the position summary as stat cards: total collateral value plus the
+ * borrow-capacity cards. Rendered only while a wallet is connected; the
+ * disconnected entry screen is handled by DashboardPage.
  */
 
-import {
-  formatHealthFactor,
-  getHealthFactorColor,
-  type HealthFactorStatus,
-} from "@/applications/aave/utils";
-import { HealthFactorGauge, HeartIcon } from "@/components/shared";
-import { CARD_DARK_BG_CLASS } from "@/components/shared/layoutClasses";
+import { Heading, useIsMobile } from "@babylonlabs-io/core-ui";
+import { useMemo } from "react";
+
 import { COPY } from "@/copy";
 
-import { DisconnectedOverview } from "./DisconnectedOverview";
+import {
+  buildBorrowCapacityCards,
+  PositionStatCards,
+  type PositionStatCard,
+} from "./PositionStatCards";
 
 interface OverviewSectionProps {
-  healthFactor: number | null;
-  healthFactorStatus: HealthFactorStatus;
   totalCollateralValue: string;
-  amountToRepay: string;
-  ltv: string;
-  isConnected: boolean;
+  totalBorrowed: string;
+  availableToBorrow: string;
+  collateralBtc: string;
+  availableMeterPercent: number;
+  borrowedMeterPercent: number;
+  borrowCapacityLoading: boolean;
+  borrowCapacityError: Error | null;
+  onDeposit: () => void;
+  /** True while `isDepositBlocked` holds — greys the Deposit CTA (issue #2068). */
+  isDepositDisabled: boolean;
+  onBorrow: () => void;
+  onRepay: () => void;
+  canBorrow: boolean;
+  canRepay: boolean;
 }
 
 export function OverviewSection({
-  healthFactor,
-  healthFactorStatus,
   totalCollateralValue,
-  amountToRepay,
-  ltv,
-  isConnected,
+  totalBorrowed,
+  availableToBorrow,
+  collateralBtc,
+  availableMeterPercent,
+  borrowedMeterPercent,
+  borrowCapacityLoading,
+  borrowCapacityError,
+  onDeposit,
+  isDepositDisabled,
+  onBorrow,
+  onRepay,
+  canBorrow,
+  canRepay,
 }: OverviewSectionProps) {
-  if (!isConnected) {
-    return <DisconnectedOverview />;
-  }
+  const isMobile = useIsMobile();
+  // Desktop replaces this in-page heading with the persistent header's page
+  // title; mobile has no header title slot (Header only shows it on desktop),
+  // so the heading must stay to avoid a page with no title at all.
+  const hideHeading = !isMobile;
 
-  const healthFactorFormatted = formatHealthFactor(healthFactor);
-  const healthFactorColor = getHealthFactorColor(healthFactorStatus);
-  const showHealthFactor = healthFactor !== null;
+  const statCards: PositionStatCard[] = useMemo(
+    () => [
+      {
+        label: COPY.overview.totalCollateralValueLabel,
+        tooltip: COPY.overview.totalCollateralValueTooltip,
+        value: totalCollateralValue,
+        caption: collateralBtc,
+        actionLabel: COPY.overview.depositAction,
+        onAction: onDeposit,
+        actionDisabled: isDepositDisabled,
+      },
+      ...buildBorrowCapacityCards({
+        availableToBorrow,
+        availableMeterPercent,
+        totalBorrowed,
+        borrowedMeterPercent,
+        borrowCapacityLoading,
+        borrowCapacityError,
+        onBorrow,
+        onRepay,
+        canBorrow,
+        canRepay,
+      }),
+    ],
+    [
+      totalCollateralValue,
+      collateralBtc,
+      onDeposit,
+      isDepositDisabled,
+      availableToBorrow,
+      availableMeterPercent,
+      borrowCapacityLoading,
+      borrowCapacityError,
+      onBorrow,
+      canBorrow,
+      totalBorrowed,
+      borrowedMeterPercent,
+      onRepay,
+      canRepay,
+    ],
+  );
 
   return (
     <div className="w-full space-y-6">
-      <div className="flex items-center justify-between">
-        <h2 className="text-[24px] font-normal text-accent-primary">
-          {COPY.overview.heading}
-        </h2>
-      </div>
-
-      <div
-        className={`w-full rounded-2xl bg-secondary-highlight p-6 ${CARD_DARK_BG_CLASS}`}
-      >
-        <div className="space-y-4">
-          {/* Health Factor Gauge */}
-          {showHealthFactor && (
-            <HealthFactorGauge
-              value={healthFactor}
-              status={healthFactorStatus}
-            />
-          )}
-
-          {/* Health Factor Row */}
-          <div className="flex items-center justify-between">
-            <span className="text-sm text-accent-secondary">
-              {COPY.overview.healthFactorLabel}
-            </span>
-            <span className="flex items-center gap-2 text-base text-accent-primary">
-              {showHealthFactor ? (
-                <>
-                  <HeartIcon color={healthFactorColor} />
-                  {healthFactorFormatted}
-                </>
-              ) : (
-                "-"
-              )}
-            </span>
-          </div>
-
-          {/* Current LTV Row */}
-          <div className="flex items-center justify-between">
-            <span className="text-sm text-accent-secondary">
-              {COPY.overview.ltvLabel}
-            </span>
-            <span className="text-base text-accent-primary">
-              {showHealthFactor ? ltv : "-"}
-            </span>
-          </div>
-
-          {/* Total Collateral Value Row */}
-          <div className="flex items-center justify-between">
-            <span className="text-sm text-accent-secondary">
-              {COPY.overview.totalCollateralValueLabel}
-            </span>
-            <span className="text-base text-accent-primary">
-              {totalCollateralValue}
-            </span>
-          </div>
-
-          {/* Amount to Repay Row */}
-          <div className="flex items-center justify-between">
-            <span className="text-sm text-accent-secondary">
-              {COPY.overview.amountToRepayLabel}
-            </span>
-            <span className="text-base text-accent-primary">
-              {amountToRepay}
-            </span>
-          </div>
+      {!hideHeading && (
+        <div className="flex items-center justify-between">
+          <Heading
+            variant="h5"
+            as="h2"
+            className="font-normal text-accent-primary"
+          >
+            {COPY.overview.heading}
+          </Heading>
         </div>
+      )}
+
+      <div className="space-y-2">
+        <Heading
+          variant="h6"
+          as="h2"
+          className="font-normal text-accent-primary"
+        >
+          {COPY.overview.positionTitle}
+        </Heading>
+        <PositionStatCards cards={statCards} />
       </div>
     </div>
   );

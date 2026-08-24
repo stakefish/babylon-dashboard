@@ -7,6 +7,7 @@
  * @module clients/mempool/mempoolApi
  */
 
+import { combineAbortSignals } from "../../utils/abortSignals";
 import {
   BITCOIN_ADDRESS_RE,
   HEX_RE,
@@ -14,7 +15,13 @@ import {
   TXID_RE,
 } from "../../utils/validation";
 
-import type { MempoolUTXO, NetworkFees, TxInfo, UtxoInfo } from "./types";
+import type {
+  MempoolUTXO,
+  NetworkFees,
+  OutspendStatus,
+  TxInfo,
+  UtxoInfo,
+} from "./types";
 
 /** Maximum valid satoshi value: 21 million BTC × 10^8 sats/BTC */
 const MAX_SATOSHIS = 21_000_000 * 1e8;
@@ -40,15 +47,20 @@ async function fetchWithTimeout(
   const signals = [controller.signal, options?.signal].filter(
     Boolean,
   ) as AbortSignal[];
+  const combined = combineAbortSignals(signals);
 
   try {
-    // Don't clear timeout here — let it cover body consumption by callers
+    // Don't clear timeout here — let it cover body consumption by callers.
+    // For the same reason the composed signal keeps its listeners attached on
+    // the success path: detaching them would stop the timeout from aborting a
+    // stalled body read.
     return await fetch(url, {
       ...options,
-      signal: AbortSignal.any(signals),
+      signal: combined.signal,
     });
   } catch (error) {
     clearTimeout(timeoutId);
+    combined.cleanup();
     if (
       error != null &&
       typeof error === "object" &&
@@ -176,7 +188,7 @@ export async function pushTx(txHex: string, apiUrl: string): Promise<string> {
       let message: string | undefined;
       try {
         const errorJson = JSON.parse(errorText);
-        message = errorJson.message;
+        message = errorJson.message ?? errorJson.error;
       } catch {
         // Not JSON, use raw text
         message = errorText;
@@ -228,6 +240,31 @@ export async function getTipHeight(apiUrl: string): Promise<number> {
     );
   }
   return Number.parseInt(trimmed, 10);
+}
+
+/**
+ * Get the spend status of a specific transaction output.
+ *
+ * Calls the esplora-compatible `GET /tx/{txid}/outspend/{vout}` endpoint
+ * (mempool.space backend, mempool/electrs `rest.rs`). Returns
+ * `{ spent: false }` for an unspent output, or
+ * `{ spent: true, txid, vin, status }` when the output has been spent.
+ *
+ * @param txid - The transaction id whose output is being checked (no 0x prefix)
+ * @param vout - The output index
+ * @param apiUrl - Mempool API base URL
+ * @returns The output's spend status
+ */
+export async function getOutspend(
+  txid: string,
+  vout: number,
+  apiUrl: string,
+): Promise<OutspendStatus> {
+  assertValidTxid(txid);
+  if (!isValidVout(vout)) {
+    throw new Error(`Invalid vout ${vout} for transaction ${txid}`);
+  }
+  return fetchApi<OutspendStatus>(`${apiUrl}/tx/${txid}/outspend/${vout}`);
 }
 
 /**

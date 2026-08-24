@@ -30,6 +30,7 @@ function makePrePeginParams(
   overrides?: Partial<PrePeginParams>,
 ): PrePeginParams {
   return {
+    vaultCoreVersion: 1,
     depositorPubkey: TEST_KEYS.DEPOSITOR,
     vaultProviderPubkey: TEST_KEYS.VAULT_PROVIDER,
     vaultKeeperPubkeys: [TEST_KEYS.VAULT_KEEPER_1],
@@ -62,6 +63,7 @@ describe("buildPrePeginPsbt", () => {
       expect(result).toHaveProperty("htlcAddresses");
       expect(result).toHaveProperty("peginAmounts");
       expect(result).toHaveProperty("depositorClaimValue");
+      expect(result).toHaveProperty("minPeginFee");
 
       expect(typeof result.psbtHex).toBe("string");
       expect(typeof result.htlcValues[0]).toBe("bigint");
@@ -69,6 +71,7 @@ describe("buildPrePeginPsbt", () => {
       expect(typeof result.htlcAddresses[0]).toBe("string");
       expect(typeof result.peginAmounts[0]).toBe("bigint");
       expect(typeof result.depositorClaimValue).toBe("bigint");
+      expect(typeof result.minPeginFee).toBe("bigint");
 
       expect(result.psbtHex.length).toBeGreaterThan(0);
       expect(result.htlcValues[0]).toBeGreaterThan(0n);
@@ -76,6 +79,7 @@ describe("buildPrePeginPsbt", () => {
       expect(result.htlcAddresses[0].length).toBeGreaterThan(0);
       expect(result.peginAmounts[0]).toBe(TEST_AMOUNTS.PEGIN);
       expect(result.depositorClaimValue).toBeGreaterThan(0n);
+      expect(result.minPeginFee).toBeGreaterThan(0n);
     });
 
     it("should set htlcValue >= pegInAmount + depositorClaimValue", async () => {
@@ -107,6 +111,11 @@ describe("buildPrePeginPsbt", () => {
       const highFee =
         high.htlcValues[0] - high.peginAmounts[0] - high.depositorClaimValue;
       expect(highFee).toBeGreaterThan(lowFee);
+
+      // minPeginFee (threaded to callers instead of a second recompute) must
+      // equal the same implied reserve, v1 having no anchor.
+      expect(low.minPeginFee).toBe(lowFee);
+      expect(high.minPeginFee).toBe(highFee);
     });
 
     it("should handle different networks", async () => {
@@ -170,6 +179,141 @@ describe("buildPrePeginPsbt", () => {
   });
 
   describe("Deterministic output", () => {
+    // v1 tx-byte parity gate: this exact unfunded Pre-PegIn hex was produced
+    // by the pre-facade binary (btc-vault @ 63ab9e8d) for these fixed inputs
+    // (x-only keys = x-coords of 1G..5G on secp256k1). The vault-wasm facade
+    // must reproduce it byte-for-byte for graph v1 — drift means in-flight v1
+    // deposits no longer reconstruct (hard fork). Re-verify on every pin bump.
+    it("builds the v1 Pre-PegIn byte-identical to the pre-facade binary", async () => {
+      const result = await buildPrePeginPsbt(
+        makePrePeginParams({
+          depositorPubkey:
+            "79be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798",
+          vaultProviderPubkey:
+            "c6047f9441ed7d6d3045406e95c07cd85c778e4b8cef3ca7abac09b95c709ee5",
+          vaultKeeperPubkeys: [
+            "f9308a019258c31049344f85f89d5229b531c845836f99b08601f113bce036f9",
+            "e493dbf1c10d80f3581e4904930b1404cc6c13900ee0758474fa94abe8c4cd13",
+          ],
+          universalChallengerPubkeys: [
+            "2f8bde4d1a07209355b4a7250a5c5128e88b84bddc619ab7cba8d569b240efe4",
+          ],
+          hashlocks: ["12".repeat(32)],
+          timelockRefund: 144,
+          pegInAmounts: [100_000n],
+          feeRate: 2n,
+          minPeginFeeRate: 1n,
+          numLocalChallengers: 3,
+          councilQuorum: 1,
+          councilSize: 2,
+          network: "signet" as Network,
+          authAnchorHash: "34".repeat(32),
+        }),
+      );
+
+      expect(result.psbtHex).toBe(
+        "0200000000010003c8d8010000000000225120b4ddfd220597dc619a1a1e5daa8d2fefa5cb6d3745b334b485e690c7b562ccd90000000000000000226a20343434343434343434343434343434343434343434343434343434343434343422020000000000002251" +
+          "20da4710964f7852695de2da025290e24af6d8c281de5a0b902b7135fd9fd74d2100000000",
+      );
+      expect(result.htlcValues.map(String)).toEqual(["121032"]);
+      expect(String(result.depositorClaimValue)).toBe("20734");
+    });
+
+    // v2 golden vector: pinned from the facade at VAULT_WASM_COMMIT 4d7ee90e
+    // (btc-vault graph v2 @ d7e33b26) for the same fixture as the v1 gate.
+    // htlcValue decomposes as 100000 (pegin) + 20846 (claim, larger than
+    // v1's 20734 by the RFC-008 assert-marker fee) + 240 (P2A anchor) +
+    // 311 (minPeginFee, +13 vbytes over v1 for the anchor output). Drift on
+    // a pin bump = the v2 graph changed shape — stop and re-verify against
+    // btc-vault before shipping.
+    it("builds the v2 Pre-PegIn byte-identical to the pinned facade vector", async () => {
+      const result = await buildPrePeginPsbt(
+        makePrePeginParams({
+          vaultCoreVersion: 2,
+          depositorPubkey:
+            "79be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798",
+          vaultProviderPubkey:
+            "c6047f9441ed7d6d3045406e95c07cd85c778e4b8cef3ca7abac09b95c709ee5",
+          vaultKeeperPubkeys: [
+            "f9308a019258c31049344f85f89d5229b531c845836f99b08601f113bce036f9",
+            "e493dbf1c10d80f3581e4904930b1404cc6c13900ee0758474fa94abe8c4cd13",
+          ],
+          universalChallengerPubkeys: [
+            "2f8bde4d1a07209355b4a7250a5c5128e88b84bddc619ab7cba8d569b240efe4",
+          ],
+          hashlocks: ["12".repeat(32)],
+          timelockRefund: 144,
+          pegInAmounts: [100_000n],
+          feeRate: 2n,
+          minPeginFeeRate: 1n,
+          numLocalChallengers: 3,
+          councilQuorum: 1,
+          councilSize: 2,
+          network: "signet" as Network,
+          authAnchorHash: "34".repeat(32),
+        }),
+      );
+
+      expect(result.psbtHex).toBe(
+        "020000000001000335da010000000000225120b4ddfd220597dc619a1a1e5daa8d2fefa5cb6d3745b334b485e690c7b562ccd90000000000000000226a2034343434343434343434343434343434343434343434343434343434343434342202000000000000225120da4710964f7852695de2da025290e24af6d8c281de5a0b902b7135fd9fd74d2100000000",
+      );
+      expect(result.htlcValues.map(String)).toEqual(["121397"]);
+      expect(String(result.depositorClaimValue)).toBe("20846");
+      // Exact decomposition: htlc = pegin + claim + anchor + fee. This
+      // pin is load-bearing: assertWasmPeginSizing requires the builder's
+      // internal fee to EQUAL the standalone computeMinPeginFee — if a pin
+      // bump ever makes those diverge, this test (and every buildPrePeginPsbt
+      // call in CI) fails here rather than v2 deposits failing in production.
+      expect(result.htlcValues[0]).toBe(
+        100_000n + result.depositorClaimValue + 240n + 311n,
+      );
+    });
+
+    // v3 parity gate: Vault Core 3 reuses Core 2's Bitcoin transaction shape
+    // verbatim — btc-vault #2634 changes only the off-chain BaBe backend
+    // (v0.23 -> v1) — so the two pinned builders must emit identical bytes for
+    // identical inputs. Same fixture as the v2 gate, same expectations. If
+    // this ever diverges from the v2 vector above, the shapes have parted:
+    // stop and re-verify against btc-vault before shipping, because every
+    // caller treats the anchor/output layout as shared between the two.
+    it("builds the v3 Pre-PegIn byte-identical to the v2 vector", async () => {
+      const result = await buildPrePeginPsbt(
+        makePrePeginParams({
+          vaultCoreVersion: 3,
+          depositorPubkey:
+            "79be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798",
+          vaultProviderPubkey:
+            "c6047f9441ed7d6d3045406e95c07cd85c778e4b8cef3ca7abac09b95c709ee5",
+          vaultKeeperPubkeys: [
+            "f9308a019258c31049344f85f89d5229b531c845836f99b08601f113bce036f9",
+            "e493dbf1c10d80f3581e4904930b1404cc6c13900ee0758474fa94abe8c4cd13",
+          ],
+          universalChallengerPubkeys: [
+            "2f8bde4d1a07209355b4a7250a5c5128e88b84bddc619ab7cba8d569b240efe4",
+          ],
+          hashlocks: ["12".repeat(32)],
+          timelockRefund: 144,
+          pegInAmounts: [100_000n],
+          feeRate: 2n,
+          minPeginFeeRate: 1n,
+          numLocalChallengers: 3,
+          councilQuorum: 1,
+          councilSize: 2,
+          network: "signet" as Network,
+          authAnchorHash: "34".repeat(32),
+        }),
+      );
+
+      expect(result.psbtHex).toBe(
+        "020000000001000335da010000000000225120b4ddfd220597dc619a1a1e5daa8d2fefa5cb6d3745b334b485e690c7b562ccd90000000000000000226a2034343434343434343434343434343434343434343434343434343434343434342202000000000000225120da4710964f7852695de2da025290e24af6d8c281de5a0b902b7135fd9fd74d2100000000",
+      );
+      expect(result.htlcValues.map(String)).toEqual(["121397"]);
+      expect(String(result.depositorClaimValue)).toBe("20846");
+      expect(result.htlcValues[0]).toBe(
+        100_000n + result.depositorClaimValue + 240n + 311n,
+      );
+    });
+
     it("should produce the same result for the same inputs", async () => {
       const params = makePrePeginParams();
 
@@ -472,6 +616,22 @@ describe("buildPrePeginPsbt", () => {
         ),
       ).rejects.toThrow();
     });
+
+    it("rejects a non-positive pegInAmount before WASM construction", async () => {
+      await expect(
+        buildPrePeginPsbt(makePrePeginParams({ pegInAmounts: [0n] })),
+      ).rejects.toThrow(/pegInAmounts\[0\] must be > 0/);
+    });
+
+    it("rejects a non-bigint pegInAmount that bypassed the type check", async () => {
+      await expect(
+        buildPrePeginPsbt(
+          makePrePeginParams({
+            pegInAmounts: [100_000 as unknown as bigint],
+          }),
+        ),
+      ).rejects.toThrow(/pegInAmounts\[0\] must be a bigint \(got number\)/);
+    });
   });
 });
 
@@ -506,6 +666,129 @@ describe("buildPeginTxFromFundedPrePegin", () => {
   }
 
   describe("Basic functionality", () => {
+    // v1 PegIn parity gate — companion to the Pre-PegIn byte pin above: the
+    // DERIVED PegIn assembly must also stay byte-identical across vault-wasm
+    // pin bumps. These exact bytes were produced by the pre-facade binary
+    // (btc-vault @ 63ab9e8d) for this fixture + deterministic funding.
+    it("derives the v1 PegIn byte-identical to the pre-facade binary", async () => {
+      const { txHex } = await buildFundedPrePeginTxHex({
+        depositorPubkey:
+          "79be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798",
+        vaultProviderPubkey:
+          "c6047f9441ed7d6d3045406e95c07cd85c778e4b8cef3ca7abac09b95c709ee5",
+        vaultKeeperPubkeys: [
+          "f9308a019258c31049344f85f89d5229b531c845836f99b08601f113bce036f9",
+          "e493dbf1c10d80f3581e4904930b1404cc6c13900ee0758474fa94abe8c4cd13",
+        ],
+        universalChallengerPubkeys: [
+          "2f8bde4d1a07209355b4a7250a5c5128e88b84bddc619ab7cba8d569b240efe4",
+        ],
+        hashlocks: ["12".repeat(32)],
+        timelockRefund: 144,
+        pegInAmounts: [100_000n],
+        feeRate: 2n,
+        minPeginFeeRate: 1n,
+        numLocalChallengers: 3,
+        councilQuorum: 1,
+        councilSize: 2,
+        network: "signet" as Network,
+        authAnchorHash: "34".repeat(32),
+      });
+
+      const result = await buildPeginTxFromFundedPrePegin({
+        prePeginParams: makePrePeginParams({
+          depositorPubkey:
+            "79be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798",
+          vaultProviderPubkey:
+            "c6047f9441ed7d6d3045406e95c07cd85c778e4b8cef3ca7abac09b95c709ee5",
+          vaultKeeperPubkeys: [
+            "f9308a019258c31049344f85f89d5229b531c845836f99b08601f113bce036f9",
+            "e493dbf1c10d80f3581e4904930b1404cc6c13900ee0758474fa94abe8c4cd13",
+          ],
+          universalChallengerPubkeys: [
+            "2f8bde4d1a07209355b4a7250a5c5128e88b84bddc619ab7cba8d569b240efe4",
+          ],
+          hashlocks: ["12".repeat(32)],
+          timelockRefund: 144,
+          pegInAmounts: [100_000n],
+          feeRate: 2n,
+          minPeginFeeRate: 1n,
+          numLocalChallengers: 3,
+          councilQuorum: 1,
+          councilSize: 2,
+          network: "signet" as Network,
+          authAnchorHash: "34".repeat(32),
+        }),
+        timelockPegin: 100,
+        fundedPrePeginTxHex: txHex,
+        htlcVout: 0,
+      });
+
+      expect(result.txHex).toBe(
+        "0200000001c66b93ce2325af6f2e8488d50fb2d48e7e320d5c5206de5152c859ad3b189da90000000000feffffff02a086010000000000225120367fb4fcbbe8a43626f4fb89398f47407d7e8e0318985c7a0d8fdb74b718bfc0fe5000000000000022512089b13f1de2d5bc700695813283363c8c3464dd9597994c072ca5e4df022c394700000000",
+      );
+      expect(result.txid).toBe(
+        "b733a5ddca006f3e3c5250e17286a479a927b7e2bb9e8998a689492d27c62918",
+      );
+      expect(String(result.vaultValue)).toBe("100000");
+      expect(result.vaultScriptPubKey).toBe(
+        "5120367fb4fcbbe8a43626f4fb89398f47407d7e8e0318985c7a0d8fdb74b718bfc0",
+      );
+    });
+
+    // v2 derived-PegIn golden vector (facade @ 4d7ee90e, btc-vault v2 @
+    // d7e33b26): nVersion 3 (TRUC), 3 outputs — vault (100000) at vout 0,
+    // depositor claim (20846) at vout 1, P2A anchor (240, `51024e73`) at
+    // vout 2. Same fixture + deterministic funding as the v1 gate.
+    it("derives the v2 PegIn byte-identical to the pinned facade vector", async () => {
+      const v2Fixture = {
+        vaultCoreVersion: 2,
+        depositorPubkey:
+          "79be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798",
+        vaultProviderPubkey:
+          "c6047f9441ed7d6d3045406e95c07cd85c778e4b8cef3ca7abac09b95c709ee5",
+        vaultKeeperPubkeys: [
+          "f9308a019258c31049344f85f89d5229b531c845836f99b08601f113bce036f9",
+          "e493dbf1c10d80f3581e4904930b1404cc6c13900ee0758474fa94abe8c4cd13",
+        ],
+        universalChallengerPubkeys: [
+          "2f8bde4d1a07209355b4a7250a5c5128e88b84bddc619ab7cba8d569b240efe4",
+        ],
+        hashlocks: ["12".repeat(32)],
+        timelockRefund: 144,
+        pegInAmounts: [100_000n],
+        feeRate: 2n,
+        minPeginFeeRate: 1n,
+        numLocalChallengers: 3,
+        councilQuorum: 1,
+        councilSize: 2,
+        network: "signet" as Network,
+        authAnchorHash: "34".repeat(32),
+      };
+      const { txHex } = await buildFundedPrePeginTxHex(v2Fixture);
+
+      const result = await buildPeginTxFromFundedPrePegin({
+        prePeginParams: makePrePeginParams(v2Fixture),
+        timelockPegin: 100,
+        fundedPrePeginTxHex: txHex,
+        htlcVout: 0,
+      });
+
+      expect(result.txHex).toBe(
+        "030000000173ce2a94c3e428d7e7bdc83db4427f790c78e623397566c16834c984da4d0ff50000000000feffffff03a086010000000000225120367fb4fcbbe8a43626f4fb89398f47407d7e8e0318985c7a0d8fdb74b718bfc06e5100000000000022512089b13f1de2d5bc700695813283363c8c3464dd9597994c072ca5e4df022c3947f0000000000000000451024e7300000000",
+      );
+      expect(result.txid).toBe(
+        "1eb910990eb04af204d02cae1824e69945977a4a8d636d88bce725826b489146",
+      );
+      expect(String(result.vaultValue)).toBe("100000");
+
+      const peginTx = bitcoin.Transaction.fromHex(result.txHex);
+      expect(peginTx.version).toBe(3);
+      expect(peginTx.outs).toHaveLength(3);
+      expect(peginTx.outs[2].script.toString("hex")).toBe("51024e73");
+      expect(peginTx.outs[2].value).toBe(240);
+    });
+
     it("should build a valid PegIn transaction from a funded Pre-PegIn tx hex", async () => {
       const { txHex, params } = await buildFundedPrePeginTxHex();
 
@@ -627,6 +910,24 @@ describe("buildPeginTxFromFundedPrePegin", () => {
       });
 
       expect(result1.vaultScriptPubKey).not.toBe(result2.vaultScriptPubKey);
+    });
+  });
+
+  describe("Error handling", () => {
+    // The reconstruction path has no assertWasmPeginSizing amount-echo backstop,
+    // so the input guard at the BigUint64Array construction is its only defense
+    // against a bad pegInAmount.
+    it("rejects a non-positive pegInAmount during reconstruction", async () => {
+      const { txHex } = await buildFundedPrePeginTxHex();
+
+      await expect(
+        buildPeginTxFromFundedPrePegin({
+          prePeginParams: makePrePeginParams({ pegInAmounts: [0n] }),
+          timelockPegin: TEST_TIMELOCK_PEGIN,
+          fundedPrePeginTxHex: txHex,
+          htlcVout: 0,
+        }),
+      ).rejects.toThrow(/pegInAmounts\[0\] must be > 0/);
     });
   });
 });

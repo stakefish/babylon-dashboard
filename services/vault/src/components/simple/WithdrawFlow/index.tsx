@@ -1,4 +1,3 @@
-import { FullScreenDialog } from "@babylonlabs-io/core-ui";
 import { useCallback, useMemo, useState } from "react";
 
 import { useWithdrawCollateralTransaction } from "@/applications/aave/hooks/useWithdrawCollateralTransaction";
@@ -7,9 +6,14 @@ import {
   getEffectiveVaultSelection,
   getUniquePayoutAddresses,
 } from "@/applications/aave/utils";
-import { ProtocolParamsProvider } from "@/context/ProtocolParamsContext";
+import { V3ModalShell } from "@/components/shared/V3ModalShell";
+import {
+  ProtocolParamsProvider,
+  useProtocolParamsContext,
+} from "@/context/ProtocolParamsContext";
 import { useDialogStep } from "@/hooks/deposit/useDialogStep";
 import type { CollateralVaultEntry } from "@/types/collateral";
+import { maxAssertTimelockBlocks } from "@/utils/pegoutTiming";
 
 import { FadeTransition } from "../FadeTransition";
 
@@ -40,29 +44,56 @@ function WithdrawFlowContent({
   preSelectedVaultIds,
 }: WithdrawFlowProps) {
   const { step, goToProgress, reset } = useWithdrawFlow();
-  const { executeWithdraw, isProcessing } = useWithdrawCollateralTransaction();
+  const { executeWithdraw, isProcessing, error } =
+    useWithdrawCollateralTransaction();
+  const { getOffchainParamsByVersion, config } = useProtocolParamsContext();
 
   const renderedStep = useDialogStep(open, step, reset);
 
-  // Snapshot of payout addresses captured at confirm time. Needed by the
-  // Progress view because the underlying vaults are removed from the user's
-  // collateral list after withdraw — without snapshotting, the addresses
-  // would disappear by the time we navigate to PROGRESS.
+  // Snapshots captured at confirm time. Needed by the Progress view because the
+  // underlying vaults are removed from the user's collateral list after
+  // withdraw — without snapshotting, this data would disappear by the time we
+  // navigate to PROGRESS.
   const [submittedPayoutAddresses, setSubmittedPayoutAddresses] = useState<
     string[]
   >([]);
+  const [submittedAssertTimelockBlocks, setSubmittedAssertTimelockBlocks] =
+    useState(0);
+
+  // Signing-surface guard: god-mode demo rows are display-only (`displayOnly`,
+  // fake vaultId) and must never be selectable for a real withdraw, even if a
+  // caller mistakenly passes the demo-merged list. Mirrors CollateralSection's
+  // actionableVaults filter. Always a no-op in production (the flag is never
+  // set there).
+  const withdrawableVaults = useMemo(
+    () => collateralVaults.filter((v) => !v.displayOnly),
+    [collateralVaults],
+  );
 
   const {
     selectedVaultIds: effectiveSelectedVaultIds,
     selectedVaults: effectiveSelectedVaults,
   } = useMemo(
-    () => getEffectiveVaultSelection(collateralVaults, preSelectedVaultIds),
-    [collateralVaults, preSelectedVaultIds],
+    () => getEffectiveVaultSelection(withdrawableVaults, preSelectedVaultIds),
+    [withdrawableVaults, preSelectedVaultIds],
   );
 
   const selectedPayoutAddresses = useMemo(
     () => getUniquePayoutAddresses(effectiveSelectedVaults),
     [effectiveSelectedVaults],
+  );
+
+  // Conservative payout ETA for the batch: the largest `timelockAssert` across
+  // the selected vaults' offchain-params versions. Falls back to the latest
+  // version's value when a vault's version can't be resolved.
+  const selectedAssertTimelockBlocks = useMemo(
+    () =>
+      maxAssertTimelockBlocks(
+        effectiveSelectedVaults.map((v) => v.offchainParamsVersion),
+        (version) => getOffchainParamsByVersion(version)?.timelockAssert,
+        Number(config.offchainParams.timelockAssert),
+      ),
+    [effectiveSelectedVaults, getOffchainParamsByVersion, config],
   );
 
   // Aggregate amounts and projected HF for the current selection.
@@ -94,31 +125,31 @@ function WithdrawFlowContent({
     const success = await executeWithdraw(effectiveSelectedVaultIds);
     if (success) {
       setSubmittedPayoutAddresses(selectedPayoutAddresses);
+      setSubmittedAssertTimelockBlocks(selectedAssertTimelockBlocks);
       goToProgress();
     }
   }, [
     executeWithdraw,
     effectiveSelectedVaultIds,
     selectedPayoutAddresses,
+    selectedAssertTimelockBlocks,
     goToProgress,
   ]);
 
   return (
-    <FullScreenDialog
-      open={open}
-      onClose={onClose}
-      className="items-center justify-center p-6"
-    >
+    <V3ModalShell open={open} onClose={onClose}>
       <FadeTransition stepKey={renderedStep}>
         {renderedStep === WithdrawStep.REVIEW && (
-          <div className="mx-auto w-full max-w-[520px]">
+          <div className="mx-auto w-full max-w-[612px]">
             <WithdrawReviewContent
               totalAmountBtc={selectedBtc}
               totalAmountUsd={selectedUsd}
               currentHealthFactor={currentHealthFactor}
               projectedHealthFactor={projectedHealthFactor}
               payoutAddresses={selectedPayoutAddresses}
+              assertTimelockBlocks={selectedAssertTimelockBlocks}
               isProcessing={isProcessing}
+              error={error}
               onConfirm={handleConfirm}
             />
           </div>
@@ -127,12 +158,13 @@ function WithdrawFlowContent({
           <div className="mx-auto w-full max-w-[520px]">
             <WithdrawProgressView
               payoutAddresses={submittedPayoutAddresses}
+              assertTimelockBlocks={submittedAssertTimelockBlocks}
               onClose={onClose}
             />
           </div>
         )}
       </FadeTransition>
-    </FullScreenDialog>
+    </V3ModalShell>
   );
 }
 

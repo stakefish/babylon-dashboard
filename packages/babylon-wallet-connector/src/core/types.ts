@@ -204,12 +204,24 @@ export interface IWallet<P extends IProvider = IProvider> {
   id: string;
   name: string;
   icon: string;
+  // Solid brand-color fill shown behind `icon` in the wallet-select list, where
+  // the icon is clipped to a rounded square rather than shown as a raw circle
+  // (see WalletButton). Undefined falls back to no fill (transparent corners).
+  iconBackground?: string;
   docs: string;
   installed: boolean;
   provider: P | null;
   account: Account | null;
   label: string;
+  // Explicit hardware-wallet marker. Drives the "available" badge and the
+  // connect-list ordering. Do NOT infer this from `label`: software wallets
+  // (injectable, AppKit) carry labels too, so label truthiness is not a
+  // hardware signal.
+  hardware?: boolean;
 }
+
+/** Every chain the connector can build a wallet connector for. */
+export type ChainId = "BTC" | "BBN" | "ETH";
 
 export interface IChain<K extends string = string, P extends IProvider = IProvider, C = any> {
   id: K;
@@ -235,8 +247,13 @@ export interface WalletMetadata<P extends IProvider, C> {
   id: string;
   wallet?: string | ((context: any, config: C) => any);
   label?: string;
+  // Marks the entry as a hardware wallet so the UI shows the "available" badge
+  // and groups it after installed software wallets. Set explicitly per wallet.
+  hardware?: boolean;
   name: string | ((wallet: any, config: C) => Promise<string>);
   icon: string | ((wallet: any, config: C) => Promise<string>);
+  // See `IWallet.iconBackground`.
+  iconBackground?: string;
   docs: string;
   networks: Network[];
   createProvider: (wallet: any, config: C) => P;
@@ -335,6 +352,13 @@ export interface SignPsbtOptions {
    * Use this to restrict signing to specific inputs (e.g., only depositor's input in payout tx).
    */
   signInputs?: SignInputOptions[];
+  /**
+   * Human-readable label for the signing step (e.g. "Transaction 3 of 12").
+   * Honored by wallets that render their own signing UI — Keystone shows it
+   * above the QR code so the user can track progress through a batch. Wallets
+   * that sign in their extension popup ignore it.
+   */
+  displayMessage?: string;
 }
 
 export interface IBTCProvider extends IProvider {
@@ -359,6 +383,36 @@ export interface IBTCProvider extends IProvider {
    * @returns A promise that resolves to the network of the current account.
    */
   getNetwork(): Promise<Network>;
+
+  /**
+   * Reads the wallet's live accounts WITHOUT prompting the user
+   * (non-interactive). Implemented only by wallets where an empty result is a
+   * reliable silent-lock signal: UniSat returns [] when the wallet is locked
+   * while a stale cached `getAddress()` still reports the last-known address,
+   * so it can be polled to detect a silent auto-lock that fires no event.
+   * Unlike `connectWallet()` it never surfaces the unlock / connection popup.
+   *
+   * Intentionally omitted by OKX and OneKey: their `getAccounts()` returns the
+   * cached / dApp-authorized address even when the keyring is locked, so an
+   * empty-array read is not a lock signal there. Optional — callers MUST
+   * feature-detect (`typeof provider.getAccounts === "function"`) and treat a
+   * missing method as "lock cannot be probed", never as locked.
+   * @returns A promise that resolves to the active account addresses.
+   */
+  getAccounts?(): Promise<string[]>;
+
+  /**
+   * Requests cancellation of the in-flight signing ceremony
+   * (signPsbt/signPsbts/signMessage). A REQUEST, not a settle: the provider
+   * aborts at its next device exchange boundary, and the sign promise rejects
+   * with `CONNECTION_REJECTED` only then. No-op when nothing is in flight.
+   *
+   * Implemented only by hardware providers whose ceremonies block on a
+   * physical device (currently the Ledger vault provider). Optional — callers
+   * MUST feature-detect (`typeof provider.cancelSigning === "function"`) and
+   * hide the cancel affordance when the method is missing.
+   */
+  cancelSigning?(): void;
 
   /**
    * Signs a message using either BIP322-Simple or ECDSA signing method.

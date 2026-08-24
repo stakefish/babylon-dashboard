@@ -4,6 +4,12 @@
  */
 
 /**
+ * Internal sentinel activity type for an in-flight peg-in. Kept out of the
+ * filter menu and rendered as a normal "Deposit" row with a spinner.
+ */
+export const PENDING_DEPOSIT_TYPE = "Pending Deposit";
+
+/**
  * Types of activities that can be recorded. Liquidation events are pre-classified
  * by `fetchActivities` into Partially / Fully Liquidated based on whether the
  * depositor had remaining open vaults at the moment of liquidation.
@@ -16,7 +22,7 @@ export type ActivityType =
   | "Borrow"
   | "Repay"
   | "Redeem"
-  | "Pending Deposit";
+  | typeof PENDING_DEPOSIT_TYPE;
 
 /**
  * Chain that the transaction hash belongs to.
@@ -33,6 +39,14 @@ export interface ActivityAmount {
   value: string;
   /** Token symbol (e.g., "USDC", "BTC") */
   symbol: string;
+  /**
+   * The same amount as a plain number, used only to derive the row's USD
+   * sub-line (amount × current price). Absent where the source has no
+   * unambiguous numeric amount — those rows render no sub-line rather than a
+   * `$0` / `NaN` one. Never use it for a signed value: `value` is what the
+   * user sees and the projection formats it independently.
+   */
+  numeric?: number;
 }
 
 /**
@@ -41,14 +55,29 @@ export interface ActivityAmount {
  */
 export interface ActivityLog {
   kind: "row";
-  /** Unique identifier for the activity */
+  /**
+   * Unique identifier for the activity. NOT a stable id space across sources:
+   * an indexed row is keyed by its event (`txHash-logIndex-type`), a pending
+   * row from localStorage by the derived vault id. Never match it against a
+   * vault id — use `vaultId` for that.
+   */
   id: string;
+  /**
+   * The on-chain vault this row belongs to, where the source knows it. The
+   * only field safe to correlate with vault-keyed state (e.g. the deposit
+   * lifecycle's refundable-expired set). Null on rows the indexer does not
+   * scope to a vault, such as a borrow or repay against the position.
+   */
+  vaultId?: string | null;
   /** Timestamp of the activity */
   date: Date;
   /** Source URL for the left avatar. BTC icon for native rows, reserve token icon for borrow/repay. */
   tokenIcon: string;
-  /** Whether the deposit was refunded via the peg-in refund path. Shown as a red dot with tooltip. */
-  isRefunded?: boolean;
+  /**
+   * Whether the deposit expired before activation and was reclaimed via the
+   * peg-in refund path. Shown as a red dot with the "Deposit expired" tooltip.
+   */
+  isExpired?: boolean;
   /** Type of activity */
   type: ActivityType;
   /** Amount involved in the activity */

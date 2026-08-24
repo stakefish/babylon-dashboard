@@ -7,6 +7,7 @@
 
 import { Buffer } from "buffer";
 
+import { getAssertPayoutScriptInfo } from "@babylonlabs-io/babylon-tbv-rust-wasm";
 import { Psbt, Transaction } from "bitcoinjs-lib";
 import { beforeAll, describe, expect, it, vi } from "vitest";
 
@@ -17,15 +18,33 @@ import {
   NULL_TXID,
   P2WPKH_PREFIX,
   SEQUENCE_MAX,
+  TAPSCRIPT_LEAF_VERSION,
   TEST_CLAIM_VALUE,
   TEST_COMBINED_VALUE,
   TEST_PEGIN_VALUE,
   createDummyP2TR,
   createDummyP2WPKH,
 } from "../../primitives/psbt/__tests__/constants";
-import { initializeWasmForTests } from "../../primitives/psbt/__tests__/helpers";
+import {
+  generateXOnlyKeys,
+  initializeWasmForTests,
+} from "../../primitives/psbt/__tests__/helpers";
 import { PAYOUT_ANCHOR_DUST_SATS } from "../../primitives/psbt/constants";
+import {
+  deriveBip86ScriptPubKeyHex,
+  hexToUint8Array,
+} from "../../primitives/utils/bitcoin";
+import { computeTaprootScriptPubKey } from "../../primitives/utils/taproot";
 import { PayoutManager, type PayoutManagerConfig } from "../PayoutManager";
+
+// These tests inject synthetic signatures into otherwise-real payout PSBTs to
+// exercise orchestration and output validation. BIP-340 signature verification
+// is a separate concern with its own dedicated real-PSBT tests
+// (primitives/psbt/__tests__/verifyScriptPathSchnorrSignature.test.ts), so it is
+// stubbed here to let the synthetic fixtures through.
+vi.mock("../../primitives/psbt/verifyScriptPathSchnorrSignature", () => ({
+  assertScriptPathSchnorrSignature: vi.fn(),
+}));
 
 // Test constants - use valid secp256k1 x-only public keys
 const TEST_KEYS = {
@@ -40,6 +59,53 @@ const TEST_KEYS = {
 
 /** Valid P2WPKH scriptPubKey for payout output address validation tests */
 const TEST_PAYOUT_SCRIPT_PUBKEY = P2WPKH_PREFIX + "d".repeat(40);
+
+/**
+ * VP commission destination of the test payout transactions (outs[1]), and the
+ * keeper payout map for an un-rotated operator set where the registry backfills
+ * BIP-86 — the same bytes local derivation would produce.
+ */
+const TEST_VP_COMMISSION_SCRIPT = createDummyP2WPKH("e").toString("hex");
+const TEST_VK_PAYOUT_SCRIPTS: Readonly<Record<string, string>> = {
+  [TEST_KEYS.VAULT_KEEPER_1.toLowerCase()]: deriveBip86ScriptPubKeyHex(
+    TEST_KEYS.VAULT_KEEPER_1,
+  ),
+};
+
+/** Security council backing every fixture: 3 members, quorum 2. */
+const TEST_COUNCIL_MEMBERS = generateXOnlyKeys(3, 9_000);
+const TEST_COUNCIL_QUORUM = 2;
+
+/** Assert CSV timelock shared by every payout fixture below. */
+const TEST_TIMELOCK_ASSERT = 144;
+
+/**
+ * Creates the assert transaction the payout fixtures spend. Output 0 must be
+ * the real Assert:0 taproot output, or `buildPayoutPsbt` refuses to attach the
+ * payout leaf it rebuilds for input 1.
+ */
+async function createTestAssertTransaction(): Promise<string> {
+  const { payoutScript, payoutControlBlock } = await getAssertPayoutScriptInfo({
+    txGraphVersion: 1,
+    claimer: TEST_KEYS.VAULT_PROVIDER,
+    localChallengers: [TEST_KEYS.VAULT_KEEPER_1],
+    universalChallengers: [TEST_KEYS.UNIVERSAL_CHALLENGER_1],
+    timelockAssert: TEST_TIMELOCK_ASSERT,
+    councilMembers: TEST_COUNCIL_MEMBERS,
+    councilQuorum: TEST_COUNCIL_QUORUM,
+  });
+  const tx = new Transaction();
+  tx.addInput(DUMMY_TXID_1, 0xffffffff, SEQUENCE_MAX);
+  tx.addOutput(
+    computeTaprootScriptPubKey({
+      leafVersion: TAPSCRIPT_LEAF_VERSION,
+      script: hexToUint8Array(payoutScript),
+      controlBlock: hexToUint8Array(payoutControlBlock),
+    }),
+    Number(TEST_CLAIM_VALUE),
+  );
+  return tx.toHex();
+}
 
 describe("PayoutManager", () => {
   beforeAll(async () => {
@@ -121,16 +187,6 @@ describe("PayoutManager", () => {
 
   describe("signPayoutTransactionsBatch", () => {
     /**
-     * Creates a deterministic assert transaction used for payout inputs.
-     */
-    function createTestAssertTransaction(): string {
-      const tx = new Transaction();
-      tx.addInput(DUMMY_TXID_1, 0xffffffff, SEQUENCE_MAX);
-      tx.addOutput(createDummyP2WPKH("c"), Number(TEST_CLAIM_VALUE));
-      return tx.toHex();
-    }
-
-    /**
      * Creates a deterministic Payout transaction. Output shape follows the
      * VP-claimer canonical structure enforced by `buildPayoutPsbt`'s
      * per-role check:
@@ -138,7 +194,7 @@ describe("PayoutManager", () => {
      *   outs[1]: VP commission
      *   outs[2]: CPFP anchor (546 sats)
      * Implicit fee = inputs (150_000) − outputs (145_000) = 5_000 = 3.3%,
-     * comfortably under the 10% bound in `buildPayoutPsbt`.
+     * comfortably under the fee-band ceiling in `buildPayoutPsbt`.
      */
     function createTestPayoutTransaction(
       peginTxHex: string,
@@ -147,17 +203,12 @@ describe("PayoutManager", () => {
       const peginTx = Transaction.fromHex(peginTxHex);
       const assertTx = Transaction.fromHex(assertTxHex);
       const tx = new Transaction();
+      // btc-vault payout literals (transactions/payout.rs): version 2,
+      // locktime 0, input 0 sequence = the PegIn CSV timelock (100 here).
+      tx.version = 2;
 
-      tx.addInput(
-        Buffer.from(peginTx.getId(), "hex").reverse(),
-        0,
-        SEQUENCE_MAX,
-      );
-      tx.addInput(
-        Buffer.from(assertTx.getId(), "hex").reverse(),
-        0,
-        SEQUENCE_MAX,
-      );
+      tx.addInput(Buffer.from(peginTx.getId(), "hex").reverse(), 0, 100);
+      tx.addInput(Buffer.from(assertTx.getId(), "hex").reverse(), 0, 144);
       // outs[0]: depositor payout — registered scriptPubKey ("d") at vout 0
       tx.addOutput(
         createDummyP2WPKH("d"),
@@ -173,7 +224,7 @@ describe("PayoutManager", () => {
 
     it("should batch sign multiple payout transactions", async () => {
       const peginTxHex = createTestPeginTransaction();
-      const assertTxHex = createTestAssertTransaction();
+      const assertTxHex = await createTestAssertTransaction();
       const payoutTxHex1 = createTestPayoutTransaction(peginTxHex, assertTxHex);
       const payoutTxHex2 = createTestPayoutTransaction(peginTxHex, assertTxHex);
 
@@ -192,8 +243,7 @@ describe("PayoutManager", () => {
 
           return psbtsHexes.map((psbtHex, index) => {
             const psbt = Psbt.fromHex(psbtHex);
-            const signature =
-              index === 0 ? payoutSignature1 : payoutSignature2;
+            const signature = index === 0 ? payoutSignature1 : payoutSignature2;
 
             psbt.data.inputs[0].tapScriptSig = [
               {
@@ -223,6 +273,7 @@ describe("PayoutManager", () => {
 
       const results = await manager.signPayoutTransactionsBatch([
         {
+          vaultCoreVersion: 1,
           payoutTxHex: payoutTxHex1,
           peginTxHex,
           assertTxHex,
@@ -230,12 +281,19 @@ describe("PayoutManager", () => {
           vaultKeeperBtcPubkeys: [TEST_KEYS.VAULT_KEEPER_1],
           universalChallengerBtcPubkeys: [TEST_KEYS.UNIVERSAL_CHALLENGER_1],
           timelockPegin: 100,
+          timelockAssert: 144,
           depositorBtcPubkey: TEST_KEYS.DEPOSITOR,
           registeredPayoutScriptPubKey: TEST_PAYOUT_SCRIPT_PUBKEY,
           claimerBtcPubkey: TEST_KEYS.VAULT_PROVIDER,
           commissionBps: 500,
+          protocolFeeRate: 10n,
+          councilMembers: TEST_COUNCIL_MEMBERS,
+          councilQuorum: TEST_COUNCIL_QUORUM,
+          vkClaimerPayoutScriptPubKeys: TEST_VK_PAYOUT_SCRIPTS,
+          vpCommissionScriptPubKey: TEST_VP_COMMISSION_SCRIPT,
         },
         {
+          vaultCoreVersion: 1,
           payoutTxHex: payoutTxHex2,
           peginTxHex,
           assertTxHex,
@@ -243,10 +301,16 @@ describe("PayoutManager", () => {
           vaultKeeperBtcPubkeys: [TEST_KEYS.VAULT_KEEPER_1],
           universalChallengerBtcPubkeys: [TEST_KEYS.UNIVERSAL_CHALLENGER_1],
           timelockPegin: 100,
+          timelockAssert: 144,
           depositorBtcPubkey: TEST_KEYS.DEPOSITOR,
           registeredPayoutScriptPubKey: TEST_PAYOUT_SCRIPT_PUBKEY,
           claimerBtcPubkey: TEST_KEYS.VAULT_PROVIDER,
           commissionBps: 500,
+          protocolFeeRate: 10n,
+          councilMembers: TEST_COUNCIL_MEMBERS,
+          councilQuorum: TEST_COUNCIL_QUORUM,
+          vkClaimerPayoutScriptPubKeys: TEST_VK_PAYOUT_SCRIPTS,
+          vpCommissionScriptPubKey: TEST_VP_COMMISSION_SCRIPT,
         },
       ]);
 
@@ -284,6 +348,7 @@ describe("PayoutManager", () => {
       await expect(
         manager.signPayoutTransactionsBatch([
           {
+            vaultCoreVersion: 1,
             payoutTxHex: "0200000001...",
             peginTxHex: "0200000001...",
             assertTxHex: "0200000001...",
@@ -291,10 +356,16 @@ describe("PayoutManager", () => {
             vaultKeeperBtcPubkeys: [TEST_KEYS.VAULT_KEEPER_1],
             universalChallengerBtcPubkeys: [TEST_KEYS.UNIVERSAL_CHALLENGER_1],
             timelockPegin: 100,
+            timelockAssert: 144,
             depositorBtcPubkey: TEST_KEYS.DEPOSITOR,
             registeredPayoutScriptPubKey: TEST_PAYOUT_SCRIPT_PUBKEY,
             claimerBtcPubkey: TEST_KEYS.VAULT_PROVIDER,
             commissionBps: 500,
+            protocolFeeRate: 10n,
+            councilMembers: TEST_COUNCIL_MEMBERS,
+            councilQuorum: TEST_COUNCIL_QUORUM,
+            vkClaimerPayoutScriptPubKeys: TEST_VK_PAYOUT_SCRIPTS,
+            vpCommissionScriptPubKey: TEST_VP_COMMISSION_SCRIPT,
           },
         ]),
       ).rejects.toThrow(
@@ -329,6 +400,7 @@ describe("PayoutManager", () => {
       await expect(
         manager.signPayoutTransactionsBatch([
           {
+            vaultCoreVersion: 1,
             payoutTxHex: "0200000001...",
             peginTxHex: "0200000001...",
             assertTxHex: "0200000001...",
@@ -336,10 +408,16 @@ describe("PayoutManager", () => {
             vaultKeeperBtcPubkeys: [TEST_KEYS.VAULT_KEEPER_1],
             universalChallengerBtcPubkeys: [TEST_KEYS.UNIVERSAL_CHALLENGER_1],
             timelockPegin: 100,
+            timelockAssert: 144,
             depositorBtcPubkey: TEST_KEYS.DEPOSITOR,
             registeredPayoutScriptPubKey: TEST_PAYOUT_SCRIPT_PUBKEY,
             claimerBtcPubkey: TEST_KEYS.VAULT_PROVIDER,
             commissionBps: 500,
+            protocolFeeRate: 10n,
+            councilMembers: TEST_COUNCIL_MEMBERS,
+            councilQuorum: TEST_COUNCIL_QUORUM,
+            vkClaimerPayoutScriptPubKeys: TEST_VK_PAYOUT_SCRIPTS,
+            vpCommissionScriptPubKey: TEST_VP_COMMISSION_SCRIPT,
           },
         ]),
       ).rejects.toThrow();
@@ -347,7 +425,7 @@ describe("PayoutManager", () => {
 
     it("should throw error when wallet returns fewer PSBTs than expected", async () => {
       const peginTxHex = createTestPeginTransaction();
-      const assertTxHex = createTestAssertTransaction();
+      const assertTxHex = await createTestAssertTransaction();
 
       const getPublicKeyHex = vi
         .fn<() => Promise<string>>()
@@ -389,6 +467,7 @@ describe("PayoutManager", () => {
       await expect(
         manager.signPayoutTransactionsBatch([
           {
+            vaultCoreVersion: 1,
             payoutTxHex: createTestPayoutTransaction(peginTxHex, assertTxHex),
             peginTxHex,
             assertTxHex,
@@ -396,12 +475,19 @@ describe("PayoutManager", () => {
             vaultKeeperBtcPubkeys: [TEST_KEYS.VAULT_KEEPER_1],
             universalChallengerBtcPubkeys: [TEST_KEYS.UNIVERSAL_CHALLENGER_1],
             timelockPegin: 100,
+            timelockAssert: 144,
             depositorBtcPubkey: TEST_KEYS.DEPOSITOR,
             registeredPayoutScriptPubKey: TEST_PAYOUT_SCRIPT_PUBKEY,
             claimerBtcPubkey: TEST_KEYS.VAULT_PROVIDER,
             commissionBps: 500,
+            protocolFeeRate: 10n,
+            councilMembers: TEST_COUNCIL_MEMBERS,
+            councilQuorum: TEST_COUNCIL_QUORUM,
+            vkClaimerPayoutScriptPubKeys: TEST_VK_PAYOUT_SCRIPTS,
+            vpCommissionScriptPubKey: TEST_VP_COMMISSION_SCRIPT,
           },
           {
+            vaultCoreVersion: 1,
             payoutTxHex: createTestPayoutTransaction(peginTxHex, assertTxHex),
             peginTxHex,
             assertTxHex,
@@ -409,20 +495,24 @@ describe("PayoutManager", () => {
             vaultKeeperBtcPubkeys: [TEST_KEYS.VAULT_KEEPER_1],
             universalChallengerBtcPubkeys: [TEST_KEYS.UNIVERSAL_CHALLENGER_1],
             timelockPegin: 100,
+            timelockAssert: 144,
             depositorBtcPubkey: TEST_KEYS.DEPOSITOR,
             registeredPayoutScriptPubKey: TEST_PAYOUT_SCRIPT_PUBKEY,
             claimerBtcPubkey: TEST_KEYS.VAULT_PROVIDER,
             commissionBps: 500,
+            protocolFeeRate: 10n,
+            councilMembers: TEST_COUNCIL_MEMBERS,
+            councilQuorum: TEST_COUNCIL_QUORUM,
+            vkClaimerPayoutScriptPubKeys: TEST_VK_PAYOUT_SCRIPTS,
+            vpCommissionScriptPubKey: TEST_VP_COMMISSION_SCRIPT,
           },
         ]),
-      ).rejects.toThrow(
-        "Expected 2 signed PSBTs but received 1",
-      );
+      ).rejects.toThrow("Expected 2 signed PSBTs but received 1");
     });
 
     it("should throw error when wallet returns more PSBTs than expected", async () => {
       const peginTxHex = createTestPeginTransaction();
-      const assertTxHex = createTestAssertTransaction();
+      const assertTxHex = await createTestAssertTransaction();
 
       const getPublicKeyHex = vi
         .fn<() => Promise<string>>()
@@ -466,6 +556,7 @@ describe("PayoutManager", () => {
       await expect(
         manager.signPayoutTransactionsBatch([
           {
+            vaultCoreVersion: 1,
             payoutTxHex: createTestPayoutTransaction(peginTxHex, assertTxHex),
             peginTxHex,
             assertTxHex,
@@ -473,12 +564,19 @@ describe("PayoutManager", () => {
             vaultKeeperBtcPubkeys: [TEST_KEYS.VAULT_KEEPER_1],
             universalChallengerBtcPubkeys: [TEST_KEYS.UNIVERSAL_CHALLENGER_1],
             timelockPegin: 100,
+            timelockAssert: 144,
             depositorBtcPubkey: TEST_KEYS.DEPOSITOR,
             registeredPayoutScriptPubKey: TEST_PAYOUT_SCRIPT_PUBKEY,
             claimerBtcPubkey: TEST_KEYS.VAULT_PROVIDER,
             commissionBps: 500,
+            protocolFeeRate: 10n,
+            councilMembers: TEST_COUNCIL_MEMBERS,
+            councilQuorum: TEST_COUNCIL_QUORUM,
+            vkClaimerPayoutScriptPubKeys: TEST_VK_PAYOUT_SCRIPTS,
+            vpCommissionScriptPubKey: TEST_VP_COMMISSION_SCRIPT,
           },
           {
+            vaultCoreVersion: 1,
             payoutTxHex: createTestPayoutTransaction(peginTxHex, assertTxHex),
             peginTxHex,
             assertTxHex,
@@ -486,29 +584,23 @@ describe("PayoutManager", () => {
             vaultKeeperBtcPubkeys: [TEST_KEYS.VAULT_KEEPER_1],
             universalChallengerBtcPubkeys: [TEST_KEYS.UNIVERSAL_CHALLENGER_1],
             timelockPegin: 100,
+            timelockAssert: 144,
             depositorBtcPubkey: TEST_KEYS.DEPOSITOR,
             registeredPayoutScriptPubKey: TEST_PAYOUT_SCRIPT_PUBKEY,
             claimerBtcPubkey: TEST_KEYS.VAULT_PROVIDER,
             commissionBps: 500,
+            protocolFeeRate: 10n,
+            councilMembers: TEST_COUNCIL_MEMBERS,
+            councilQuorum: TEST_COUNCIL_QUORUM,
+            vkClaimerPayoutScriptPubKeys: TEST_VK_PAYOUT_SCRIPTS,
+            vpCommissionScriptPubKey: TEST_VP_COMMISSION_SCRIPT,
           },
         ]),
-      ).rejects.toThrow(
-        "Expected 2 signed PSBTs but received 3",
-      );
+      ).rejects.toThrow("Expected 2 signed PSBTs but received 3");
     });
   });
 
   describe("payout output address validation", () => {
-    /**
-     * Creates a deterministic assert transaction used for payout inputs.
-     */
-    function createTestAssertTransaction(): string {
-      const tx = new Transaction();
-      tx.addInput(DUMMY_TXID_1, 0xffffffff, SEQUENCE_MAX);
-      tx.addOutput(createDummyP2WPKH("c"), Number(TEST_CLAIM_VALUE));
-      return tx.toHex();
-    }
-
     /**
      * Creates a deterministic Payout transaction. Output shape follows the
      * VP-claimer canonical structure enforced by `buildPayoutPsbt`'s
@@ -517,7 +609,7 @@ describe("PayoutManager", () => {
      *   outs[1]: VP commission
      *   outs[2]: CPFP anchor (546 sats)
      * Implicit fee = inputs (150_000) − outputs (145_000) = 5_000 = 3.3%,
-     * comfortably under the 10% bound in `buildPayoutPsbt`.
+     * comfortably under the fee-band ceiling in `buildPayoutPsbt`.
      */
     function createTestPayoutTransaction(
       peginTxHex: string,
@@ -526,17 +618,12 @@ describe("PayoutManager", () => {
       const peginTx = Transaction.fromHex(peginTxHex);
       const assertTx = Transaction.fromHex(assertTxHex);
       const tx = new Transaction();
+      // btc-vault payout literals (transactions/payout.rs): version 2,
+      // locktime 0, input 0 sequence = the PegIn CSV timelock (100 here).
+      tx.version = 2;
 
-      tx.addInput(
-        Buffer.from(peginTx.getId(), "hex").reverse(),
-        0,
-        SEQUENCE_MAX,
-      );
-      tx.addInput(
-        Buffer.from(assertTx.getId(), "hex").reverse(),
-        0,
-        SEQUENCE_MAX,
-      );
+      tx.addInput(Buffer.from(peginTx.getId(), "hex").reverse(), 0, 100);
+      tx.addInput(Buffer.from(assertTx.getId(), "hex").reverse(), 0, 144);
       // outs[0]: depositor payout — registered scriptPubKey ("d") at vout 0
       tx.addOutput(
         createDummyP2WPKH("d"),
@@ -552,7 +639,7 @@ describe("PayoutManager", () => {
 
     it("should throw when payout TX output 0 does not pay to registered address", async () => {
       const peginTxHex = createTestPeginTransaction();
-      const assertTxHex = createTestAssertTransaction();
+      const assertTxHex = await createTestAssertTransaction();
       const payoutTxHex = createTestPayoutTransaction(peginTxHex, assertTxHex);
 
       // Use a scriptPubKey that does NOT match the payout output ("a" instead of "d")
@@ -569,6 +656,7 @@ describe("PayoutManager", () => {
 
       await expect(
         manager.signPayoutTransaction({
+          vaultCoreVersion: 1,
           payoutTxHex,
           peginTxHex,
           assertTxHex,
@@ -576,10 +664,16 @@ describe("PayoutManager", () => {
           vaultKeeperBtcPubkeys: [TEST_KEYS.VAULT_KEEPER_1],
           universalChallengerBtcPubkeys: [TEST_KEYS.UNIVERSAL_CHALLENGER_1],
           timelockPegin: 100,
+          timelockAssert: 144,
           depositorBtcPubkey: TEST_KEYS.DEPOSITOR,
           registeredPayoutScriptPubKey: wrongScriptPubKey,
           claimerBtcPubkey: TEST_KEYS.VAULT_PROVIDER,
           commissionBps: 500,
+          protocolFeeRate: 10n,
+          councilMembers: TEST_COUNCIL_MEMBERS,
+          councilQuorum: TEST_COUNCIL_QUORUM,
+          vkClaimerPayoutScriptPubKeys: TEST_VK_PAYOUT_SCRIPTS,
+          vpCommissionScriptPubKey: TEST_VP_COMMISSION_SCRIPT,
         }),
       ).rejects.toThrow(
         "Payout transaction output 0 does not pay the expected scriptPubKey for role vp-claimer",
@@ -588,7 +682,7 @@ describe("PayoutManager", () => {
 
     it("should accept 0x-prefixed scriptPubKey", async () => {
       const peginTxHex = createTestPeginTransaction();
-      const assertTxHex = createTestAssertTransaction();
+      const assertTxHex = await createTestAssertTransaction();
       const payoutTxHex = createTestPayoutTransaction(peginTxHex, assertTxHex);
 
       const btcWallet = new MockBitcoinWallet({
@@ -607,6 +701,7 @@ describe("PayoutManager", () => {
       // It will fail later in PSBT building, but that's unrelated.
       await expect(
         manager.signPayoutTransaction({
+          vaultCoreVersion: 1,
           payoutTxHex,
           peginTxHex,
           assertTxHex,
@@ -614,10 +709,16 @@ describe("PayoutManager", () => {
           vaultKeeperBtcPubkeys: [TEST_KEYS.VAULT_KEEPER_1],
           universalChallengerBtcPubkeys: [TEST_KEYS.UNIVERSAL_CHALLENGER_1],
           timelockPegin: 100,
+          timelockAssert: 144,
           depositorBtcPubkey: TEST_KEYS.DEPOSITOR,
           registeredPayoutScriptPubKey: prefixedScriptPubKey,
           claimerBtcPubkey: TEST_KEYS.VAULT_PROVIDER,
           commissionBps: 500,
+          protocolFeeRate: 10n,
+          councilMembers: TEST_COUNCIL_MEMBERS,
+          councilQuorum: TEST_COUNCIL_QUORUM,
+          vkClaimerPayoutScriptPubKeys: TEST_VK_PAYOUT_SCRIPTS,
+          vpCommissionScriptPubKey: TEST_VP_COMMISSION_SCRIPT,
         }),
       ).rejects.not.toThrow(
         "output 0 does not pay the expected scriptPubKey for role vp-claimer",
@@ -626,7 +727,7 @@ describe("PayoutManager", () => {
 
     it("should throw for invalid hex in registeredPayoutScriptPubKey", async () => {
       const peginTxHex = createTestPeginTransaction();
-      const assertTxHex = createTestAssertTransaction();
+      const assertTxHex = await createTestAssertTransaction();
       const payoutTxHex = createTestPayoutTransaction(peginTxHex, assertTxHex);
 
       const btcWallet = new MockBitcoinWallet({
@@ -640,6 +741,7 @@ describe("PayoutManager", () => {
 
       await expect(
         manager.signPayoutTransaction({
+          vaultCoreVersion: 1,
           payoutTxHex,
           peginTxHex,
           assertTxHex,
@@ -647,17 +749,23 @@ describe("PayoutManager", () => {
           vaultKeeperBtcPubkeys: [TEST_KEYS.VAULT_KEEPER_1],
           universalChallengerBtcPubkeys: [TEST_KEYS.UNIVERSAL_CHALLENGER_1],
           timelockPegin: 100,
+          timelockAssert: 144,
           depositorBtcPubkey: TEST_KEYS.DEPOSITOR,
           registeredPayoutScriptPubKey: "not-valid-hex",
           claimerBtcPubkey: TEST_KEYS.VAULT_PROVIDER,
           commissionBps: 500,
+          protocolFeeRate: 10n,
+          councilMembers: TEST_COUNCIL_MEMBERS,
+          councilQuorum: TEST_COUNCIL_QUORUM,
+          vkClaimerPayoutScriptPubKeys: TEST_VK_PAYOUT_SCRIPTS,
+          vpCommissionScriptPubKey: TEST_VP_COMMISSION_SCRIPT,
         }),
       ).rejects.toThrow("Invalid registeredPayoutScriptPubKey: not valid hex");
     });
 
     it("rejects a payout where vout 0 keeps the registered script but extra attacker outputs drain value", async () => {
       const peginTxHex = createTestPeginTransaction();
-      const assertTxHex = createTestAssertTransaction();
+      const assertTxHex = await createTestAssertTransaction();
 
       // Build a malicious payout TX: 4 outputs (one more than the protocol's
       // VP-claimer canonical count of 3). outs[0] keeps the registered
@@ -667,16 +775,18 @@ describe("PayoutManager", () => {
       const peginTx = Transaction.fromHex(peginTxHex);
       const assertTx = Transaction.fromHex(assertTxHex);
       const maliciousTx = new Transaction();
+      // btc-vault payout literals so the output-count check is what fires.
+      maliciousTx.version = 2;
 
       maliciousTx.addInput(
         Buffer.from(peginTx.getId(), "hex").reverse(),
         0,
-        SEQUENCE_MAX,
+        100,
       );
       maliciousTx.addInput(
         Buffer.from(assertTx.getId(), "hex").reverse(),
         0,
-        SEQUENCE_MAX,
+        144,
       );
       // outs[0]: registered scriptPubKey, still the largest — passes the
       // index-0 check by itself but the EXTRA output below trips count.
@@ -699,6 +809,7 @@ describe("PayoutManager", () => {
 
       await expect(
         manager.signPayoutTransaction({
+          vaultCoreVersion: 1,
           payoutTxHex: maliciousTx.toHex(),
           peginTxHex,
           assertTxHex,
@@ -706,17 +817,23 @@ describe("PayoutManager", () => {
           vaultKeeperBtcPubkeys: [TEST_KEYS.VAULT_KEEPER_1],
           universalChallengerBtcPubkeys: [TEST_KEYS.UNIVERSAL_CHALLENGER_1],
           timelockPegin: 100,
+          timelockAssert: 144,
           depositorBtcPubkey: TEST_KEYS.DEPOSITOR,
           registeredPayoutScriptPubKey: TEST_PAYOUT_SCRIPT_PUBKEY,
           claimerBtcPubkey: TEST_KEYS.VAULT_PROVIDER,
           commissionBps: 500,
+          protocolFeeRate: 10n,
+          councilMembers: TEST_COUNCIL_MEMBERS,
+          councilQuorum: TEST_COUNCIL_QUORUM,
+          vkClaimerPayoutScriptPubKeys: TEST_VK_PAYOUT_SCRIPTS,
+          vpCommissionScriptPubKey: TEST_VP_COMMISSION_SCRIPT,
         }),
       ).rejects.toThrow(/has 4 output\(s\), expected exactly 3/);
     });
 
     it("should reject when the wallet swaps the payout output before signing (single)", async () => {
       const peginTxHex = createTestPeginTransaction();
-      const assertTxHex = createTestAssertTransaction();
+      const assertTxHex = await createTestAssertTransaction();
       const payoutTxHex = createTestPayoutTransaction(peginTxHex, assertTxHex);
 
       const tamperedOutputScript = createDummyP2WPKH("e");
@@ -757,6 +874,7 @@ describe("PayoutManager", () => {
 
       await expect(
         manager.signPayoutTransaction({
+          vaultCoreVersion: 1,
           payoutTxHex,
           peginTxHex,
           assertTxHex,
@@ -764,17 +882,23 @@ describe("PayoutManager", () => {
           vaultKeeperBtcPubkeys: [TEST_KEYS.VAULT_KEEPER_1],
           universalChallengerBtcPubkeys: [TEST_KEYS.UNIVERSAL_CHALLENGER_1],
           timelockPegin: 100,
+          timelockAssert: 144,
           depositorBtcPubkey: TEST_KEYS.DEPOSITOR,
           registeredPayoutScriptPubKey: TEST_PAYOUT_SCRIPT_PUBKEY,
           claimerBtcPubkey: TEST_KEYS.VAULT_PROVIDER,
           commissionBps: 500,
+          protocolFeeRate: 10n,
+          councilMembers: TEST_COUNCIL_MEMBERS,
+          councilQuorum: TEST_COUNCIL_QUORUM,
+          vkClaimerPayoutScriptPubKeys: TEST_VK_PAYOUT_SCRIPTS,
+          vpCommissionScriptPubKey: TEST_VP_COMMISSION_SCRIPT,
         }),
       ).rejects.toThrow(/output 0 script/);
     });
 
     it("should reject mismatched scriptPubKey in batch signing path", async () => {
       const peginTxHex = createTestPeginTransaction();
-      const assertTxHex = createTestAssertTransaction();
+      const assertTxHex = await createTestAssertTransaction();
       const payoutTxHex = createTestPayoutTransaction(peginTxHex, assertTxHex);
 
       // Use a scriptPubKey that does NOT match the payout output
@@ -792,6 +916,7 @@ describe("PayoutManager", () => {
       await expect(
         manager.signPayoutTransactionsBatch([
           {
+            vaultCoreVersion: 1,
             payoutTxHex,
             peginTxHex,
             assertTxHex,
@@ -799,10 +924,16 @@ describe("PayoutManager", () => {
             vaultKeeperBtcPubkeys: [TEST_KEYS.VAULT_KEEPER_1],
             universalChallengerBtcPubkeys: [TEST_KEYS.UNIVERSAL_CHALLENGER_1],
             timelockPegin: 100,
+            timelockAssert: 144,
             depositorBtcPubkey: TEST_KEYS.DEPOSITOR,
             registeredPayoutScriptPubKey: wrongScriptPubKey,
             claimerBtcPubkey: TEST_KEYS.VAULT_PROVIDER,
             commissionBps: 500,
+            protocolFeeRate: 10n,
+            councilMembers: TEST_COUNCIL_MEMBERS,
+            councilQuorum: TEST_COUNCIL_QUORUM,
+            vkClaimerPayoutScriptPubKeys: TEST_VK_PAYOUT_SCRIPTS,
+            vpCommissionScriptPubKey: TEST_VP_COMMISSION_SCRIPT,
           },
         ]),
       ).rejects.toThrow(

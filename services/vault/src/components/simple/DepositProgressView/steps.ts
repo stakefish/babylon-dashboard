@@ -2,12 +2,14 @@ import type { StepperItem } from "@babylonlabs-io/core-ui";
 
 import { COPY } from "@/copy";
 import { DepositFlowStep } from "@/hooks/deposit/depositFlowSteps/types";
+import type { RegistrationDepthProgress } from "@/services/vault/ethConfirmationGate";
 import type { PayoutSigningProgress } from "@/services/vault/vaultPayoutSignatureService";
 import type { PeginSigningProgress } from "@/services/vault/vaultTransactionService";
 
 export function buildStepItems(
   progress: PayoutSigningProgress | null,
   peginProgress: PeginSigningProgress | null = null,
+  ethConfirmationProgress: RegistrationDepthProgress | null = null,
 ): StepperItem[] {
   const payoutCounter =
     progress?.phase === "claimers" && progress.total > 0
@@ -29,22 +31,65 @@ export function buildStepItems(
         )
       : undefined;
 
+  // Ethereum finality gate depth. Absent outside the gate's window, so the
+  // step reads normally during the wallet popup and the receipt wait.
+  const ethConfirmationCounter = ethConfirmationProgress
+    ? COPY.deposit.steps.signingCounter(
+        ethConfirmationProgress.confirmations,
+        ethConfirmationProgress.required,
+      )
+    : undefined;
+
   return [
-    { label: COPY.deposit.steps.generateSecret },
-    { label: COPY.deposit.steps.signPeginBtc, description: peginCounter },
-    { label: COPY.deposit.steps.signLinkProofs },
-    { label: COPY.deposit.steps.signAndBroadcastEth },
-    { label: COPY.deposit.steps.signAndBroadcastPrePegin },
-    { label: COPY.deposit.steps.confirmingDeposit },
-    { label: COPY.deposit.steps.submitWotsKey },
-    { label: COPY.deposit.steps.awaitPayoutTransactions },
-    { label: COPY.deposit.steps.authenticateSession },
-    { label: COPY.deposit.steps.signPayouts, description: payoutCounter },
-    { label: COPY.deposit.steps.signRecoveryTxs, description: graphCounter },
-    { label: COPY.deposit.steps.awaitVpVerification },
-    { label: COPY.deposit.steps.retrieveSecret },
-    { label: COPY.deposit.steps.revealSecret },
-    { label: COPY.deposit.steps.awaitActivationConfirmation },
+    {
+      label: COPY.deposit.steps.generateSecret,
+    },
+    {
+      label: COPY.deposit.steps.signPeginBtc,
+      description: peginCounter,
+    },
+    {
+      label: COPY.deposit.steps.signLinkProofs,
+    },
+    {
+      label: COPY.deposit.steps.signAndBroadcastEth,
+      description: ethConfirmationCounter,
+    },
+    {
+      label: COPY.deposit.steps.signAndBroadcastPrePegin,
+    },
+    {
+      label: COPY.deposit.steps.confirmingDeposit,
+    },
+    {
+      label: COPY.deposit.steps.submitWotsKey,
+    },
+    {
+      label: COPY.deposit.steps.awaitPayoutTransactions,
+    },
+    {
+      label: COPY.deposit.steps.authenticateSession,
+    },
+    {
+      label: COPY.deposit.steps.signPayouts,
+      description: payoutCounter,
+    },
+    {
+      label: COPY.deposit.steps.signRecoveryTxs,
+      description: graphCounter,
+    },
+    {
+      label: COPY.deposit.steps.awaitVpVerification,
+    },
+    {
+      label: COPY.deposit.steps.retrieveSecret,
+    },
+    {
+      label: COPY.deposit.steps.revealSecret,
+    },
+    {
+      label: COPY.deposit.steps.awaitActivationConfirmation,
+    },
   ];
 }
 
@@ -71,6 +116,64 @@ export const STEP_GROUPS: StepGroup[] = [
   { title: COPY.deposit.groups.activateVault, startStep: 13, endStep: 15 },
 ];
 
+/**
+ * Visual step at which the deposit flow stops being shared across all vaults
+ * in a split deposit. Everything through AWAIT_BTC_CONFIRMATION (visual step 6)
+ * is a single shared Pre-PegIn broadcast; from SUBMIT_WOTS_KEYS onward each
+ * vault progresses on its own VP-paced timeline and earns a dedicated column
+ * in the multi-vault stepper.
+ */
+export const TRUNK_END_VISUAL_STEP = 6;
+
+/**
+ * Returns the per-vault current step for a single vault in a split deposit.
+ *
+ * The deposit flow processes WOTS and payout signing sequentially across
+ * vaults — at any point one vault is the "active" one
+ * (tracked by `currentVaultIndex`) while siblings have either finished the
+ * active phase or are queued for their turn. This function maps that shared
+ * state into a per-vault step so each column in the split UI shows the right
+ * row as active, completed, or pending.
+ */
+export function derivePerVaultStep(
+  currentStep: DepositFlowStep,
+  currentVaultIndex: number | null,
+  vaultIndex: number,
+): DepositFlowStep {
+  const currentVisual = getVisualStep(currentStep);
+
+  // Trunk phase: every vault tracks the shared step.
+  if (currentVisual <= TRUNK_END_VISUAL_STEP) return currentStep;
+
+  // Between phases the index is briefly null — fall back to shared.
+  if (currentVaultIndex === null) return currentStep;
+
+  if (vaultIndex === currentVaultIndex) return currentStep;
+
+  const wotsVisual = getVisualStep(DepositFlowStep.SUBMIT_WOTS_KEYS);
+  const awaitPayoutVisual = getVisualStep(
+    DepositFlowStep.AWAIT_PAYOUT_TRANSACTIONS,
+  );
+  const awaitVpVisual = getVisualStep(DepositFlowStep.AWAIT_VP_VERIFICATION);
+
+  if (currentVisual === wotsVisual) {
+    return vaultIndex < currentVaultIndex
+      ? DepositFlowStep.AWAIT_PAYOUT_TRANSACTIONS
+      : DepositFlowStep.SUBMIT_WOTS_KEYS;
+  }
+
+  if (currentVisual >= awaitPayoutVisual && currentVisual <= awaitVpVisual) {
+    return vaultIndex < currentVaultIndex
+      ? DepositFlowStep.AWAIT_VP_VERIFICATION
+      : DepositFlowStep.AWAIT_PAYOUT_TRANSACTIONS;
+  }
+
+  // Retrieve-secret / activation phase (visual step 13+).
+  return vaultIndex < currentVaultIndex
+    ? DepositFlowStep.ACTIVATE_VAULT
+    : DepositFlowStep.AWAIT_VP_VERIFICATION;
+}
+
 export type GroupStatus = "completed" | "active" | "upcoming";
 
 export interface StepGroupView extends StepGroup {
@@ -86,8 +189,19 @@ export interface StepGroupView extends StepGroup {
  * Resolve per-group view state from the current visual step. `currentStep` is a
  * 1-based visual step (see {@link getVisualStep}); on completion it is
  * `TOTAL_VISUAL_STEPS + 1`, which leaves every group `completed` and collapsed.
+ *
+ * `started` false is the pre-entry state (the flow is waiting for the user's
+ * click): completed groups and counts still reflect the real step — work
+ * already done must read as done — but no group expands, so no sub-step row
+ * can render as in-progress while nothing is actually running. The current
+ * group likewise reads "active" only if some of its own work is done: with
+ * nothing finished inside it there is nothing in progress to announce,
+ * visually or to a screen reader, so it stays "upcoming" until the click.
  */
-export function buildStepGroups(currentStep: number): StepGroupView[] {
+export function buildStepGroups(
+  currentStep: number,
+  started = true,
+): StepGroupView[] {
   return STEP_GROUPS.map((group) => {
     const totalInGroup = group.endStep - group.startStep + 1;
 
@@ -95,7 +209,7 @@ export function buildStepGroups(currentStep: number): StepGroupView[] {
     if (currentStep > group.endStep) {
       status = "completed";
     } else if (currentStep >= group.startStep) {
-      status = "active";
+      status = started || currentStep > group.startStep ? "active" : "upcoming";
     } else {
       status = "upcoming";
     }
@@ -110,7 +224,7 @@ export function buildStepGroups(currentStep: number): StepGroupView[] {
       status,
       completedInGroup,
       totalInGroup,
-      expanded: status === "active",
+      expanded: status === "active" && started,
     };
   });
 }
@@ -161,9 +275,6 @@ export function getVisualStep(currentStep: DepositFlowStep): number {
       return 11;
     case DepositFlowStep.AWAIT_VP_VERIFICATION:
       return 12;
-    // ARTIFACT_DOWNLOAD is surfaced as a modal overlay rather than its own
-    // stepper row, so it collapses onto the RETRIEVE_SECRET visual step.
-    case DepositFlowStep.ARTIFACT_DOWNLOAD:
     case DepositFlowStep.RETRIEVE_SECRET:
       return 13;
     case DepositFlowStep.ACTIVATE_VAULT:

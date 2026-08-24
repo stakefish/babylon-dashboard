@@ -2,11 +2,19 @@
  * Tests for contract error mapping utilities
  */
 
-import { type Abi } from "viem";
+import { AaveIntegrationAdapterABI } from "@babylonlabs-io/ts-sdk/tbv/integrations/aave";
+import { type Abi, encodeErrorResult } from "viem";
 import { describe, expect, it } from "vitest";
 
-import { mapViemErrorToContractError } from "../contract";
-import { ErrorCode } from "../types";
+import { COPY } from "@/copy";
+
+import {
+  ACTIVATION_DEADLINE_EXPIRED_REASON,
+  isActivationDeadlineExpiredError,
+  isTerminalActivationError,
+  mapViemErrorToContractError,
+} from "../contract";
+import { ActivationNotPossibleError, ContractError, ErrorCode } from "../types";
 
 // Test ABI with custom errors
 const TEST_ABI: Abi = [
@@ -18,6 +26,11 @@ const TEST_ABI: Abi = [
   {
     type: "error",
     name: "PositionNotFound",
+    inputs: [],
+  },
+  {
+    type: "error",
+    name: "ActivationDeadlineExpired",
     inputs: [],
   },
   {
@@ -59,6 +72,28 @@ describe("Contract Error Mapping", () => {
       const result = mapViemErrorToContractError(error, "test operation");
 
       expect(result.code).toBe(ErrorCode.CONTRACT_INSUFFICIENT_GAS);
+    });
+
+    it("maps an insufficient-ETH-for-gas send failure to friendly copy, not the raw node dump", () => {
+      const error = new Error(
+        "borrow from Aave Core position failed: The total cost (gas * gas fee + value) of executing this transaction exceeds the balance of the account. insufficient funds for gas * price + value: balance 451223622186226",
+      );
+      const result = mapViemErrorToContractError(error, "Borrow");
+
+      expect(result.code).toBe(ErrorCode.CONTRACT_INSUFFICIENT_GAS);
+      expect(result.message).toBe(
+        COPY.common.classifiedErrors.insufficientFunds,
+      );
+    });
+
+    it("matches the insufficient-funds message case-insensitively", () => {
+      const error = new Error("Insufficient Funds for gas * price + value");
+      const result = mapViemErrorToContractError(error, "Borrow");
+
+      expect(result.code).toBe(ErrorCode.CONTRACT_INSUFFICIENT_GAS);
+      expect(result.message).toBe(
+        COPY.common.classifiedErrors.insufficientFunds,
+      );
     });
 
     it("should detect nonce errors from message", () => {
@@ -159,6 +194,22 @@ describe("Contract Error Mapping", () => {
       expect(result.message).toContain("repay all debt");
     });
 
+    it("keeps a decoded revert even when its wrapper message says 'insufficient funds'", () => {
+      // A real contract revert whose wrapper text happens to contain
+      // "insufficient funds" must not be relabeled as an ETH-gas shortfall.
+      const error = {
+        message: "insufficient funds",
+        data: DEBT_MUST_BE_REPAID_ERROR_DATA,
+      };
+      const result = mapViemErrorToContractError(error, "withdraw", [TEST_ABI]);
+
+      expect(result.code).toBe(ErrorCode.CONTRACT_REVERT);
+      expect(result.reason).toBe("DebtMustBeRepaidFirst");
+      expect(result.message).not.toBe(
+        COPY.common.classifiedErrors.insufficientFunds,
+      );
+    });
+
     it("should decode error from nested cause.data", () => {
       const error = {
         message: "execution reverted",
@@ -257,6 +308,84 @@ describe("Contract Error Mapping", () => {
       expect(result.code).toBe(ErrorCode.CONTRACT_REVERT);
     });
 
+    it("decodes a viem ContractFunctionRevertedError that exposes raw hex in `.raw` only", () => {
+      // viem 2.38.x stores the DECODED result in `.data` ({ errorName, args })
+      // and the RAW revert hex in `.raw`. The mapper must read `.raw` to
+      // re-decode — this is the real shape `simulateContract` throws, and why
+      // the activation revert previously fell through to the raw viem dump.
+      const error = {
+        message:
+          'The contract function "activateVaultWithSecret" reverted. Error: ActivationDeadlineExpired()',
+        cause: {
+          name: "ContractFunctionRevertedError",
+          message: "reverted. Error: ActivationDeadlineExpired()",
+          // Decoded object — NOT a hex string, so the old `.data` check skips it.
+          data: { errorName: "ActivationDeadlineExpired", args: [] },
+          // Raw revert bytes live here.
+          raw: encodeErrorResult({
+            abi: TEST_ABI,
+            errorName: "ActivationDeadlineExpired",
+          }),
+        },
+      };
+      const result = mapViemErrorToContractError(error, "vault activation", [
+        TEST_ABI,
+      ]);
+
+      expect(result.code).toBe(ErrorCode.CONTRACT_REVERT);
+      expect(result.reason).toBe("ActivationDeadlineExpired");
+      expect(result.message).toBe(
+        "The activation deadline has passed. The BTC Vault can no longer be activated.",
+      );
+    });
+
+    it("uses viem's pre-decoded .data.errorName when no ABI is supplied", () => {
+      // Borrow/repay/withdraw/reorder call the mapper with NO ABI, so a custom
+      // error's selector isn't in COMMON_ERROR_ABI and `.raw` can't be
+      // re-decoded. But viem already decoded the name into `.data.errorName`
+      // using the call's own ABI — read that directly.
+      const error = {
+        message: "execution reverted",
+        cause: {
+          name: "ContractFunctionRevertedError",
+          data: { errorName: "DebtMustBeRepaidFirst", args: [] },
+          raw: "0x5caf93cd",
+        },
+      };
+      const result = mapViemErrorToContractError(error, "withdraw"); // no ABI
+
+      expect(result.code).toBe(ErrorCode.CONTRACT_REVERT);
+      expect(result.reason).toBe("DebtMustBeRepaidFirst");
+      expect(result.message).toBe(
+        "You must repay all debt before withdrawing collateral.",
+      );
+    });
+
+    it("does not treat a built-in revert(string)/Error as a custom error — surfaces the reason", () => {
+      // viem decodes a Solidity `revert("...")` to errorName "Error" with the
+      // reason in args/message. We must NOT return "Error" as the final
+      // message; the message-based handling should surface the reason
+      // (here, the paused-market copy).
+      const reverted = {
+        name: "ContractFunctionRevertedError",
+        data: { errorName: "Error", args: ["Contract is paused"] },
+        raw: encodeErrorResult({
+          abi: [{ type: "error", name: "Error", inputs: [{ type: "string" }] }],
+          errorName: "Error",
+          args: ["Contract is paused"],
+        }),
+      };
+      const error = Object.assign(
+        new Error("execution reverted: Contract is paused"),
+        { cause: reverted },
+      );
+
+      const result = mapViemErrorToContractError(error, "Withdraw", [TEST_ABI]);
+
+      expect(result.reason).not.toBe("Error");
+      expect(result.message).toContain("paused");
+    });
+
     it("should ignore empty error data", () => {
       const error = {
         message: "execution reverted",
@@ -265,6 +394,80 @@ describe("Contract Error Mapping", () => {
       const result = mapViemErrorToContractError(error, "test", [TEST_ABI]);
 
       expect(result.code).toBe(ErrorCode.CONTRACT_REVERT);
+    });
+
+    it("decodes an Aave adapter VaultCountExceedsMaximum revert (0xb29ce077) to the per-position cap message when the adapter ABI is supplied", () => {
+      // Activation delegates into the Aave adapter, which reverts with this
+      // error — absent from the registry ABI viem decoded against, so
+      // simulateContract throws with the raw hex in `.raw` only. The mapper
+      // re-decodes it against the adapter ABI threaded in via errorAbis.
+      const error = {
+        message:
+          'The contract function "activateVaultWithSecret" reverted with the following signature: 0xb29ce077',
+        cause: {
+          name: "ContractFunctionRevertedError",
+          raw: encodeErrorResult({
+            abi: AaveIntegrationAdapterABI as Abi,
+            errorName: "VaultCountExceedsMaximum",
+            args: [11n, 10n],
+          }),
+        },
+      };
+      const result = mapViemErrorToContractError(error, "vault activation", [
+        AaveIntegrationAdapterABI as Abi,
+      ]);
+
+      expect(result.code).toBe(ErrorCode.CONTRACT_REVERT);
+      expect(result.reason).toBe("VaultCountExceedsMaximum");
+      expect(result.message).toBe(
+        "You have reached the maximum number of BTC Vaults per position.",
+      );
+    });
+
+    it("decodes an Aave adapter PositionAboveMaximum revert to the max-position-size message when the adapter ABI is supplied", () => {
+      const error = {
+        message: "execution reverted",
+        cause: {
+          name: "ContractFunctionRevertedError",
+          raw: encodeErrorResult({
+            abi: AaveIntegrationAdapterABI as Abi,
+            errorName: "PositionAboveMaximum",
+            args: [101n, 100n],
+          }),
+        },
+      };
+      const result = mapViemErrorToContractError(error, "vault activation", [
+        AaveIntegrationAdapterABI as Abi,
+      ]);
+
+      expect(result.reason).toBe("PositionAboveMaximum");
+      expect(result.message).toBe(
+        "Your total BTC Vault amount exceeds the maximum position size.",
+      );
+    });
+
+    it("does NOT resolve VaultCountExceedsMaximum without the adapter ABI — the registry ABI alone leaves it as raw hex (the bug)", () => {
+      const error = {
+        message:
+          'The contract function "activateVaultWithSecret" reverted with the following signature: 0xb29ce077',
+        cause: {
+          name: "ContractFunctionRevertedError",
+          raw: encodeErrorResult({
+            abi: AaveIntegrationAdapterABI as Abi,
+            errorName: "VaultCountExceedsMaximum",
+            args: [11n, 10n],
+          }),
+        },
+      };
+      // TEST_ABI stands in for the registry ABI — it lacks the adapter errors.
+      const result = mapViemErrorToContractError(error, "vault activation", [
+        TEST_ABI,
+      ]);
+
+      expect(result.reason).not.toBe("VaultCountExceedsMaximum");
+      expect(result.message).not.toBe(
+        "You have reached the maximum number of BTC Vaults per position.",
+      );
     });
   });
 
@@ -290,6 +493,121 @@ describe("Contract Error Mapping", () => {
       );
 
       expect(result.cause).toBe(originalError);
+    });
+  });
+
+  describe("isActivationDeadlineExpiredError", () => {
+    it("returns true for the decoded ActivationDeadlineExpired revert", () => {
+      const data = encodeErrorResult({
+        abi: TEST_ABI,
+        errorName: "ActivationDeadlineExpired",
+      });
+      const mapped = mapViemErrorToContractError(
+        { message: "execution reverted", data },
+        "activate",
+        [TEST_ABI],
+      );
+
+      expect(mapped.reason).toBe(ACTIVATION_DEADLINE_EXPIRED_REASON);
+      expect(isActivationDeadlineExpiredError(mapped)).toBe(true);
+    });
+
+    it("returns false for a different contract revert", () => {
+      const data = encodeErrorResult({
+        abi: TEST_ABI,
+        errorName: "PositionNotFound",
+      });
+      const mapped = mapViemErrorToContractError(
+        { message: "execution reverted", data },
+        "activate",
+        [TEST_ABI],
+      );
+
+      expect(isActivationDeadlineExpiredError(mapped)).toBe(false);
+    });
+
+    it("returns false for a ContractError without the deadline reason", () => {
+      const err = new ContractError(
+        "nope",
+        ErrorCode.CONTRACT_REVERT,
+        undefined,
+        "SomethingElse",
+      );
+
+      expect(isActivationDeadlineExpiredError(err)).toBe(false);
+    });
+
+    it("returns false for a plain Error, the message string, or null", () => {
+      expect(isActivationDeadlineExpiredError(new Error("boom"))).toBe(false);
+      expect(
+        isActivationDeadlineExpiredError(
+          "The activation deadline has passed. The BTC Vault can no longer be activated.",
+        ),
+      ).toBe(false);
+      expect(isActivationDeadlineExpiredError(null)).toBe(false);
+    });
+  });
+
+  describe("isTerminalActivationError", () => {
+    it("returns true for the deadline-expired contract revert", () => {
+      const data = encodeErrorResult({
+        abi: TEST_ABI,
+        errorName: "ActivationDeadlineExpired",
+      });
+      const mapped = mapViemErrorToContractError(
+        { message: "execution reverted", data },
+        "activate",
+        [TEST_ABI],
+      );
+
+      expect(isTerminalActivationError(mapped)).toBe(true);
+    });
+
+    it("returns true for an ActivationNotPossibleError (e.g. already EXPIRED)", () => {
+      const err = new ActivationNotPossibleError(
+        "Cannot activate: BTC Vault is in EXPIRED state.",
+      );
+
+      expect(isTerminalActivationError(err)).toBe(true);
+    });
+
+    it("returns false for a retryable plain Error and null", () => {
+      expect(
+        isTerminalActivationError(new Error("Cannot activate: ... PENDING")),
+      ).toBe(false);
+      expect(isTerminalActivationError(null)).toBe(false);
+    });
+  });
+
+  describe("repay approval copy survives message rewriting", () => {
+    // getEnhancedErrorMessage substring-rewrites messages containing e.g.
+    // "not enough" / "insufficient liquidity" / "paused"; the approval copy
+    // is worded to dodge those rules — pin that property here.
+    it("preserves the approval-not-confirmed copy under the Repay mapping", () => {
+      const body = COPY.loans.repay.approvalNotConfirmed(
+        "3 USDC",
+        "0.000002 USDC",
+      );
+      const mapped = mapViemErrorToContractError(new Error(body), "Repay");
+      expect(mapped.message).toBe(`Repay failed: ${body}`);
+    });
+
+    it("preserves the approval-below-required copy under the Repay mapping", () => {
+      const body = COPY.loans.repay.approvalBelowRequired("3 USDC", "2 USDC");
+      const mapped = mapViemErrorToContractError(new Error(body), "Repay");
+      expect(mapped.message).toBe(`Repay failed: ${body}`);
+    });
+
+    it("preserves the balance-below-full-repay copy under the Repay mapping", () => {
+      const body = COPY.loans.repay.balanceBelowFullRepay("3 USDC", "2 USDC");
+      const mapped = mapViemErrorToContractError(new Error(body), "Repay");
+      expect(mapped.message).toBe(`Repay failed: ${body}`);
+    });
+
+    it("preserves the balance-below-repay-amount copy under the Repay mapping", () => {
+      const body = COPY.loans.repay.balanceBelowRepayAmount("3 USDC", "2 USDC");
+      const mapped = mapViemErrorToContractError(new Error(body), "Repay");
+      expect(mapped.message).toBe(`Repay failed: ${body}`);
     });
   });
 });

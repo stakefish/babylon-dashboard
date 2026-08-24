@@ -43,7 +43,6 @@
  * - {@link buildPeginTxFromFundedPrePegin} - Derive PegIn tx from funded Pre-PegIn
  * - {@link buildPayoutPsbt} - Create payout PSBT for signing
  * - {@link extractPayoutSignature} - Extract Schnorr signature from signed PSBT
- * - {@link buildDepositorPayoutPsbt} - Create depositor's own Payout PSBT (depositor-as-claimer path)
  * - {@link buildNoPayoutPsbt} - Create NoPayout PSBT per challenger (depositor-as-claimer path)
  * - {@link buildChallengeAssertPsbt} - Create ChallengeAssert PSBT per challenger (depositor-as-claimer path)
  *
@@ -77,12 +76,24 @@
 // Challenger counting
 export { computeNumLocalChallengers } from "./challengers";
 
+// Vault core (tx-graph) version validation
+export { assertValidVaultCoreVersion } from "./vaultCoreVersion";
+
 // Core types and functions from WASM package
-export type { Network } from "@babylonlabs-io/babylon-tbv-rust-wasm";
 export {
   computeMinClaimValue,
   computeMinPeginFee,
   deriveVaultId,
+  peginP2aAnchorOutput,
+  supportedTxGraphVersions,
+  validatePeginP2aAnchor,
+} from "@babylonlabs-io/babylon-tbv-rust-wasm";
+export type {
+  AssertPayoutNoPayoutConnectorParams,
+  ChallengeAssertConnectorParams,
+  Network,
+  PayoutConnectorParams,
+  PeginP2aAnchorInfo,
 } from "@babylonlabs-io/babylon-tbv-rust-wasm";
 
 /**
@@ -93,22 +104,24 @@ export {
  * Derive with `deriveVaultId(peginTxHash, depositorAddress)`.
  */
 export type VaultId = `0x${string}`;
-export type {
-  AssertPayoutNoPayoutConnectorParams,
-  ChallengeAssertConnectorParams,
-  PayoutConnectorParams,
-} from "@babylonlabs-io/babylon-tbv-rust-wasm";
 
 // PSBT builders
-export { buildPrePeginPsbt, buildPeginTxFromFundedPrePegin } from "./psbt/pegin";
+export {
+  buildPeginTxFromFundedPrePegin,
+  buildPrePeginPsbt,
+} from "./psbt/pegin";
 export type {
-  PrePeginParams,
-  PrePeginPsbtResult,
   BuildPeginTxParams,
   PeginTxResult,
+  PrePeginParams,
+  PrePeginPsbtResult,
 } from "./psbt/pegin";
 
-export { buildPeginInputPsbt, extractPeginInputSignature, finalizePeginInputPsbt } from "./psbt/peginInput";
+export {
+  buildPeginInputPsbt,
+  extractPeginInputSignature,
+  finalizePeginInputPsbt,
+} from "./psbt/peginInput";
 export type {
   BuildPeginInputPsbtParams,
   BuildPeginInputPsbtResult,
@@ -124,13 +137,22 @@ export { buildPayoutPsbt, extractPayoutSignature } from "./psbt/payout";
 export type { PayoutParams, PayoutPsbtResult } from "./psbt/payout";
 
 export {
-  assertPsbtUnsignedTxMatches,
   PsbtSubstitutionError,
+  assertPsbtUnsignedTxMatches,
 } from "./psbt/assertPsbtUnsignedTxMatches";
 export type { AssertPsbtUnsignedTxMatchesParams } from "./psbt/assertPsbtUnsignedTxMatches";
 
-export { buildDepositorPayoutPsbt } from "./psbt/depositorPayout";
-export type { DepositorPayoutParams } from "./psbt/depositorPayout";
+export { assertScriptPathSchnorrSignature } from "./psbt/verifyScriptPathSchnorrSignature";
+export type { VerifyScriptPathSchnorrSignatureParams } from "./psbt/verifyScriptPathSchnorrSignature";
+
+export {
+  assertKeyPathSchnorrSignature,
+  assertReturnedKeyPathSignatures,
+} from "./psbt/verifyKeyPathSchnorrSignature";
+export type {
+  AssertKeyPathSchnorrSignatureParams,
+  AssertReturnedKeyPathSignaturesParams,
+} from "./psbt/verifyKeyPathSchnorrSignature";
 
 export { buildNoPayoutPsbt } from "./psbt/noPayout";
 export type { NoPayoutParams } from "./psbt/noPayout";
@@ -144,15 +166,16 @@ export type { PayoutScriptParams, PayoutScriptResult } from "./scripts/payout";
 
 // Bitcoin utilities
 export {
+  canonicalizeBtcPubkey,
   deriveBip86ScriptPubKeyHex,
   deriveNativeSegwitAddress,
   deriveTaprootAddress,
+  ensureHexPrefix,
+  formatSatoshisToBtc,
   getSortedXOnlyPubkeys,
   hexToUint8Array,
   isAddressFromPublicKey,
   isValidHex,
-  ensureHexPrefix,
-  formatSatoshisToBtc,
   processPublicKeyToXOnly,
   stripHexPrefix,
   toXOnly,

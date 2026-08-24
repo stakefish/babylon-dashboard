@@ -8,13 +8,12 @@
  * since it doesn't need to be live and benefits from caching.
  */
 
-import type { Address, PublicClient } from "viem";
+import type { Abi, Address, PublicClient } from "viem";
 
 import type {
   AaveSpokeUserAccountData,
   AaveSpokeUserPosition,
 } from "../types.js";
-import { hasDebtFromPosition } from "../utils/debtUtils.js";
 import AaveSpokeABI from "./abis/AaveSpoke.abi.json";
 
 /** Account data result type from contract */
@@ -47,6 +46,21 @@ function mapPositionResult(result: PositionResult): AaveSpokeUserPosition {
     premiumOffsetRay: result.premiumOffsetRay,
     suppliedShares: result.suppliedShares,
     dynamicConfigKey: result.dynamicConfigKey,
+  };
+}
+
+/** Maps contract result to AaveSpokeUserAccountData */
+function mapAccountDataResult(
+  data: AccountDataResult,
+): AaveSpokeUserAccountData {
+  return {
+    riskPremium: data.riskPremium,
+    avgCollateralFactor: data.avgCollateralFactor,
+    healthFactor: data.healthFactor,
+    totalCollateralValue: data.totalCollateralValue,
+    totalDebtValueRay: data.totalDebtValueRay,
+    activeCollateralCount: data.activeCollateralCount,
+    borrowCount: data.borrowCount,
   };
 }
 
@@ -110,15 +124,47 @@ export async function getUserAccountData(
     args: [userAddress],
   });
 
-  const data = result as AccountDataResult;
+  return mapAccountDataResult(result as AccountDataResult);
+}
+
+/**
+ * Read a user's position for one reserve and their aggregate account data in a
+ * single hard-fail multicall. Both reads are required for the live position
+ * view, so a revert on either rejects the whole call (matching the prior
+ * `Promise.all`); the gain is one round-trip instead of two `eth_call`s.
+ */
+export async function getUserPositionAndAccountData(
+  publicClient: PublicClient,
+  spokeAddress: Address,
+  reserveId: bigint,
+  userAddress: Address,
+): Promise<{
+  position: AaveSpokeUserPosition;
+  accountData: AaveSpokeUserAccountData;
+}> {
+  const [positionResult, accountDataResult] = await publicClient.multicall({
+    contracts: [
+      {
+        address: spokeAddress,
+        abi: AaveSpokeABI as Abi,
+        functionName: "getUserPosition" as const,
+        args: [reserveId, userAddress] as const,
+      },
+      {
+        address: spokeAddress,
+        abi: AaveSpokeABI as Abi,
+        functionName: "getUserAccountData" as const,
+        args: [userAddress] as const,
+      },
+    ],
+    allowFailure: false,
+  });
+
   return {
-    riskPremium: data.riskPremium,
-    avgCollateralFactor: data.avgCollateralFactor,
-    healthFactor: data.healthFactor,
-    totalCollateralValue: data.totalCollateralValue,
-    totalDebtValueRay: data.totalDebtValueRay,
-    activeCollateralCount: data.activeCollateralCount,
-    borrowCount: data.borrowCount,
+    position: mapPositionResult(positionResult as unknown as PositionResult),
+    accountData: mapAccountDataResult(
+      accountDataResult as unknown as AccountDataResult,
+    ),
   };
 }
 
@@ -151,58 +197,11 @@ export async function getUserPosition(
 }
 
 /**
- * Check if a user has any debt in a reserve
- *
- * @param publicClient - Viem public client for reading contracts
- * @param spokeAddress - Aave Spoke contract address
- * @param reserveId - Reserve ID
- * @param userAddress - User's proxy contract address
- * @returns true if user has debt
- */
-export async function hasDebt(
-  publicClient: PublicClient,
-  spokeAddress: Address,
-  reserveId: bigint,
-  userAddress: Address,
-): Promise<boolean> {
-  const position = await getUserPosition(
-    publicClient,
-    spokeAddress,
-    reserveId,
-    userAddress,
-  );
-  return hasDebtFromPosition(position);
-}
-
-/**
- * Check if a user has supplied collateral in a reserve
- *
- * @param publicClient - Viem public client for reading contracts
- * @param spokeAddress - Aave Spoke contract address
- * @param reserveId - Reserve ID
- * @param userAddress - User's proxy contract address
- * @returns true if user has supplied collateral
- */
-export async function hasCollateral(
-  publicClient: PublicClient,
-  spokeAddress: Address,
-  reserveId: bigint,
-  userAddress: Address,
-): Promise<boolean> {
-  const position = await getUserPosition(
-    publicClient,
-    spokeAddress,
-    reserveId,
-    userAddress,
-  );
-  return position.suppliedShares > 0n;
-}
-
-/**
  * Get user's exact total debt in a reserve (token units, not shares).
  *
- * Returns the precise amount owed including accrued interest. Essential for full repayment.
- * Debt accrues interest every block, so this must be fetched live from the contract.
+ * Returns the Spoke-side amount owed including accrued interest — but NOT the
+ * adapter's uncollected interest fee. Display/routing only; for full repayment
+ * see the remarks below. Debt accrues interest every block, so fetch it live.
  *
  * @param publicClient - Viem public client for reading contracts
  * @param spokeAddress - AAVE Spoke contract address
@@ -212,7 +211,7 @@ export async function hasCollateral(
  *
  * @example
  * ```typescript
- * import { getUserTotalDebt, FULL_REPAY_BUFFER_DIVISOR } from "@babylonlabs-io/ts-sdk/tbv/integrations/aave";
+ * import { getUserTotalDebt } from "@babylonlabs-io/ts-sdk/tbv/integrations/aave";
  * import { formatUnits } from "viem";
  *
  * const totalDebt = await getUserTotalDebt(
@@ -222,17 +221,17 @@ export async function hasCollateral(
  *   proxyAddress
  * );
  *
- * // For full repayment, add buffer to account for interest accrual
- * const repayAmount = totalDebt + (totalDebt / FULL_REPAY_BUFFER_DIVISOR);
- *
  * console.log("Debt:", formatUnits(totalDebt, 6), "USDC");
  * ```
  *
  * @remarks
- * **Important for full repayment:**
- * - Add `FULL_REPAY_BUFFER_DIVISOR` buffer to account for interest between fetch and tx execution
- * - Contract only takes what's owed; excess stays in wallet
- * - For partial repayment, use any amount less than total debt
+ * **Important for full repayment:** do NOT repay a plain amount derived from
+ * this quote — it excludes the adapter's interest fee, and rounding can leave
+ * residual debt shares (dust). Send the repay-all sentinel
+ * (`type(uint256).max`) with an approval sized from the position proxy's
+ * fee-inclusive `getPositionReserveTotalDebt` plus
+ * `FULL_REPAY_BUFFER_DIVISOR` headroom; the adapter pulls only what's owed.
+ * For partial repayment, use any amount less than total debt.
  */
 export async function getUserTotalDebt(
   publicClient: PublicClient,
@@ -248,6 +247,63 @@ export async function getUserTotalDebt(
   });
 
   return result as bigint;
+}
+
+/**
+ * Probe `getUserPosition` for many reserves in a single multicall.
+ *
+ * Returns one entry per `reserveId` in input order. Per-reserve reverts are
+ * isolated (`allowFailure: true`): that entry is `null` while the rest of the
+ * batch still resolves. Use for debt-reserve discovery, where a failed read
+ * means "treat as no debt", not a fatal error.
+ */
+export async function getUserPositions(
+  publicClient: PublicClient,
+  spokeAddress: Address,
+  reserveIds: bigint[],
+  userAddress: Address,
+): Promise<(AaveSpokeUserPosition | null)[]> {
+  if (reserveIds.length === 0) return [];
+  const results = await publicClient.multicall({
+    contracts: reserveIds.map((reserveId) => ({
+      address: spokeAddress,
+      abi: AaveSpokeABI as Abi,
+      functionName: "getUserPosition" as const,
+      args: [reserveId, userAddress] as const,
+    })),
+    allowFailure: true,
+  });
+  return results.map((r) =>
+    r.status === "success"
+      ? mapPositionResult(r.result as PositionResult)
+      : null,
+  );
+}
+
+/**
+ * Read `getUserTotalDebt` for many reserves in a single multicall.
+ *
+ * Hard-fails (`allowFailure: false`): any reserve's revert rejects the whole
+ * call. Use only for reserves already known to carry debt — there a failed
+ * read is a genuine error, not a "no debt" signal.
+ */
+export async function getUserTotalDebts(
+  publicClient: PublicClient,
+  spokeAddress: Address,
+  reserveIds: bigint[],
+  userAddress: Address,
+): Promise<bigint[]> {
+  if (reserveIds.length === 0) return [];
+  const results = await publicClient.multicall({
+    contracts: reserveIds.map((reserveId) => ({
+      address: spokeAddress,
+      abi: AaveSpokeABI as Abi,
+      functionName: "getUserTotalDebt" as const,
+      args: [reserveId, userAddress] as const,
+    })),
+    allowFailure: false,
+  });
+  return results as unknown as bigint[];
 }
 
 /** Result type from the `getReserve` contract call.

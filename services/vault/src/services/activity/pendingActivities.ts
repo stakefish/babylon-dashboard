@@ -10,7 +10,10 @@ import {
   getPendingPegins,
   type PendingPeginRequest,
 } from "../../storage/peginStorage";
-import type { ActivityLog } from "../../types/activityLog";
+import {
+  type ActivityLog,
+  PENDING_DEPOSIT_TYPE,
+} from "../../types/activityLog";
 
 const btcConfig = getNetworkConfigBTC();
 
@@ -27,12 +30,19 @@ function convertPendingPeginToActivity(
   return {
     kind: "row",
     id: pending.id,
+    // A pending peg-in's storage id IS the derived vault id.
+    vaultId: pending.id,
     date: new Date(pending.timestamp),
-    type: "Pending Deposit",
+    type: PENDING_DEPOSIT_TYPE,
     tokenIcon: btcConfig.icon,
     amount: {
       value: pending.amount,
       symbol: btcConfig.coinSymbol,
+      // localStorage holds the amount as the user-facing BTC string, so it is
+      // already unscaled. A malformed entry stays unpriced.
+      numeric: Number.isFinite(Number(pending.amount))
+        ? Number(pending.amount)
+        : undefined,
     },
     chain: "BTC",
     transactionHash: pending.peginTxHash,

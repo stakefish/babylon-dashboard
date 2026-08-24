@@ -10,6 +10,9 @@ import {
   getPeginDisplayStep,
   getPeginState,
   getPrimaryActionButton,
+  isCandidateVault,
+  isRefundInFlightOrSettled,
+  isVaultActivated,
   LocalStorageStatus,
   PEGIN_DISPLAY_LABELS,
   PeginAction,
@@ -262,6 +265,62 @@ describe("peginStateMachine", () => {
       expect(state.displayLabel).toBe(PEGIN_DISPLAY_LABELS.PROCESSING);
       expect(state.availableActions).toEqual([PeginAction.NONE]);
     });
+
+    it("gates Activate as expired when the activation deadline passed on-chain", () => {
+      const state = getPeginState(ContractStatus.VERIFIED, {
+        activationDeadlinePassed: true,
+      });
+      expect(state.availableActions).toEqual([PeginAction.NONE]);
+      expect(state.availableActions).not.toContain(PeginAction.ACTIVATE_VAULT);
+      expect(state.displayLabel).toBe(PEGIN_DISPLAY_LABELS.EXPIRED);
+      expect(state.displayVariant).toBe("warning");
+      expect(state.message).toContain("not activated in time");
+      expect(getPrimaryActionButton(state)).toBeNull();
+      // warning variant → no progress step
+      expect(getPeginDisplayStep(state)).toBeNull();
+    });
+
+    it("keeps Activate available when the deadline has not passed", () => {
+      const state = getPeginState(ContractStatus.VERIFIED, {
+        activationDeadlinePassed: false,
+      });
+      expect(state.availableActions).toContain(PeginAction.ACTIVATE_VAULT);
+      expect(state.displayLabel).toBe(PEGIN_DISPLAY_LABELS.READY_TO_ACTIVATE);
+    });
+
+    it("shows activation incomplete with the withdraw escape hatch when the HTLC is spent", () => {
+      const state = getPeginState(ContractStatus.VERIFIED, {
+        htlcSpentByPeginTx: true,
+      });
+      expect(state.displayLabel).toBe(
+        PEGIN_DISPLAY_LABELS.ACTIVATION_INCOMPLETE,
+      );
+      expect(state.displayVariant).toBe("warning");
+      expect(state.availableActions).toEqual([PeginAction.ACTIVATE_AND_REDEEM]);
+      // Reassuring tone: the state looks like lost funds but is recoverable.
+      expect(state.message).toContain("not lost");
+      expect(state.inlineSubtext).toContain("not lost");
+      // warning variant → no progress step
+      expect(getPeginDisplayStep(state)).toBeNull();
+    });
+
+    it("shows processing after the escape-hatch reveal was submitted (CONFIRMED wins over htlcSpentByPeginTx)", () => {
+      const state = getPeginState(ContractStatus.VERIFIED, {
+        htlcSpentByPeginTx: true,
+        localStatus: LocalStorageStatus.CONFIRMED,
+      });
+      expect(state.displayLabel).toBe(PEGIN_DISPLAY_LABELS.PROCESSING);
+      expect(state.availableActions).toEqual([PeginAction.NONE]);
+    });
+
+    it("strips the escape hatch too once the activation deadline passed on-chain", () => {
+      const state = getPeginState(ContractStatus.VERIFIED, {
+        htlcSpentByPeginTx: true,
+        activationDeadlinePassed: true,
+      });
+      expect(state.availableActions).toEqual([PeginAction.NONE]);
+      expect(state.displayLabel).toBe(PEGIN_DISPLAY_LABELS.EXPIRED);
+    });
   });
 
   // ==========================================================================
@@ -293,7 +352,7 @@ describe("peginStateMachine", () => {
     it("shows liquidated", () => {
       const state = getPeginState(ContractStatus.LIQUIDATED);
       expect(state.displayLabel).toBe(PEGIN_DISPLAY_LABELS.LIQUIDATED);
-      expect(state.displayVariant).toBe("warning");
+      expect(state.displayVariant).toBe("danger");
     });
 
     it("shows invalid", () => {
@@ -319,14 +378,11 @@ describe("peginStateMachine", () => {
       expect(state.message).toBe("This BTC Vault has expired.");
     });
 
-    it("shows expired with ack_timeout reason", () => {
+    it("shows only the heading for an ack_timeout expiry", () => {
       const state = getPeginState(ContractStatus.EXPIRED, {
         expirationReason: "ack_timeout",
       });
-      expect(state.message).toContain("This BTC Vault has expired.");
-      expect(state.message).toContain(
-        "The vault provider did not acknowledge in time",
-      );
+      expect(state.message).toBe("This BTC Vault has expired.");
     });
 
     it("shows expired with proof_timeout reason", () => {
@@ -392,12 +448,23 @@ describe("peginStateMachine", () => {
       const now = Date.now();
       vi.useFakeTimers({ now });
       const state = getPeginState(ContractStatus.EXPIRED, {
-        expirationReason: "ack_timeout",
+        expirationReason: "proof_timeout",
         expiredAt: now - 2 * 60 * 60_000,
       });
       expect(state.message).toBe(
-        "This BTC Vault has expired. The vault provider did not acknowledge in time. Expired 2h ago.",
+        "This BTC Vault has expired. The inclusion proof was not submitted in time. Expired 2h ago.",
       );
+      vi.useRealTimers();
+    });
+
+    it("keeps the timestamp but drops the reason sentence for ack_timeout", () => {
+      const now = Date.now();
+      vi.useFakeTimers({ now });
+      const state = getPeginState(ContractStatus.EXPIRED, {
+        expirationReason: "ack_timeout",
+        expiredAt: now - 2 * 60 * 60_000,
+      });
+      expect(state.message).toBe("This BTC Vault has expired. Expired 2h ago.");
       vi.useRealTimers();
     });
 
@@ -441,6 +508,22 @@ describe("peginStateMachine", () => {
       expect(state.displayLabel).toBe(PEGIN_DISPLAY_LABELS.EXPIRED);
     });
 
+    it("re-exposes refund action when the recorded timestamp is ahead of the clock", () => {
+      // A backwards wall-clock jump leaves the broadcast timestamp in the
+      // future. Elapsed then reads negative — inside the window under a bare
+      // `< TTL` for as long as the clock stays behind — so the suppression
+      // would outlast the TTL by the size of the jump.
+      const now = 1_700_000_000_000;
+      const state = getPeginState(ContractStatus.EXPIRED, {
+        canRefund: true,
+        localStatus: LocalStorageStatus.REFUND_BROADCAST,
+        refundBroadcastAt: now + 60 * 60 * 1000,
+        now,
+      });
+      expect(state.availableActions).toEqual([PeginAction.REFUND_HTLC]);
+      expect(state.displayLabel).toBe(PEGIN_DISPLAY_LABELS.EXPIRED);
+    });
+
     it("treats legacy REFUND_BROADCAST without timestamp as expired (allows retry)", () => {
       const state = getPeginState(ContractStatus.EXPIRED, {
         canRefund: true,
@@ -450,9 +533,40 @@ describe("peginStateMachine", () => {
       expect(state.displayLabel).toBe(PEGIN_DISPLAY_LABELS.EXPIRED);
     });
 
+    it("shows Refunded (terminal, no action) when the HTLC spend has confirmed", () => {
+      const state = getPeginState(ContractStatus.EXPIRED, {
+        canRefund: false,
+        refundSettlement: "confirmed",
+      });
+      expect(state.displayLabel).toBe(PEGIN_DISPLAY_LABELS.REFUNDED);
+      expect(state.displayVariant).toBe("inactive");
+      expect(state.availableActions).toEqual([PeginAction.NONE]);
+    });
+
+    it("shows Refunding when the HTLC spend is seen but not yet confirmed", () => {
+      const state = getPeginState(ContractStatus.EXPIRED, {
+        canRefund: false,
+        refundSettlement: "pending",
+      });
+      expect(state.displayLabel).toBe(PEGIN_DISPLAY_LABELS.REFUNDING);
+      expect(state.displayVariant).toBe("pending");
+    });
+
+    it("chain-confirmed refund overrides a stale REFUND_BROADCAST optimistic state", () => {
+      const now = 1_700_000_000_000;
+      const state = getPeginState(ContractStatus.EXPIRED, {
+        canRefund: false,
+        refundSettlement: "confirmed",
+        localStatus: LocalStorageStatus.REFUND_BROADCAST,
+        refundBroadcastAt: now - 60_000,
+        now,
+      });
+      expect(state.displayLabel).toBe(PEGIN_DISPLAY_LABELS.REFUNDED);
+    });
+
     it("surfaces a CSV-maturing countdown when refund timelock has not elapsed", () => {
       const state = getPeginState(ContractStatus.EXPIRED, {
-        expirationReason: "ack_timeout",
+        expirationReason: "proof_timeout",
         canRefund: false,
         refundMaturityState: "maturing",
         refundMaturesInBlocks: 24,
@@ -465,9 +579,9 @@ describe("peginStateMachine", () => {
       // stays focused on the expired reason so the user doesn't see the
       // same sentence twice.
       expect(state.inlineSubtext).toBe(
-        "Refund available in ~24 Bitcoin blocks (~4h).",
+        "Your refund will be claimable in ~24 Bitcoin blocks (~4h).",
       );
-      expect(state.message).not.toContain("Refund available");
+      expect(state.message).not.toContain("claimable in");
     });
 
     it("uses singular 'block' when exactly one block remains", () => {
@@ -478,13 +592,13 @@ describe("peginStateMachine", () => {
       });
       // 1 block * 10 min = 10 min → ceil(10/60)=1h, floored to min 1h.
       expect(state.inlineSubtext).toBe(
-        "Refund available in ~1 Bitcoin block (~1h).",
+        "Your refund will be claimable in ~1 Bitcoin block (~1h).",
       );
     });
 
     it("shows the generic pending message when refund maturity is unknown", () => {
       const state = getPeginState(ContractStatus.EXPIRED, {
-        expirationReason: "ack_timeout",
+        expirationReason: "proof_timeout",
         canRefund: false,
         refundMaturityState: "unknown",
       });
@@ -494,7 +608,7 @@ describe("peginStateMachine", () => {
       // Maturing copy lives only in `inlineSubtext`; tooltip stays focused
       // on the expired reason.
       expect(state.inlineSubtext).toBe(
-        "Checking when your refund will be available...",
+        "Checking when your refund will be claimable...",
       );
       expect(state.message).not.toContain("Checking when your refund");
     });
@@ -527,6 +641,34 @@ describe("peginStateMachine", () => {
       expect(
         canPerformAction(state, PeginAction.SIGN_PAYOUT_TRANSACTIONS),
       ).toBe(false);
+    });
+  });
+
+  describe("isRefundInFlightOrSettled", () => {
+    it("is true while a refund is in flight (Refunding)", () => {
+      const state = getPeginState(ContractStatus.EXPIRED, {
+        canRefund: false,
+        refundSettlement: "pending",
+      });
+      expect(isRefundInFlightOrSettled(state)).toBe(true);
+    });
+
+    it("is true once a refund has settled (Refunded)", () => {
+      const state = getPeginState(ContractStatus.EXPIRED, {
+        canRefund: false,
+        refundSettlement: "confirmed",
+      });
+      expect(isRefundInFlightOrSettled(state)).toBe(true);
+    });
+
+    it("is false for a still-refundable expired vault", () => {
+      const state = getPeginState(ContractStatus.EXPIRED, { canRefund: true });
+      expect(isRefundInFlightOrSettled(state)).toBe(false);
+    });
+
+    it("is false for a pending vault", () => {
+      const state = getPeginState(ContractStatus.PENDING, {});
+      expect(isRefundInFlightOrSettled(state)).toBe(false);
     });
   });
 
@@ -568,6 +710,17 @@ describe("peginStateMachine", () => {
       expect(getPrimaryActionButton(state)).toBeNull();
     });
 
+    it("returns Withdraw for the stuck state (VERIFIED with spent HTLC)", () => {
+      const state = getPeginState(ContractStatus.VERIFIED, {
+        htlcSpentByPeginTx: true,
+      });
+      const button = getPrimaryActionButton(state);
+      expect(button).toEqual({
+        label: "Withdraw",
+        action: PeginAction.ACTIVATE_AND_REDEEM,
+      });
+    });
+
     it("returns Refund for expired vault with canRefund", () => {
       const state = getPeginState(ContractStatus.EXPIRED, { canRefund: true });
       const button = getPrimaryActionButton(state);
@@ -596,8 +749,32 @@ describe("peginStateMachine", () => {
       ).toBe(LocalStorageStatus.CONFIRMING);
     });
 
+    it("returns CONFIRMED after the activate-and-redeem reveal", () => {
+      expect(getNextLocalStatus(PeginAction.ACTIVATE_AND_REDEEM)).toBe(
+        LocalStorageStatus.CONFIRMED,
+      );
+    });
+
     it("returns null for other actions", () => {
       expect(getNextLocalStatus(PeginAction.NONE)).toBeNull();
+    });
+  });
+
+  describe("isCandidateVault", () => {
+    it("excludes the stuck state (it recovers via a dedicated modal, not the continuation flow)", () => {
+      const state = getPeginState(ContractStatus.VERIFIED, {
+        htlcSpentByPeginTx: true,
+      });
+      expect(state.displayVariant).toBe("warning");
+      expect(isCandidateVault(state)).toBe(false);
+    });
+
+    it("excludes other warning states", () => {
+      const state = getPeginState(ContractStatus.VERIFIED, {
+        activationDeadlinePassed: true,
+      });
+      expect(state.displayVariant).toBe("warning");
+      expect(isCandidateVault(state)).toBe(false);
     });
   });
 
@@ -661,6 +838,21 @@ describe("peginStateMachine", () => {
           ContractStatus.EXPIRED,
           LocalStorageStatus.REFUND_BROADCAST,
           now - 7 * 60 * 60 * 1000,
+          now,
+        ),
+      ).toBe(true);
+    });
+
+    it("clears REFUND_BROADCAST whose timestamp is ahead of the clock", () => {
+      // Backwards wall-clock jump: a future-dated marker reads as expired —
+      // the same guard as the action suppression — so the stale entry clears
+      // instead of surviving until the clock catches back up past it.
+      const now = 1_700_000_000_000;
+      expect(
+        shouldRemoveFromLocalStorage(
+          ContractStatus.EXPIRED,
+          LocalStorageStatus.REFUND_BROADCAST,
+          now + 60 * 60 * 1000,
           now,
         ),
       ).toBe(true);
@@ -824,6 +1016,43 @@ describe("peginStateMachine", () => {
       );
       expect(getPeginDisplayStep(getPeginState(ContractStatus.ACTIVE))).toBe(
         null,
+      );
+    });
+  });
+
+  describe("isVaultActivated", () => {
+    it("is true for an ACTIVE vault", () => {
+      expect(isVaultActivated(getPeginState(ContractStatus.ACTIVE))).toBe(true);
+    });
+
+    it("is true for the optimistic VERIFIED + CONFIRMED state", () => {
+      expect(
+        isVaultActivated(
+          getPeginState(ContractStatus.VERIFIED, {
+            localStatus: LocalStorageStatus.CONFIRMED,
+          }),
+        ),
+      ).toBe(true);
+    });
+
+    it("is false while VERIFIED but not yet confirmed (ready to activate)", () => {
+      expect(isVaultActivated(getPeginState(ContractStatus.VERIFIED))).toBe(
+        false,
+      );
+    });
+
+    it("is false for a PENDING vault and for undefined", () => {
+      expect(isVaultActivated(getPeginState(ContractStatus.PENDING))).toBe(
+        false,
+      );
+      expect(isVaultActivated(undefined)).toBe(false);
+    });
+
+    it("is false for terminal non-activation states (e.g. REDEEMED)", () => {
+      // REDEEMED is past activation but NOT "activated" — it must never read
+      // as an activation success.
+      expect(isVaultActivated(getPeginState(ContractStatus.REDEEMED))).toBe(
+        false,
       );
     });
   });

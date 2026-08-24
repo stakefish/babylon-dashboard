@@ -21,31 +21,6 @@ export const AAVE_FUNCTION_NAMES = {
 } as const;
 
 /**
- * BTC token decimals (satoshis)
- * 1 BTC = 100,000,000 satoshis
- */
-export const BTC_DECIMALS = 8;
-
-/**
- * USDC token decimals
- * Used for debt calculations
- */
-export const USDC_DECIMALS = 6;
-
-/**
- * Divisor to convert basis points (BPS) to percentage
- *
- * In Aave v4, risk parameters like collateralRisk are stored in BPS
- * where 10000 BPS = 100%.
- *
- * Example: 8000 BPS / 100 = 80%
- *
- * Reference: ISpoke.sol - "collateralRisk The risk associated with a
- * collateral asset, expressed in BPS"
- */
-export const BPS_TO_PERCENT_DIVISOR = 100;
-
-/**
  * Full basis points scale (10000 BPS = 100%)
  *
  * Use this when converting BPS directly to decimal:
@@ -85,30 +60,20 @@ export const WAD_DECIMALS = 18;
 export const HEALTH_FACTOR_WARNING_THRESHOLD = 1.5;
 
 /**
- * Minimum health factor allowed for borrowing
- * Prevents users from borrowing if resulting health factor would be below this.
+ * Minimum health factor allowed for borrowing. Collateral factor doubles as the
+ * liquidation threshold here, so this floor is the only borrow→liquidation cushion.
  */
-export const MIN_HEALTH_FACTOR_FOR_BORROW = 1.2;
+export const MIN_HEALTH_FACTOR_FOR_BORROW = 1.05;
 
 /**
- * Buffer for full repayment to account for interest accrual
- * between fetching debt and transaction execution.
+ * Approval headroom for repay-all, sized against interest accrual between
+ * quoting the debt and transaction execution.
  *
  * 0.5% buffer (50 basis points). Sized to absorb hours of execution delay
- * (e.g. Safe-multisig quorum collection) without leaving residual dust.
- * The adapter only pulls what's actually owed; excess approval/balance
- * stays with the user.
- *
- * Users whose wallet balance covers the debt but not the full buffer are
- * routed through the "max-capped" repay path instead of `repayFull`, so
- * a larger buffer never blocks a legitimate max-repay.
+ * (e.g. Safe-multisig quorum collection). The repay itself sends the
+ * repay-all sentinel and the adapter pulls only what's actually owed; the
+ * buffer only pads the approval cap, and the cap is additionally bounded by
+ * the user's balance, so a larger buffer never blocks a legitimate repay.
  */
 export const FULL_REPAY_BUFFER_DIVISOR = 200n; // 1/200 = 0.5% buffer
-
-/**
- * Same buffer as `FULL_REPAY_BUFFER_DIVISOR`, expressed as a float fraction
- * for UI-side comparisons that operate in `number` rather than `bigint`.
- */
-export const FULL_REPAY_BUFFER_FRACTION =
-  1 / Number(FULL_REPAY_BUFFER_DIVISOR);
 

@@ -1,7 +1,7 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, renderHook, waitFor } from "@testing-library/react";
 import type { ReactNode } from "react";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 // Mock env before importing modules that use it
 vi.mock("@/config/env", () => ({
@@ -70,10 +70,12 @@ vi.mock("../../../applications/aave/context", () => ({
 }));
 
 import { useApplications } from "../../useApplications";
+import { useBtcPublicKey } from "../../useBtcPublicKey";
 import { useUTXOs } from "../../useUTXOs";
 import { useAllocationPlanning } from "../useAllocationPlanning";
 import { useDepositPageForm } from "../useDepositPageForm";
 import { useEstimatedBtcFee } from "../useEstimatedBtcFee";
+import { useVaultProviders } from "../useVaultProviders";
 
 vi.mock("@babylonlabs-io/ts-sdk/tbv/core", () => ({
   computeNumLocalChallengers: vi.fn(() => 2),
@@ -84,17 +86,23 @@ vi.mock("@babylonlabs-io/ts-sdk/tbv/core", () => ({
   // Mirrors the real peginOutputCount: vaultCount + CPFP + (auth-anchor ? 1 : 0).
   peginOutputCount: (vaultCount: number, hasAuthAnchor: boolean) =>
     vaultCount + 1 + (hasAuthAnchor ? 1 : 0),
+  // v1 default: no P2A anchor. Version-2 tests override.
+  peginP2aAnchorOutput: vi.fn(async () => null),
+  supportedTxGraphVersions: vi.fn(async () => [1, 2, 3]),
 }));
 
 vi.mock("@/hooks/useBtcPublicKey", () => ({
-  useBtcPublicKey: vi.fn(
-    () => "aa".repeat(32), // 64-char mock x-only pubkey
-  ),
+  useBtcPublicKey: vi.fn(() => ({
+    publicKey: "aa".repeat(32), // 64-char mock x-only pubkey
+    error: null,
+    refetch: vi.fn(),
+  })),
 }));
 
 vi.mock("../../../context/ProtocolParamsContext", () => ({
   useProtocolParamsContext: vi.fn(() => ({
     config: {
+      activeVaultCoreVersion: 1,
       offchainParams: {
         babeInstancesToFinalize: 2,
         councilQuorum: 1,
@@ -281,6 +289,8 @@ vi.mock("../useAllocationPlanning", () => ({
     vaultAmounts: null,
     canSplit: false,
     splitRatioLabel: null,
+    minDepositForSplit: 0n,
+    isSplitAmountTooLow: false,
     isLoading: false,
   })),
 }));
@@ -486,6 +496,44 @@ describe("useDepositPageForm", () => {
         selectedProvider: "",
       });
       expect(result.current.errors).toEqual({});
+    });
+
+    it("fails closed when the active vault core version is unsupported by this build", async () => {
+      const { useProtocolParamsContext } = await import(
+        "../../../context/ProtocolParamsContext"
+      );
+      const ctxMock = vi.mocked(useProtocolParamsContext);
+      const originalImpl = ctxMock.getMockImplementation();
+      ctxMock.mockReturnValue({
+        config: {
+          // Real WASM is mocked to support [1, 2]; 99 must fail closed.
+          activeVaultCoreVersion: 99,
+          offchainParams: {
+            babeInstancesToFinalize: 2,
+            councilQuorum: 1,
+            securityCouncilKeys: ["0xcouncil1"],
+            feeRate: 10n,
+          },
+        },
+        latestUniversalChallengers: [
+          { id: "0xUC1", btcPubKey: "0xUniversalChallengerKey1" },
+        ],
+      } as never);
+
+      try {
+        const { result } = renderHook(() => useDepositPageForm(), { wrapper });
+
+        await waitFor(() =>
+          expect(result.current.appVersionUnsupported).toBe(true),
+        );
+        // The WASM fee previews stay disabled for an unbuildable version.
+        const { computeMinClaimValue } = await import(
+          "@babylonlabs-io/ts-sdk/tbv/core"
+        );
+        expect(vi.mocked(computeMinClaimValue)).not.toHaveBeenCalled();
+      } finally {
+        if (originalImpl) ctxMock.mockImplementation(originalImpl);
+      }
     });
 
     it("should resolve application from aave config on mount", () => {
@@ -919,7 +967,7 @@ describe("useDepositPageForm", () => {
   });
 
   describe("Max pinning sync with vaultCount", () => {
-    // vaultCount is now the EFFECTIVE split: isPartialLiquidation && canSplit.
+    // vaultCount is now the EFFECTIVE split: isTwoVaultSplit && canSplit.
     // These tests exercise the 1->2 transition, so the amount must be
     // splittable — override the default canSplit (false) to true.
     beforeEach(() => {
@@ -927,6 +975,8 @@ describe("useDepositPageForm", () => {
         vaultAmounts: null,
         canSplit: true,
         splitRatioLabel: null,
+        minDepositForSplit: 0n,
+        isSplitAmountTooLow: false,
         isLoading: false,
       });
     });
@@ -959,7 +1009,7 @@ describe("useDepositPageForm", () => {
       expect(result.current.formData.amountBtc).toBe("0.0076");
 
       act(() => {
-        result.current.setIsPartialLiquidation(true);
+        result.current.setIsTwoVaultSplit(true);
       });
 
       await waitFor(() => {
@@ -992,7 +1042,7 @@ describe("useDepositPageForm", () => {
       expect(result.current.formData.amountBtc).toBe("0.001");
 
       act(() => {
-        result.current.setIsPartialLiquidation(true);
+        result.current.setIsTwoVaultSplit(true);
       });
 
       await waitFor(() => {
@@ -1011,6 +1061,8 @@ describe("useDepositPageForm", () => {
         vaultAmounts: null,
         canSplit: false,
         splitRatioLabel: null,
+        minDepositForSplit: 0n,
+        isSplitAmountTooLow: false,
         isLoading: false,
       });
     });
@@ -1032,7 +1084,7 @@ describe("useDepositPageForm", () => {
       });
 
       act(() => {
-        result.current.setIsPartialLiquidation(true);
+        result.current.setIsTwoVaultSplit(true);
       });
 
       // Give the effect a chance to (incorrectly) re-budget; it must not.
@@ -1040,6 +1092,79 @@ describe("useDepositPageForm", () => {
         expect(result.current.canSplit).toBe(false);
       });
       expect(result.current.maxDepositSats).toBe(760_000n);
+    });
+  });
+
+  describe("silent stall surfacing", () => {
+    afterEach(() => {
+      // Restore module-level defaults — the suite's beforeEach doesn't reset
+      // these two mocks, so overrides here must not leak into later tests.
+      vi.mocked(useVaultProviders).mockReturnValue({
+        allVaultProviders: [
+          {
+            id: "0x1234567890abcdef1234567890abcdef12345678",
+            btcPubKey: "pubkey1",
+          },
+          {
+            id: "0xabcdef1234567890abcdef1234567890abcdef12",
+            btcPubKey: "pubkey2",
+          },
+        ],
+        unhealthyVpIds: new Set<string>(),
+        vaultKeepers: [{ btcPubKey: "0xVaultKeeperKey1" }],
+        loading: false,
+      } as unknown as ReturnType<typeof useVaultProviders>);
+      vi.mocked(useBtcPublicKey).mockReturnValue({
+        publicKey: "aa".repeat(32),
+        error: null,
+        refetch: vi.fn(),
+      });
+    });
+
+    it("surfaces a terminal minPeginFee error when the settled registry has providers but no keepers", () => {
+      vi.mocked(useVaultProviders).mockReturnValue({
+        allVaultProviders: [
+          {
+            id: "0x1234567890abcdef1234567890abcdef12345678",
+            btcPubKey: "pubkey1",
+          },
+        ],
+        unhealthyVpIds: new Set<string>(),
+        vaultKeepers: [],
+        loading: false,
+      } as unknown as ReturnType<typeof useVaultProviders>);
+
+      const { result } = renderHook(() => useDepositPageForm(), { wrapper });
+
+      // Zero keeper pubkeys can never enable the minPeginFee query — the hook
+      // must report a terminal error so the CTA doesn't spin forever.
+      expect(result.current.minPeginFeeError).not.toBeNull();
+    });
+
+    it("keeps minPeginFeeError null while the registry is still loading", () => {
+      vi.mocked(useVaultProviders).mockReturnValue({
+        allVaultProviders: [],
+        unhealthyVpIds: new Set<string>(),
+        vaultKeepers: [],
+        loading: true,
+      } as unknown as ReturnType<typeof useVaultProviders>);
+
+      const { result } = renderHook(() => useDepositPageForm(), { wrapper });
+
+      expect(result.current.minPeginFeeError).toBeNull();
+    });
+
+    it("exposes the wallet public-key read failure", () => {
+      const walletError = new Error("wallet unresponsive");
+      vi.mocked(useBtcPublicKey).mockReturnValue({
+        publicKey: undefined,
+        error: walletError,
+        refetch: vi.fn(),
+      });
+
+      const { result } = renderHook(() => useDepositPageForm(), { wrapper });
+
+      expect(result.current.btcPublicKeyError).toBe(walletError);
     });
   });
 });

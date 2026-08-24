@@ -25,21 +25,30 @@ export {
 export {
   borrow,
   reorderVaultOrder,
-  repayFull,
-  repayMaxCapped,
+  repayAll,
   repayPartial,
   withdrawSelectedCollateral,
 } from "./positionTransactions";
 
 // On-chain integrity guards
 export {
+  ProxyMismatchError,
+  assertProxyMatchesOnChain,
+} from "./assertProxyMatchesOnChain";
+export {
   PositionChangedError,
+  assertOptimalOrderMatchesOnChain,
   assertReorderBaseline,
   assertReorderMembership,
-  assertSuggestedOrderMatchesOnChain,
   type ReorderVerificationContext,
 } from "./assertReorderMatchesOnChain";
 export {
   ReserveMismatchError,
   assertReserveMatchesOnChain,
 } from "./assertReserveMatchesOnChain";
+export {
+  UnknownReserveTokenError,
+  isIntegrityFailure,
+  verifyReserveIdentity,
+  type VerifiedReserveIdentity,
+} from "./verifyReserveIdentity";

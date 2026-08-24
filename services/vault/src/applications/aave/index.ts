@@ -4,7 +4,6 @@ import { registerApplication } from "../registry";
 import type { ApplicationRegistration } from "../types";
 
 import { AAVE_APP_ID, getAaveAdapterAddress } from "./config";
-import { AaveRoutes } from "./routes";
 
 const aaveApp: ApplicationRegistration = {
   metadata: {
@@ -16,7 +15,6 @@ const aaveApp: ApplicationRegistration = {
     logoUrl: "/images/aave.svg",
     websiteUrl: "https://aave.com",
   },
-  Routes: AaveRoutes,
   contracts: {
     abi: AaveIntegrationAdapterABI,
   },

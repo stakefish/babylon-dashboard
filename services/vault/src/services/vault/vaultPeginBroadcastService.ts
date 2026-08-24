@@ -11,7 +11,16 @@ import {
   TXID_RE,
   pushTx,
 } from "@babylonlabs-io/ts-sdk";
-import { assertPsbtUnsignedTxMatches } from "@babylonlabs-io/ts-sdk/tbv/core/primitives";
+import {
+  ensurePrePeginTermsApproval,
+  isDepositTermsRejectedError,
+  type DepositTerms,
+  type PrePeginApprovalWallet,
+} from "@babylonlabs-io/ts-sdk/tbv/core";
+import {
+  assertPsbtUnsignedTxMatches,
+  assertReturnedKeyPathSignatures,
+} from "@babylonlabs-io/ts-sdk/tbv/core/primitives";
 import { getPsbtInputFields } from "@babylonlabs-io/ts-sdk/tbv/core/utils";
 import { Psbt, Transaction } from "bitcoinjs-lib";
 import { Buffer } from "buffer";
@@ -19,16 +28,6 @@ import { Buffer } from "buffer";
 import { getMempoolApiUrl } from "../../clients/btc/config";
 
 import { fetchUTXOFromMempool } from "./vaultUtxoDerivationService";
-
-/**
- * UTXO information needed for PSBT construction
- */
-export interface UTXOInfo {
-  txid: string;
-  vout: number;
-  value: bigint;
-  scriptPubKey: string;
-}
 
 /**
  * Convert a UTXO array into the expectedUtxos Record format
@@ -72,11 +71,22 @@ export interface BroadcastPrePeginParams {
   unsignedTxHex: string;
 
   /**
-   * BTC wallet provider with signing capability
+   * BTC wallet provider with signing capability. May also implement the
+   * intent-approval methods (`deriveContextHash`/`approveDepositTerms`); when it
+   * does, `depositTerms` is required and the approval ceremony runs before
+   * signing.
    */
   btcWalletProvider: {
     signPsbt: (psbtHex: string) => Promise<string>;
-  };
+  } & PrePeginApprovalWallet;
+
+  /**
+   * Approved deposit terms — required when `btcWalletProvider` supports deposit
+   * approval. Fresh flows pass `PreparePeginResult.depositTerms`; the resume
+   * path rebuilds them from chain state via `rebuildDepositTerms`. Ignored
+   * (but still txid-validated) for non-approval wallets.
+   */
+  depositTerms?: DepositTerms;
 
   /**
    * Depositor's BTC public key (x-only format, 32 bytes hex)
@@ -247,6 +257,7 @@ async function createPsbtFromTransaction(
 async function signAndFinalizePsbt(
   psbtHex: string,
   btcWalletProvider: { signPsbt: (psbtHex: string) => Promise<string> },
+  expectAllInputsKeyPath: boolean,
 ): Promise<string> {
   const signedPsbtHex = await btcWalletProvider.signPsbt(psbtHex);
 
@@ -254,6 +265,23 @@ async function signAndFinalizePsbt(
     requestedPsbtHex: psbtHex,
     returnedPsbtHex: signedPsbtHex,
   });
+
+  // Never trust the wallet's finalization: verify the returned signatures
+  // against the PSBT we asked it to sign before extracting (key-path
+  // Schnorr counted; P2WPKH ECDSA verified-or-throw, not counted).
+  const verifiedInputs = assertReturnedKeyPathSignatures({
+    requestedPsbtHex: psbtHex,
+    returnedPsbtHex: signedPsbtHex,
+  });
+  // An approval wallet signs every input key-path, so a zero here would mean
+  // the check covered nothing rather than that everything was verified.
+  const inputCount = Psbt.fromHex(psbtHex).data.inputs.length;
+  if (expectAllInputsKeyPath && verifiedInputs !== inputCount) {
+    throw new Error(
+      `Key-path verification covered ${verifiedInputs} of ${inputCount} Pre-PegIn inputs; ` +
+        `refusing to broadcast partially verified signatures.`,
+    );
+  }
 
   const signedPsbt = Psbt.fromHex(signedPsbtHex);
 
@@ -292,6 +320,7 @@ export async function broadcastPrePeginTransaction(
     btcWalletProvider,
     depositorBtcPubkey,
     expectedUtxos,
+    depositTerms,
   } = params;
 
   try {
@@ -315,16 +344,36 @@ export async function broadcastPrePeginTransaction(
       expectedUtxos,
     );
 
+    // Intent-wallet ceremony (derive → approve) immediately before signing.
+    // No-op for wallets that do not support deposit approval.
+    await ensurePrePeginTermsApproval({
+      wallet: btcWalletProvider,
+      depositTerms,
+      fundedPrePeginTxHex: unsignedTxHex,
+      depositorBtcPubkey,
+    });
+
     // Sign and finalize
     const signedTxHex = await signAndFinalizePsbt(
       psbt.toHex(),
       btcWalletProvider,
+      typeof btcWalletProvider.approveDepositTerms === "function",
     );
 
     // Broadcast to network
     return await pushTx(signedTxHex, getMempoolApiUrl());
   } catch (error) {
+    // A device-envelope rejection is a distinct, user-actionable outcome — let
+    // it through unwrapped so the UI can show the intent-rejection copy instead
+    // of a generic broadcast failure.
+    if (isDepositTermsRejectedError(error)) {
+      throw error;
+    }
     const message = error == null ? "Unknown error" : formatError(error);
-    throw new Error(`Failed to broadcast Pre-PegIn transaction: ${message}`);
+    // `cause` keeps the typed inner error visible to the cause-walking
+    // classifiers (user cancellation, method-not-supported) in the mappers.
+    throw new Error(`Failed to broadcast Pre-PegIn transaction: ${message}`, {
+      cause: error,
+    });
   }
 }

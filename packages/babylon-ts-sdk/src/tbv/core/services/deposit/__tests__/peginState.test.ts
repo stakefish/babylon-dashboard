@@ -4,6 +4,7 @@ import {
   canPerformAction,
   ContractStatus,
   getPeginProtocolState,
+  isActivationDeadlinePassedOnChain,
   PeginAction,
 } from "../peginState";
 
@@ -69,6 +70,22 @@ describe("peginProtocolState", () => {
     it("offers ACTIVATE_VAULT", () => {
       const state = getPeginProtocolState(ContractStatus.VERIFIED);
       expect(state.availableActions).toContain(PeginAction.ACTIVATE_VAULT);
+    });
+
+    it("offers only ACTIVATE_AND_REDEEM when the HTLC is spent", () => {
+      const state = getPeginProtocolState(ContractStatus.VERIFIED, {
+        htlcSpentByPeginTx: true,
+      });
+      expect(state.availableActions).toEqual([
+        PeginAction.ACTIVATE_AND_REDEEM,
+      ]);
+    });
+
+    it("keeps ACTIVATE_VAULT when htlcSpentByPeginTx is false", () => {
+      const state = getPeginProtocolState(ContractStatus.VERIFIED, {
+        htlcSpentByPeginTx: false,
+      });
+      expect(state.availableActions).toEqual([PeginAction.ACTIVATE_VAULT]);
     });
   });
 
@@ -162,6 +179,41 @@ describe("peginProtocolState", () => {
       const state = getPeginProtocolState(ContractStatus.ACTIVE);
       expect(
         canPerformAction(state, PeginAction.SIGN_PAYOUT_TRANSACTIONS),
+      ).toBe(false);
+    });
+  });
+
+  // ==========================================================================
+  // isActivationDeadlinePassedOnChain — mirrors the contract's strict '>'
+  // ==========================================================================
+  describe("isActivationDeadlinePassedOnChain", () => {
+    it("treats the boundary block (current == created + timeout) as NOT expired", () => {
+      expect(
+        isActivationDeadlinePassedOnChain({
+          currentBlock: 1100n,
+          createdAtBlock: 1000n,
+          pegInActivationTimeout: 100n,
+        }),
+      ).toBe(false);
+    });
+
+    it("treats one block past the boundary as expired", () => {
+      expect(
+        isActivationDeadlinePassedOnChain({
+          currentBlock: 1101n,
+          createdAtBlock: 1000n,
+          pegInActivationTimeout: 100n,
+        }),
+      ).toBe(true);
+    });
+
+    it("treats a block below the boundary as NOT expired", () => {
+      expect(
+        isActivationDeadlinePassedOnChain({
+          currentBlock: 1050n,
+          createdAtBlock: 1000n,
+          pegInActivationTimeout: 100n,
+        }),
       ).toBe(false);
     });
   });

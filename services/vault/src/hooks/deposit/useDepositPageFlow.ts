@@ -17,6 +17,7 @@ import {
 import { useProtocolParamsContext } from "../../context/ProtocolParamsContext";
 import { useETHWallet } from "../../context/wallet";
 import { VaultStatus } from "../../types/vault";
+import { toCheckedAddress } from "../../utils/addressUtils";
 import { useVaultDeposits } from "../useVaultDeposits";
 import { useVaults } from "../useVaults";
 
@@ -28,6 +29,8 @@ export interface UseDepositPageFlowResult {
   depositAmount: bigint;
   selectedApplication: string;
   selectedProviders: string[];
+  /** VP commission (bps) frozen at commit time; `undefined` if it hadn't loaded. */
+  quotedCommissionBps: number | undefined;
   feeRate: number;
 
   // Wallet data
@@ -40,16 +43,9 @@ export interface UseDepositPageFlowResult {
   universalChallengerBtcPubkeys: string[];
 
   // Vault data
-  hasExistingVaults: boolean;
   hasActiveVaults: boolean;
 
   // Actions
-  startDeposit: (
-    amountSats: bigint,
-    application: string,
-    providers: string[],
-  ) => void;
-  confirmReview: (feeRate: number) => void;
   resetDeposit: () => void;
   refetchActivities: () => Promise<void>;
 
@@ -65,6 +61,7 @@ export interface UseDepositPageFlowResult {
     amount: bigint,
     application: string,
     providers: string[],
+    quotedCommissionBps: number | undefined,
   ) => void;
   setFeeRate: (feeRate: number) => void;
 }
@@ -76,7 +73,7 @@ export function useDepositPageFlow(): UseDepositPageFlowResult {
     (btcConnector?.connectedWallet?.provider as BitcoinWallet | undefined) ??
     null;
   const { address: ethAddressRaw } = useETHWallet();
-  const ethAddress = ethAddressRaw as Address | undefined;
+  const ethAddress = toCheckedAddress(ethAddressRaw);
 
   // Deposit flow state from context
   const {
@@ -84,6 +81,7 @@ export function useDepositPageFlow(): UseDepositPageFlowResult {
     amount: depositAmount,
     selectedApplication,
     selectedProviders,
+    quotedCommissionBps,
     feeRate,
     goToStep,
     setDepositData,
@@ -104,7 +102,6 @@ export function useDepositPageFlow(): UseDepositPageFlowResult {
   const { refetchActivities } = useVaultDeposits(ethAddress);
 
   const { data: existingVaults } = useVaults(ethAddress);
-  const hasExistingVaults = (existingVaults?.length ?? 0) > 0;
   const hasActiveVaults = useMemo(
     () => existingVaults?.some((v) => v.status === VaultStatus.ACTIVE) ?? false,
     [existingVaults],
@@ -143,20 +140,6 @@ export function useDepositPageFlow(): UseDepositPageFlowResult {
   ]);
 
   // Actions
-  const startDeposit = (
-    amountSats: bigint,
-    application: string,
-    providers: string[],
-  ) => {
-    setDepositData(amountSats, application, providers);
-    goToStep(DepositStep.REVIEW);
-  };
-
-  const confirmReview = (confirmedFeeRate: number) => {
-    setFeeRate(confirmedFeeRate);
-    goToStep(DepositStep.SIGN);
-  };
-
   const resetDeposit = useCallback(() => {
     resetDepositState();
   }, [resetDepositState]);
@@ -166,20 +149,18 @@ export function useDepositPageFlow(): UseDepositPageFlowResult {
     depositAmount,
     selectedApplication,
     selectedProviders,
+    quotedCommissionBps,
     feeRate,
     btcWalletProvider,
     ethAddress,
     selectedProviderBtcPubkey,
     vaultKeeperBtcPubkeys,
     universalChallengerBtcPubkeys,
-    hasExistingVaults,
     hasActiveVaults,
     isSplitDeposit,
     setIsSplitDeposit,
     splitVaultAmounts,
     setSplitVaultAmounts,
-    startDeposit,
-    confirmReview,
     resetDeposit,
     refetchActivities,
     goToStep,

@@ -1,6 +1,6 @@
 {
   "name": "@babylonlabs-io/wallet-connector",
-  "version": "0.0.0-semantic-release",
+  "version": "1.69.0",
   "type": "module",
   "types": "dist/index.d.ts",
   "publishConfig": {
@@ -17,6 +17,11 @@
       "types": "./dist/index.d.ts",
       "require": "./dist/index.cjs.js",
       "import": "./dist/index.es.js"
+    },
+    "./eth": {
+      "types": "./dist/eth.d.ts",
+      "require": "./dist/eth.cjs.js",
+      "import": "./dist/eth.es.js"
     },
     "./style.css": "./dist/wallet-connector.css"
   },
@@ -36,22 +41,30 @@
     "test:e2e:debug": "playwright test --debug --project=e2e",
     "test:e2e:headed": "playwright test --headed --project=e2e",
     "test:e2e:report": "playwright show-report",
+    "test:e2e:unisat": "playwright test -c playwright.wallets.config.ts unisat",
+    "test:e2e:metamask": "playwright test -c playwright.wallets.config.ts metamask",
+    "test:e2e:okx": "playwright test -c playwright.wallets.config.ts okx",
+    "test:e2e:onekey": "playwright test -c playwright.wallets.config.ts onekey",
+    "test:e2e:wallets": "playwright test -c playwright.wallets.config.ts walletsSession",
+    "test:e2e:wallets:all": "playwright test -c playwright.wallets.config.ts",
     "test:e2e:codegen": "playwright codegen",
     "test:unit": "playwright test --project=unit",
     "test:unit:ui": "playwright test --ui --project=unit",
     "test:unit:debug": "playwright test --debug --project=unit",
     "test:all": "npm run test:unit && npm run test:e2e",
+    "test": "vitest run",
     "visualizer": "pnpm exec vite-bundle-visualizer"
   },
   "dependencies": {
     "@babylonlabs-io/core-ui": "workspace:*",
+    "@babylonlabs-io/ledger-vault-signer": "workspace:*",
     "@bitcoin-js/tiny-secp256k1-asmjs": "2.2.3",
     "@cosmjs/proto-signing": "0.36.0",
     "@cosmjs/stargate": "0.36.0",
     "@keplr-wallet/provider-extension": "0.12.272",
     "@keplr-wallet/types": "0.12.272",
     "@keystonehq/animated-qr": "0.10.0",
-    "@keystonehq/keystone-sdk": "0.9.0",
+    "@keystonehq/keystone-sdk": "0.12.3",
     "@keystonehq/sdk": "0.22.1",
     "@ledgerhq/hw-transport": "6.31.10",
     "@ledgerhq/hw-transport-webhid": "6.30.6",
@@ -89,7 +102,7 @@
     "@commitlint/config-conventional": "^19.8.0",
     "@eslint/js": "^9.31.0",
     "@internal/eslint-config": "workspace:*",
-    "@playwright/test": "^1.55.1",
+    "@playwright/test": "1.56.1",
     "@semantic-release/github": "^11.0.2",
     "@semantic-release/npm": "^12.0.1",
     "@storybook/addon-essentials": "^8.6.15",
@@ -99,6 +112,8 @@
     "@storybook/react-vite": "^8.6.15",
     "@storybook/test": "^8.6.15",
     "@tanstack/react-query": "^5.74.4",
+    "@testing-library/dom": "10.4.0",
+    "@testing-library/react": "16.3.0",
     "@types/node": "^22.10.2",
     "@types/react": "^18.3.12",
     "@types/react-dom": "^18.3.1",
@@ -115,6 +130,7 @@
     "eslint-plugin-tailwindcss": "^3.18.2",
     "globals": "^16.3.0",
     "husky": "^9.1.7",
+    "jsdom": "20.0.3",
     "lint-staged": "^15.5.0",
     "postcss": "^8.4.47",
     "prettier": "^3.6.2",
@@ -129,7 +145,8 @@
     "typescript-eslint": "^8.44.1",
     "vite": "^6.4.1",
     "vite-plugin-dts": "^4.3.0",
-    "vite-plugin-node-polyfills": "^0.23.0"
+    "vite-plugin-node-polyfills": "^0.23.0",
+    "vitest": "4.0.9"
   },
   "lint-staged": {
     "*.{js,jsx,ts,tsx}": [

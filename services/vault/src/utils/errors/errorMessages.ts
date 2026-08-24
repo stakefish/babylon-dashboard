@@ -35,6 +35,12 @@ export const CONTRACT_ERROR_MESSAGES: Record<string, string> = {
     "The BTC Vault is in an invalid status for this operation.",
   ActivationDeadlineExpired:
     "The activation deadline has passed. The BTC Vault can no longer be activated.",
+  // The opposite bound to ActivationDeadlineExpired: too early, not too late.
+  // Resolves by waiting, so the copy asks for a retry rather than closing the
+  // flow. Normally unreachable — the UI holds Activate closed for the window —
+  // so this is the fallback for a governance change mid-flow.
+  ActivationDelayNotElapsed:
+    "The BTC Vault activation window has not opened yet. The deposit list shows how long is left.",
   InvalidSecret:
     "The secret does not match the BTC Vault's hashlock. Please verify your secret and try again.",
   InvalidHashlock: "The BTC Vault does not have a valid hashlock configured.",
@@ -219,12 +225,15 @@ export const CONTRACT_ERROR_MESSAGES: Record<string, string> = {
   // ============================================================================
   VaultProviderCommissionExceeded:
     "The vault provider's commission rate exceeds your acceptable maximum. Please try again.",
+  // Phase-agnostic by necessity: this map is consulted for BOTH a pre-broadcast
+  // simulation failure (nothing signed or sent) and a mined revert, so it must
+  // not assert anything about whether a transaction reached the chain.
   ApplicationNotActive:
-    "This application is currently paused. BTC Vault operations are temporarily disabled.",
+    "The application this BTC Vault is registered with is not active on the vault registry, so this operation cannot proceed.",
   BlocklistedVaultKeeper:
     "This vault keeper has been blocklisted and cannot perform this action.",
   PostExpiryGraceWindowElapsed:
-    "The grace window to reclaim this expired BTC Vault has elapsed.",
+    "The grace window to refund this expired BTC Vault has elapsed.",
   BtcKeyAlreadyRegistered: "This Bitcoin public key is already registered.",
   CommissionAboveMaximum:
     "The proposed commission exceeds the protocol maximum.",

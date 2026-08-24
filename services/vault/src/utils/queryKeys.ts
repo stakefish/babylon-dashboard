@@ -1,43 +1,22 @@
 /**
- * Query Key Factory and Invalidation Utilities
+ * Query Invalidation Utilities
  *
- * Centralizes query key definitions and provides helpers for invalidating
- * related queries after transactions.
+ * Helpers for invalidating related queries after transactions.
  */
 
 import type { QueryClient } from "@tanstack/react-query";
 import type { Address } from "viem";
 
-import { CONTRACTS } from "../config/contracts";
 import { VAULTS_QUERY_KEY } from "../hooks/useVaults";
 
 /**
- * Query key factory for consistent key generation
+ * Query key for the depositor's vault liquidation order. The address is
+ * lowercased so callers with checksummed and lowercase addresses hit the
+ * same cache entry.
  */
-const queryKeys = {
-  /** Vaults available for use as collateral in borrowing */
-  borrowableVaults: (address: Address) =>
-    ["borrowableVaults", address] as const,
-
-  /** Peg-in requests with vault usage status */
-  peginRequests: (address: Address) =>
-    [
-      "peginRequests",
-      address,
-      CONTRACTS.BTC_VAULT_REGISTRY,
-      CONTRACTS.AAVE_ADAPTER,
-    ] as const,
-
-  /** User position for a specific market */
-  userPositionForMarket: (
-    address: Address,
-    marketId: string,
-    adapterAddress: Address = CONTRACTS.AAVE_ADAPTER,
-  ) => ["userPositionForMarket", address, marketId, adapterAddress] as const,
-
-  /** Market data */
-  marketData: (marketId: string) => ["marketData", marketId] as const,
-};
+export function vaultOrderQueryKey(address: string): [string, string] {
+  return ["vaultOrder", address.toLowerCase()];
+}
 
 /**
  * Invalidate vault-related queries after collateral operations
@@ -54,16 +33,6 @@ export async function invalidateVaultQueries(
   address: Address,
 ): Promise<void> {
   await Promise.all([
-    // Invalidate borrowable vaults to refresh available collateral list
-    queryClient.invalidateQueries({
-      queryKey: queryKeys.borrowableVaults(address),
-    }),
-
-    // Invalidate pegin requests to update vault usage status (isInUse)
-    queryClient.invalidateQueries({
-      queryKey: queryKeys.peginRequests(address),
-    }),
-
     // Invalidate vaults query to refresh vault list
     queryClient.invalidateQueries({
       queryKey: [VAULTS_QUERY_KEY, address],

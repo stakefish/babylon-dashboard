@@ -1,8 +1,8 @@
 // Re-export utilities from SDK
 export {
+  HEALTH_FACTOR_WARNING_THRESHOLD,
   aaveRayValueToUsd,
   aaveValueToUsd,
-  calculateBorrowRatio,
   calculateHealthFactor,
   getHealthFactorStatus,
   getHealthFactorStatusFromValue,
@@ -10,15 +10,12 @@ export {
   wadToNumber,
 } from "@babylonlabs-io/ts-sdk/tbv/integrations/aave";
 
-export type {
-  HealthFactorStatus,
-  SelectableVault,
-  VaultSelectionResult,
-} from "@babylonlabs-io/ts-sdk/tbv/integrations/aave";
+export type { HealthFactorStatus } from "@babylonlabs-io/ts-sdk/tbv/integrations/aave";
 
 // Display utilities (frontend-only, not in SDK)
 export {
   HEALTH_FACTOR_COLORS,
+  HEALTH_FACTOR_HEALTHY_THRESHOLD,
   formatHealthFactor,
   getHealthFactorColor,
 } from "./healthFactorDisplay";
@@ -53,3 +50,10 @@ export type {
   AssertCfUnchangedDeps,
   AssertCfUnchangedResult,
 } from "./assertCfUnchanged";
+
+export { calculateBorrowCapacityUsd } from "./borrowCapacity";
+
+export type {
+  BorrowCapacityUsd,
+  BorrowCapacityUsdParams,
+} from "./borrowCapacity";

@@ -2,7 +2,7 @@
  * Protocol Params Context
  *
  * Provides protocol parameters from the ProtocolParams contract to all child components.
- * Also provides system-wide data like universal challengers (all versions).
+ * Also provides system-wide data like the latest universal challengers.
  * Fetches params once when the app loads and caches for 5 minutes.
  *
  * This is a BLOCKING provider - children are not rendered until params are loaded.
@@ -24,13 +24,31 @@ import {
 } from "react";
 
 import { getProtocolParamsReader } from "@/clients/eth-contract/sdk-readers";
-import { logger } from "@/infrastructure";
+import { offchainParamsQueryOptions } from "@/hooks/useOffchainParams";
 import { fetchAllUniversalChallengers } from "@/services/providers";
 import type { UniversalChallenger } from "@/types";
 
 const PROTOCOL_PARAMS_QUERY_KEY = "protocolParams";
 const STALE_TIME_MS = 5 * 60 * 1000;
 const RETRY_COUNT = 3;
+
+/**
+ * React Query options for the peg-in configuration multicall. Single source of
+ * truth for the key, shared by this blocking provider and the non-blocking
+ * `usePeginPollingProtocolParams`, so both resolve from one fetch.
+ */
+export function pegInConfigQueryOptions() {
+  return {
+    queryKey: [PROTOCOL_PARAMS_QUERY_KEY, "pegInConfig"] as const,
+    queryFn: async (): Promise<PegInConfiguration> => {
+      const reader = await getProtocolParamsReader();
+      return reader.getPegInConfiguration();
+    },
+    staleTime: STALE_TIME_MS,
+    refetchOnWindowFocus: false,
+    retry: RETRY_COUNT,
+  };
+}
 
 interface ProtocolParamsContextValue {
   /** Peg-in configuration from contract */
@@ -47,8 +65,6 @@ interface ProtocolParamsContextValue {
   minVpCommissionBps: number;
   /** Latest universal challengers - use for new peg-ins */
   latestUniversalChallengers: UniversalChallenger[];
-  /** Get universal challengers by version - use for payout signing existing vaults */
-  getUniversalChallengersByVersion: (version: number) => UniversalChallenger[];
   /** Get offchain params by version - use for depositor graph signing */
   getOffchainParamsByVersion: (
     version: number,
@@ -77,16 +93,7 @@ export function ProtocolParamsProvider({
     data: configData,
     isLoading: configLoading,
     error: configError,
-  } = useQuery({
-    queryKey: [PROTOCOL_PARAMS_QUERY_KEY, "pegInConfig"],
-    queryFn: async () => {
-      const reader = await getProtocolParamsReader();
-      return reader.getPegInConfiguration();
-    },
-    staleTime: STALE_TIME_MS,
-    refetchOnWindowFocus: false,
-    retry: RETRY_COUNT,
-  });
+  } = useQuery(pegInConfigQueryOptions());
 
   const {
     data: ucData,
@@ -100,38 +107,17 @@ export function ProtocolParamsProvider({
     retry: RETRY_COUNT,
   });
 
+  // Shares the query (and cache) with the non-blocking useOffchainParams hook.
   const {
     data: offchainParamsData,
     isLoading: offchainLoading,
     error: offchainError,
-  } = useQuery({
-    queryKey: [PROTOCOL_PARAMS_QUERY_KEY, "allOffchainParams"],
-    queryFn: async () => {
-      const reader = await getProtocolParamsReader();
-      return reader.fetchAllOffchainParams((version, error) => {
-        logger.warn(
-          `Offchain params v${version} failed validation, skipping: ${error.message}`,
-          { category: "protocol-params" },
-        );
-      });
-    },
-    staleTime: STALE_TIME_MS,
-    refetchOnWindowFocus: false,
-    retry: RETRY_COUNT,
-  });
+  } = useQuery(offchainParamsQueryOptions());
 
   const latestUniversalChallengers = useMemo(() => {
     if (!ucData) return [];
     return ucData.byVersion.get(ucData.latestVersion) ?? [];
   }, [ucData]);
-
-  const getUniversalChallengersByVersion = useCallback(
-    (version: number): UniversalChallenger[] => {
-      if (!ucData) return [];
-      return ucData.byVersion.get(version) ?? [];
-    },
-    [ucData],
-  );
 
   const getOffchainParamsByVersion = useCallback(
     (version: number): VersionedOffchainParams | undefined => {
@@ -173,7 +159,6 @@ export function ProtocolParamsProvider({
     timelockRefund: configData.timelockRefund,
     minVpCommissionBps: configData.minVpCommissionBps,
     latestUniversalChallengers,
-    getUniversalChallengersByVersion,
     getOffchainParamsByVersion,
   };
 

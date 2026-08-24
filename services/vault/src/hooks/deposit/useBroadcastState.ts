@@ -13,9 +13,12 @@ import { useCallback, useState } from "react";
 
 import { usePeginPolling } from "@/context/deposit/PeginPollingContext";
 import { logger } from "@/infrastructure";
+import { shortId, TELEMETRY_EVENT } from "@/infrastructure/telemetryEvents";
 import { LocalStorageStatus } from "@/models/peginStateMachine";
+import type { RegistrationDepthProgress } from "@/services/vault/ethConfirmationGate";
 import { usePeginStorage } from "@/storage/usePeginStorage";
 import type { VaultActivity } from "@/types/activity";
+import type { DepositErrorContent } from "@/utils/errors";
 
 import { useVaultActions } from "./useVaultActions";
 
@@ -37,8 +40,14 @@ export interface UseBroadcastStateProps {
 export interface UseBroadcastStateResult {
   /** Whether a broadcast is in progress */
   broadcasting: boolean;
-  /** Error message if broadcast failed */
-  error: string | null;
+  /** Broadcast failure, already classified into user-facing copy. */
+  error: DepositErrorContent | null;
+  /**
+   * Live Ethereum confirmation depth while the finality gate holds this
+   * broadcast. `null` for any deposit already past the required depth, which
+   * is nearly every resume.
+   */
+  ethConfirmationDetail: RegistrationDepthProgress | null;
   /** Handler to initiate broadcast */
   handleBroadcast: () => Promise<void>;
 }
@@ -52,6 +61,7 @@ export function useBroadcastState({
   const {
     broadcasting: vaultBroadcasting,
     broadcastError,
+    ethConfirmationDetail,
     handleBroadcast: vaultHandleBroadcast,
   } = useVaultActions();
   const [localBroadcasting, setLocalBroadcasting] = useState(false);
@@ -71,6 +81,7 @@ export function useBroadcastState({
     try {
       await vaultHandleBroadcast({
         vaultId: activity.id,
+        depositorEthAddress,
         pendingPegin,
         updatePendingPeginStatus,
         removePendingPegin,
@@ -86,6 +97,15 @@ export function useBroadcastState({
           for (const id of batchVaultIds) {
             updatePendingPeginStatus(id, LocalStorageStatus.CONFIRMING);
             setOptimisticStatus(id, LocalStorageStatus.CONFIRMING);
+            // One broadcast confirms every sibling, so emit the milestone per
+            // vault (scalar vaultId) — matching the inline path — rather than
+            // only for the vault whose Broadcast button was clicked.
+            logger.event(TELEMETRY_EVENT.DEPOSIT_BROADCAST_SUCCEEDED, {
+              level: "info",
+              category: "deposit",
+              tags: { vaultId: shortId(id) },
+              vaultCount: batchVaultIds.length,
+            });
           }
           setLocalBroadcasting(false);
           onSuccess();
@@ -100,6 +120,7 @@ export function useBroadcastState({
   }, [
     activity,
     batchVaultIds,
+    depositorEthAddress,
     pendingPegins,
     updatePendingPeginStatus,
     removePendingPegin,
@@ -114,6 +135,7 @@ export function useBroadcastState({
   return {
     broadcasting: isBroadcasting,
     error: broadcastError,
+    ethConfirmationDetail,
     handleBroadcast,
   };
 }

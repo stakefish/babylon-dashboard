@@ -1,4 +1,8 @@
 export {
+  useAaveBorrowAprs,
+  type UseAaveBorrowAprsResult,
+} from "./useAaveBorrowAprs";
+export {
   useAaveBorrowedAssets,
   type BorrowedAsset,
   type UseAaveBorrowedAssetsResult,
@@ -7,6 +11,11 @@ export {
   useAaveOracleAddress,
   type UseAaveOracleAddressResult,
 } from "./useAaveOracleAddress";
+export {
+  useAaveReserveLiquidity,
+  type ReserveLiquidity,
+  type UseAaveReserveLiquidityResult,
+} from "./useAaveReserveLiquidity";
 export {
   useAaveReservePrice,
   type UseAaveReservePriceResult,
@@ -21,15 +30,28 @@ export {
   type UseAaveUserPositionResult,
 } from "./useAaveUserPosition";
 export { useAaveVaults, type UseAaveVaultsResult } from "./useAaveVaults";
+export { useActiveLoans, type ActiveLoanRow } from "./useActiveLoans";
+export {
+  useBorrowRateHistory,
+  type UseBorrowRateHistoryResult,
+} from "./useBorrowRateHistory";
 export {
   useBorrowTransaction,
   type UseBorrowTransactionResult,
 } from "./useBorrowTransaction";
+export {
+  useInterestRateModelCurve,
+  type UseInterestRateModelCurveResult,
+} from "./useInterestRateModelCurve";
 export { type UseOptimalSplitResult } from "./useOptimalSplit";
 export {
   type PositionNotificationsStatus,
   type UsePositionNotificationsResult,
 } from "./usePositionNotifications";
+export {
+  useProjectedBorrowApr,
+  type UseProjectedBorrowAprResult,
+} from "./useProjectedBorrowApr";
 export {
   useReorderVaults,
   type UseReorderVaultsResult,
@@ -45,4 +67,8 @@ export {
   type UseVaultSplitParamsResult,
   type VaultSplitParams,
 } from "./useVaultSplitParams";
+export {
+  useVerifiedReserveIdentity,
+  type UseVerifiedReserveIdentityResult,
+} from "./useVerifiedReserveIdentity";
 export { type UseWithdrawCollateralTransactionResult } from "./useWithdrawCollateralTransaction";

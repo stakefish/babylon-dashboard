@@ -17,6 +17,10 @@ import {
 import { BTC_BLOCK_TIME_MINS, MINS_PER_HOUR } from "@/constants";
 import { COPY } from "@/copy";
 import { DepositFlowStep } from "@/hooks/deposit/depositFlowSteps/types";
+import {
+  activationFloorMinutesRemaining,
+  isActivationFloorGating,
+} from "@/utils/activationFloor";
 
 export { ContractStatus } from "@babylonlabs-io/ts-sdk/tbv/core/services";
 export type {
@@ -59,6 +63,7 @@ export enum PeginAction {
   SIGN_PAYOUT_TRANSACTIONS = "SIGN_PAYOUT_TRANSACTIONS",
   SIGN_AND_BROADCAST_TO_BITCOIN = "SIGN_AND_BROADCAST_TO_BITCOIN",
   ACTIVATE_VAULT = "ACTIVATE_VAULT",
+  ACTIVATE_AND_REDEEM = "ACTIVATE_AND_REDEEM",
   REFUND_HTLC = "REFUND_HTLC",
   NONE = "NONE",
 }
@@ -96,7 +101,7 @@ export interface PeginState {
   contractStatus: ContractStatus;
   localStatus?: LocalStorageStatus;
   displayLabel: PeginDisplayLabel;
-  displayVariant: "pending" | "active" | "inactive" | "warning";
+  displayVariant: "pending" | "active" | "inactive" | "warning" | "danger";
   availableActions: PeginAction[];
   message?: string;
   awaitingPayoutPrep?: boolean;
@@ -105,10 +110,19 @@ export interface PeginState {
   refundMaturesInBlocks?: number;
   /**
    * Short message intended for the inline subtext slot under the amount
-   * (e.g. "Refund available in ~18 blocks (~3h)"). The full sentence stays
-   * in `message` for the tooltip. Set for maturing / unknown EXPIRED only.
+   * (e.g. "Your refund will be claimable in ~18 blocks (~3h)"). The full sentence stays
+   * in `message` for the tooltip. Set for maturing / unknown EXPIRED, and for
+   * a VERIFIED vault waiting out the activation floor — that second producer
+   * is why the row prefers this over the step counter.
    */
   inlineSubtext?: string;
+  /**
+   * Set ONLY when the activation-floor branch rendered — i.e. the floor is the
+   * reason there is no action. Lets `getActionStatus` tell that apart from the
+   * other VERIFIED no-action states (activation submitted, deadline expired),
+   * which must keep their own presentation and their View-details control.
+   */
+  activationFloorBlocksRemaining?: number | null;
 }
 
 export interface GetPeginStateOptions {
@@ -137,6 +151,41 @@ export interface GetPeginStateOptions {
   expirationReason?: ExpirationReason;
   expiredAt?: number;
   /**
+   * VERIFIED only: the on-chain activation window has closed
+   * (`block.number > createdAt + pegInActivationTimeout`), so
+   * `activateVaultWithSecret` would revert ActivationDeadlineExpired.
+   * Confirmed by an authoritative chain read; a UX-only gate that strips
+   * ACTIVATE_VAULT and flips the badge to Expired. Fail-safe default: false.
+   */
+  activationDeadlinePassed?: boolean;
+  /**
+   * VERIFIED only: the Pre-PegIn HTLC outpoint is spent on Bitcoin (mempool
+   * or block) BY THE PEGIN TRANSACTION while the vault is still Verified on
+   * Ethereum — the secret was revealed without the vault activating (e.g. a
+   * reverted activation leaked it via calldata) and the peg-in was swept.
+   * The stuck state: activation returned no collateral and the CSV refund
+   * can never broadcast. Drives the "Activation incomplete" display and the
+   * activate-and-redeem escape hatch.
+   *
+   * The deriver proves the spender (`spendingTxid` equals the PegIn txid)
+   * before setting this — a bare spend can equally be the depositor's own
+   * CSV refund, which must keep the normal flow. Fail-safe default: false
+   * (missing or ambiguous probe data keeps the normal flow).
+   */
+  htlcSpentByPeginTx?: boolean;
+  /**
+   * Blocks still to wait before `activateVaultWithSecret` is permitted — the
+   * registry's lower bound (`verifiedAt + peginActivationDelay`). The opposite
+   * end of the window from `activationDeadlinePassed`, and deliberately a
+   * separate field: this vault is healthy and waiting, NOT expired, so it must
+   * keep the pending variant and its progress step.
+   *
+   * - `undefined` → not gated (window open, or the feature is off)
+   * - `number` → gated, that many blocks remain
+   * - `null` → gated, remaining unknown (a chain read failed; fail-closed)
+   */
+  activationFloorBlocksRemaining?: number | null;
+  /**
    * True only when the deposit can be refunded *now*: the Pre-PegIn tx
    * exists AND the HTLC CSV timelock (`tRefund`) has elapsed. The
    * frontend computes this composite — the SDK-level protocol state
@@ -151,6 +200,14 @@ export interface GetPeginStateOptions {
   refundMaturityState?: RefundMaturityState;
   /** Blocks remaining until CSV maturity; set only when `maturing`. */
   refundMaturesInBlocks?: number;
+  /**
+   * Chain-derived refund settlement for an EXPIRED vault, from probing the
+   * HTLC outpoint's spend status. `confirmed` = the refund landed in a block
+   * (terminal); `pending` = the refund is in the mempool. Overrides the
+   * localStorage REFUND_BROADCAST optimistic state (chain is ground truth);
+   * paired with `canRefund=false` so a settled refund can't be re-broadcast.
+   */
+  refundSettlement?: "confirmed" | "pending";
   vpTerminalError?: string;
   /**
    * `Date.now()` value captured when the refund tx was broadcast. Anchors
@@ -174,7 +231,7 @@ const REFUND_BROADCAST_SUPPRESSION_MS = 6 * 60 * 60 * 1000;
 // Expiration helpers
 // ============================================================================
 
-const EXPIRATION_REASON_LABELS: Record<ExpirationReason, string> =
+const EXPIRATION_REASON_LABELS: Record<ExpirationReason, string | null> =
   COPY.pegin.expiration.reasons;
 
 function formatExpiredTimeAgo(timestamp: number): string {
@@ -217,19 +274,86 @@ export function canPerformAction(
 }
 
 /**
+ * True when an EXPIRED vault's refund is already in flight (Refunding — our own
+ * broadcast, or an HTLC spend the mempool probe sees) or settled (Refunded).
+ * Both labels are produced only in the EXPIRED branch, so this is the
+ * display-layer signal that the refund modal has nothing left to do.
+ */
+export function isRefundInFlightOrSettled(state: PeginState): boolean {
+  return (
+    state.displayLabel === PEGIN_DISPLAY_LABELS.REFUNDING ||
+    state.displayLabel === PEGIN_DISPLAY_LABELS.REFUNDED
+  );
+}
+
+/**
  * PegIn actions a depositor can drive inline from the deposit flow.
  *
  * Excludes:
  *  - `NONE` — sentinel for "no action."
- *  - `SIGN_AND_BROADCAST_TO_BITCOIN` — handled by the linear deposit flow and
- *    the dashboard resume path, never by the post-deposit continuation.
+ *  - `SIGN_AND_BROADCAST_TO_BITCOIN` — the shared Pre-PegIn broadcast. It's a
+ *    single step every batch sibling shares, not a per-vault divergent one, so
+ *    it doesn't belong in the "which sibling needs attention" set. The
+ *    post-deposit continuation does drive broadcast (via its own branch +
+ *    a local actionable check), but selection there never needs to prefer one
+ *    sibling over another for it.
  *  - `REFUND_HTLC` — a terminal escape hatch, not an in-flow next step.
+ *  - `ACTIVATE_AND_REDEEM` — like the refund, a recovery escape hatch with
+ *    its own dedicated modal (EmergencyWithdrawModal), not an in-flow step.
  */
 export const USER_ACTIONABLE_PEGIN_ACTIONS: ReadonlySet<PeginAction> = new Set([
   PeginAction.SUBMIT_WOTS_KEY,
   PeginAction.SIGN_PAYOUT_TRANSACTIONS,
   PeginAction.ACTIVATE_VAULT,
 ]);
+
+/**
+ * Whether a vault is still a candidate for an inline continuation action: it
+ * exists, is not past activation, and is not in a warning/danger display state.
+ * Shared by the post-deposit continuation view (which sibling to surface) and
+ * the signing-required notification observer (which deposits to nudge) so the
+ * two never drift on "which deposits are actionable".
+ */
+export function isCandidateVault(state: PeginState | undefined): boolean {
+  return (
+    !!state &&
+    !isVaultPastActivation(state) &&
+    state.displayVariant !== "warning" &&
+    state.displayVariant !== "danger"
+  );
+}
+
+/**
+ * Whether a single pegin action is one the depositor can drive inline right
+ * now: the user-actionable set plus the shared Pre-PegIn broadcast (which
+ * `USER_ACTIONABLE_PEGIN_ACTIONS` deliberately omits). Payout signing also
+ * needs the depositor's BTC public key to render its resume branch, so it only
+ * counts once `btcPublicKey` is known.
+ */
+export function isActionablePeginAction(
+  action: PeginAction,
+  btcPublicKey: string | undefined,
+): boolean {
+  if (action === PeginAction.SIGN_AND_BROADCAST_TO_BITCOIN) return true;
+  if (!USER_ACTIONABLE_PEGIN_ACTIONS.has(action)) return false;
+  if (action === PeginAction.SIGN_PAYOUT_TRANSACTIONS) {
+    return btcPublicKey !== undefined;
+  }
+  return true;
+}
+
+/**
+ * Whether a vault has any action the depositor can drive inline right now.
+ */
+export function hasActionableStep(
+  state: PeginState | undefined,
+  btcPublicKey: string | undefined,
+): boolean {
+  if (!state) return false;
+  return (state.availableActions ?? []).some((action) =>
+    isActionablePeginAction(action, btcPublicKey),
+  );
+}
 
 // ============================================================================
 // getPeginState — frontend display layer on top of SDK protocol state
@@ -242,6 +366,7 @@ const SDK_TO_VAULT_ACTION: Record<string, PeginAction> = {
   [SdkPeginAction.SIGN_AND_BROADCAST_TO_BITCOIN]:
     PeginAction.SIGN_AND_BROADCAST_TO_BITCOIN,
   [SdkPeginAction.ACTIVATE_VAULT]: PeginAction.ACTIVATE_VAULT,
+  [SdkPeginAction.ACTIVATE_AND_REDEEM]: PeginAction.ACTIVATE_AND_REDEEM,
   [SdkPeginAction.REFUND_HTLC]: PeginAction.REFUND_HTLC,
 };
 
@@ -266,6 +391,7 @@ export function getPeginState(
     pendingIngestion: options.pendingIngestion,
     canRefund: options.canRefund,
     hasProviderTerminalFailure: !!options.vpTerminalError,
+    htlcSpentByPeginTx: options.htlcSpentByPeginTx,
   });
 
   const sdkActions = applyTrackingOverrides(
@@ -295,13 +421,43 @@ export function getPeginState(
           (a) => a !== SdkPeginAction.SIGN_AND_BROADCAST_TO_BITCOIN,
         )
       : sdkActions;
-  const actions = mapActions(chainAdjustedActions);
+  // VERIFIED past its on-chain activation deadline: the contract would revert
+  // ActivationDeadlineExpired, so strip the now-futile actions — both the
+  // normal activation and the activate-and-redeem escape hatch run the same
+  // deadline check on-chain. UX only — confirmed by an authoritative chain
+  // read; missing/error data leaves the actions in place (fail-safe). Mirrors
+  // the broadcast filter above.
+  const deadlineAdjustedActions =
+    contractStatus === ContractStatus.VERIFIED &&
+    options.activationDeadlinePassed === true
+      ? chainAdjustedActions.filter(
+          (a) =>
+            a !== SdkPeginAction.ACTIVATE_VAULT &&
+            a !== SdkPeginAction.ACTIVATE_AND_REDEEM,
+        )
+      : chainAdjustedActions;
+  // VERIFIED but before its on-chain activation floor: the contract would
+  // revert ActivationDelayNotElapsed. Strips the same action as the deadline
+  // filter above, but for the opposite reason — too early, not too late — and
+  // unlike that one this state is transient and resolves on its own. Fails
+  // CLOSED: `null` (remaining unknown) also strips, because an unresolved
+  // floor must not let the secret reach simulation calldata.
+  const floorAdjustedActions =
+    contractStatus === ContractStatus.VERIFIED &&
+    isActivationFloorGating(options.activationFloorBlocksRemaining)
+      ? deadlineAdjustedActions.filter(
+          (a) => a !== SdkPeginAction.ACTIVATE_VAULT,
+        )
+      : deadlineAdjustedActions;
+  const actions = mapActions(floorAdjustedActions);
   const display = getDisplay(contractStatus, actions, options);
 
   return {
     contractStatus,
     localStatus: options.localStatus,
     availableActions: actions,
+    // `activationFloorBlocksRemaining` rides in on `display` — set by the floor
+    // branch alone, so it marks that branch rather than every VERIFIED vault.
     ...display,
   };
 }
@@ -386,12 +542,27 @@ function isRefundBroadcastWithinTtl(
 ): boolean {
   if (refundBroadcastAt === undefined) return false;
   const currentTime = now ?? Date.now();
-  return currentTime - refundBroadcastAt < REFUND_BROADCAST_SUPPRESSION_MS;
+  const elapsedMs = currentTime - refundBroadcastAt;
+  // A timestamp ahead of the clock (backwards wall-clock jump after the
+  // broadcast was recorded) reads as negative elapsed — inside the window
+  // under a bare `< TTL` for as long as the clock stays behind, so the
+  // suppression would outlast the TTL by the size of the jump. Expired is
+  // the safe reading, same as the missing-timestamp case above: the user
+  // can always retry, and a duplicate broadcast is rejected by the network.
+  return elapsedMs >= 0 && elapsedMs < REFUND_BROADCAST_SUPPRESSION_MS;
 }
 
 interface DisplayInfo {
   displayLabel: PeginDisplayLabel;
-  displayVariant: "pending" | "active" | "inactive" | "warning";
+  /**
+   * Set only by the activation-floor branch. Living here rather than being
+   * copied from options onto every VERIFIED state is what lets consumers read
+   * it as "the floor is why there is no action" — a VERIFIED vault that is
+   * Processing or past its deadline also has no action, and must not be
+   * mistaken for one that is waiting out the floor.
+   */
+  activationFloorBlocksRemaining?: number | null;
+  displayVariant: "pending" | "active" | "inactive" | "warning" | "danger";
   message?: string;
   awaitingPayoutPrep?: boolean;
   refundMaturityState?: RefundMaturityState;
@@ -504,6 +675,68 @@ function getDisplay(
         message: COPY.pegin.messages.activationSubmitted,
       };
     }
+    // Activation window closed on-chain — present as terminal-expired in place
+    // (the indexer flips to EXPIRED later). `warning` variant also suppresses
+    // the progress step via getPeginDisplayStep. Checked before `htlcSpentByPeginTx`:
+    // past the deadline the escape hatch reverts too, so the stuck-state
+    // display would advertise an action that is already stripped above.
+    if (options.activationDeadlinePassed) {
+      return {
+        displayLabel: PEGIN_DISPLAY_LABELS.EXPIRED,
+        displayVariant: "warning",
+        message: buildExpiredMessage("activation_timeout", expiredAt),
+      };
+    }
+    // Stuck state: the peg-in was swept on Bitcoin but the vault never
+    // activated (secret leaked via a reverted/foreign activation attempt).
+    // "Ready to activate" would be wrong — activation returns no collateral
+    // and the refund outpoint is gone. Explain what happened and surface the
+    // activate-and-redeem escape hatch instead. The tone is deliberately
+    // reassuring (amber warning, "not lost" copy, always-visible subtext):
+    // the state looks like lost funds but is fully recoverable.
+    if (options.htlcSpentByPeginTx) {
+      return {
+        displayLabel: PEGIN_DISPLAY_LABELS.ACTIVATION_INCOMPLETE,
+        displayVariant: "warning",
+        message: COPY.pegin.messages.activationIncomplete,
+        inlineSubtext: COPY.pegin.messages.activationIncompleteSubtext,
+      };
+    }
+    // Verified, but the activation floor has not elapsed. Checked AFTER the
+    // deadline and stuck-state branches: both of those are real problems, and
+    // once the peg-in has been swept it no longer matters how long until
+    // activation opens. Keeps the pending variant deliberately — this vault is
+    // healthy and simply waiting, so it must not read as expired and must keep
+    // its progress step.
+    if (isActivationFloorGating(options.activationFloorBlocksRemaining)) {
+      const blocks = options.activationFloorBlocksRemaining;
+      return {
+        // NOT "Ready to activate" — it demonstrably is not, and pairing that
+        // badge with a disabled button and a countdown reads as a broken UI.
+        displayLabel: PEGIN_DISPLAY_LABELS.AWAITING_ACTIVATION_WINDOW,
+        displayVariant: "pending",
+        // A null remainder means a chain read failed, so no numbers are
+        // quoted — the wait is real but its length is not known.
+        activationFloorBlocksRemaining: blocks,
+        // Always-visible; `message` alone would hide the wait behind an
+        // info-icon tooltip, which is exactly the silent wait this feature
+        // exists to remove (and is unreachable on touch).
+        inlineSubtext:
+          blocks === null
+            ? COPY.pegin.messages.activationWindowSubtextUnknown
+            : COPY.pegin.messages.activationWindowSubtext(
+                blocks,
+                activationFloorMinutesRemaining(blocks),
+              ),
+        message:
+          blocks === null
+            ? COPY.pegin.messages.activationWindowTooltip
+            : COPY.pegin.messages.activationWindowOpening(
+                blocks,
+                activationFloorMinutesRemaining(blocks),
+              ),
+      };
+    }
     return {
       displayLabel: PEGIN_DISPLAY_LABELS.READY_TO_ACTIVATE,
       displayVariant: "pending",
@@ -536,12 +769,29 @@ function getDisplay(
   if (contractStatus === ContractStatus.LIQUIDATED) {
     return {
       displayLabel: PEGIN_DISPLAY_LABELS.LIQUIDATED,
-      displayVariant: "warning",
+      displayVariant: "danger",
       message: COPY.pegin.messages.liquidated,
     };
   }
 
   if (contractStatus === ContractStatus.EXPIRED) {
+    // Chain ground truth: the HTLC output is already spent. Overrides the
+    // localStorage optimistic state and (with `canRefund=false`) stops the
+    // dashboard re-offering a refund that Bitcoin would reject.
+    if (options.refundSettlement === "confirmed") {
+      return {
+        displayLabel: PEGIN_DISPLAY_LABELS.REFUNDED,
+        displayVariant: "inactive",
+        message: COPY.pegin.messages.refundComplete,
+      };
+    }
+    if (options.refundSettlement === "pending") {
+      return {
+        displayLabel: PEGIN_DISPLAY_LABELS.REFUNDING,
+        displayVariant: "pending",
+        message: COPY.pegin.messages.refundBroadcast,
+      };
+    }
     if (
       localStatus === LocalStorageStatus.REFUND_BROADCAST &&
       isRefundBroadcastWithinTtl(refundBroadcastAt, now)
@@ -568,9 +818,9 @@ function getDisplay(
           (refundMaturesInBlocks * BTC_BLOCK_TIME_MINS) / MINS_PER_HOUR,
         ),
       );
-      // Tooltip stays focused on the expired reason + when; the countdown
-      // lives in `inlineSubtext` so the user doesn't need to hover to see
-      // the actionable info.
+      // Tooltip stays focused on the expiry itself (the reason, where we
+      // have one to give, and when); the countdown lives in `inlineSubtext`
+      // so the user doesn't need to hover to see the actionable info.
       return {
         displayLabel: PEGIN_DISPLAY_LABELS.EXPIRED,
         displayVariant: "warning",
@@ -656,6 +906,12 @@ export function getPrimaryActionButton(state: PeginState): {
       action: PeginAction.ACTIVATE_VAULT,
     };
   }
+  if (state.availableActions.includes(PeginAction.ACTIVATE_AND_REDEEM)) {
+    return {
+      label: COPY.pegin.primaryAction.ACTIVATE_AND_REDEEM,
+      action: PeginAction.ACTIVATE_AND_REDEEM,
+    };
+  }
   if (state.availableActions.includes(PeginAction.REFUND_HTLC)) {
     return {
       label: COPY.pegin.primaryAction.REFUND_HTLC,
@@ -689,7 +945,8 @@ export function getPeginDisplayStep(state: PeginState): DepositFlowStep | null {
   // A warning state (e.g. a terminal provider failure, expired, liquidated,
   // invalid) is not in-progress — never show a step/progress bar for it, so a
   // failed deposit doesn't look like it is still advancing.
-  if (state.displayVariant === "warning") return null;
+  if (state.displayVariant === "warning" || state.displayVariant === "danger")
+    return null;
 
   if (contractStatus === ContractStatus.PENDING) {
     if (availableActions.includes(PeginAction.SIGN_AND_BROADCAST_TO_BITCOIN)) {
@@ -731,6 +988,30 @@ export function getPeginDisplayStep(state: PeginState): DepositFlowStep | null {
   return null;
 }
 
+/**
+ * Freeze a warning/terminal vault at the last locally-known deposit-flow step.
+ *
+ * Warning states intentionally do not return a normal display step: they are
+ * not actively progressing. This helper gives the multistepper a truthful
+ * place to stop instead of mirroring another sibling or defaulting to success.
+ */
+export function getWarningPeginDisplayStep(
+  localStatus: LocalStorageStatus | undefined,
+): DepositFlowStep {
+  switch (localStatus) {
+    case LocalStorageStatus.CONFIRMED:
+      return DepositFlowStep.ACTIVATE_VAULT;
+    case LocalStorageStatus.PAYOUT_SIGNED:
+      return DepositFlowStep.AWAIT_VP_VERIFICATION;
+    case LocalStorageStatus.CONFIRMING:
+      return DepositFlowStep.AWAIT_BTC_CONFIRMATION;
+    case LocalStorageStatus.PENDING:
+      return DepositFlowStep.BROADCAST_PRE_PEGIN;
+    default:
+      return DepositFlowStep.AWAIT_BTC_CONFIRMATION;
+  }
+}
+
 // ============================================================================
 // State Transition Helpers
 // ============================================================================
@@ -743,7 +1024,11 @@ export function getNextLocalStatus(
       return LocalStorageStatus.PAYOUT_SIGNED;
     case PeginAction.SIGN_AND_BROADCAST_TO_BITCOIN:
       return LocalStorageStatus.CONFIRMING;
+    // The escape hatch also reveals the secret on-chain; CONFIRMED marks
+    // "reveal submitted, waiting for the indexer" in both modes (the
+    // contract then reports REDEEMED instead of ACTIVE).
     case PeginAction.ACTIVATE_VAULT:
+    case PeginAction.ACTIVATE_AND_REDEEM:
       return LocalStorageStatus.CONFIRMED;
     default:
       return null;
@@ -771,6 +1056,24 @@ export function isVaultPastActivation(state: PeginState | undefined): boolean {
     contractStatus === ContractStatus.REDEEMED ||
     contractStatus === ContractStatus.LIQUIDATED ||
     contractStatus === ContractStatus.DEPOSITOR_WITHDRAWN
+  );
+}
+
+/**
+ * True only when the vault is *successfully activated* — `ACTIVE` on-chain, or
+ * the optimistic `VERIFIED + CONFIRMED` state while the indexer catches up.
+ *
+ * Narrower than {@link isVaultPastActivation}, which also counts terminal
+ * REDEEMED/LIQUIDATED/WITHDRAWN states. Use this for the activation-success
+ * messaging so a liquidated/redeemed sibling can never read as "activated".
+ */
+export function isVaultActivated(state: PeginState | undefined): boolean {
+  if (!state) return false;
+  const { contractStatus, localStatus } = state;
+  if (contractStatus === ContractStatus.ACTIVE) return true;
+  return (
+    contractStatus === ContractStatus.VERIFIED &&
+    localStatus === LocalStorageStatus.CONFIRMED
   );
 }
 

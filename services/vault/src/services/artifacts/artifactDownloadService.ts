@@ -1,66 +1,135 @@
 /**
- * Service for fetching and downloading BaBe Decryptor artifacts.
+ * Service for fetching and saving BaBe Decryptor artifacts.
  *
- * These artifacts are required for the depositor to independently claim
- * their vault funds. They are retrieved from the vault provider after
- * the WOTS key has been submitted and the vault is fully set up.
+ * These artifacts are what lets a depositor claim their vault funds without
+ * the vault provider's cooperation, so a download that "succeeded" without
+ * producing a valid, complete file on disk is a silent loss of that recovery
+ * path. Two things follow from that:
  *
- * Artifacts can be very large (~450 MB today). The raw response body is
- * retained as a Blob so the download step does not need to re-serialize
- * it, and payloads above an RPC-error-sized threshold are not parsed on
- * the main thread (doing so would risk exceeding V8's string length limit
- * or freezing the tab). Full schema validation of the artifact body is
- * deferred until the backend delivers artifacts via streaming; for now
- * only small responses (expected to be JSON-RPC error envelopes) are
- * parsed and validated.
+ * - **Validation is mandatory and covers the whole body.** The payload is
+ *   ~1.3 GB and cannot be parsed with `JSON.parse`, so it is checked
+ *   incrementally by {@link ArtifactStreamValidator} as it streams. Nothing
+ *   is skipped on the basis of size.
+ * - **Success means the bytes are durably saved**, not that a fetch resolved.
+ *   The body is piped into an {@link ArtifactSaveTarget} and only committed
+ *   after the validator has seen the closing brace.
+ *
+ * Bytes are validated, hashed, and written chunk-by-chunk in a single pass,
+ * so the full body is never held in memory on the File System Access path.
+ *
+ * The bundle is also bound to the deposit it was requested for: the envelope
+ * names no vault, but the transaction graph inside it does, so its claim and
+ * payout transactions are checked against the requested pegin txid and its
+ * depositor key against the requested one. See `artifactBinding.ts`.
+ *
+ * What this does NOT establish: that the artifact bytes decrypt correctly. No
+ * client-side BaBe verifier exists, so the payload is proven well-formed and
+ * addressed to this deposit, never proven usable.
  */
 
 import { stripHexPrefix } from "@babylonlabs-io/ts-sdk/tbv/core";
 import {
-  JSON_RPC_ERROR_CODES,
   JsonRpcClient,
-  JsonRpcError,
-  validateRequestDepositorClaimerArtifactsResponse,
   VpResponseValidationError,
   vpTokenRegistry,
 } from "@babylonlabs-io/ts-sdk/tbv/core/clients";
+import { sha256 } from "@noble/hashes/sha2.js";
+import { bytesToHex } from "@noble/hashes/utils.js";
 
+import { logger } from "@/infrastructure";
 import { getVpProxyUrl } from "@/utils/rpc";
+
+import {
+  assertBundleBoundToVault,
+  type VaultBindingContext,
+} from "./artifactBinding";
+import type {
+  ArtifactSaveMethod,
+  ArtifactSaveStream,
+  ArtifactSaveTarget,
+} from "./artifactSaveTarget";
+import {
+  ArtifactDownloadCancelledError,
+  ArtifactDownloadTooLargeError,
+} from "./errors";
+import { ArtifactStreamValidator } from "./streamingArtifactValidator";
 
 /** Timeout for the artifact request RPC call (artifacts can be large). */
 const RPC_TIMEOUT_MS = 120 * 1000;
 
 /**
- * Error responses are typically small; artifact payloads can be hundreds
- * of MB. Only responses under this threshold are parsed on the main thread.
+ * Fallback total used by the progress bar when the server omits
+ * Content-Length — which the streaming proxy always does.
+ *
+ * A measured vault-devnet bundle is 1,410,824,702 bytes (8 challengers at
+ * ~176 MB of hex each). The estimate sits above that so the displayed
+ * percentage does not saturate before the transfer finishes; the card clamps
+ * to 100% regardless, so an undershoot is cosmetic rather than harmful.
  */
-const ERROR_RESPONSE_SIZE_THRESHOLD = 4096;
+const ARTIFACT_TOTAL_FALLBACK_BYTES = 1_600_000_000;
+
+export interface FetchArtifactsOptions {
+  /**
+   * Invoked after each chunk read from the response body. `totalBytes`
+   * comes from Content-Length when present, otherwise falls back to a
+   * fixed estimate (the server does not always send a length header).
+   */
+  onProgress?: (receivedBytes: number, totalBytes: number) => void;
+  /**
+   * Polled between chunk reads. Returning true cancels the in-flight
+   * stream — used so the modal's Cancel path actually releases the
+   * connection instead of pulling bytes in the background.
+   */
+  isCancelled?: () => boolean;
+  /**
+   * Aborts the underlying request (threaded into `callRaw` → `fetch`).
+   * Unlike `isCancelled`, which is only polled *between* chunk reads, this
+   * unblocks a `reader.read()` stalled on a silent connection, so Cancel
+   * releases the socket immediately instead of hanging until the next byte,
+   * EOF, or the RPC timeout.
+   */
+  signal?: AbortSignal;
+}
+
+/** Evidence that a validated bundle was written to disk. */
+export interface ArtifactDownloadOutcome {
+  filename: string;
+  byteLength: number;
+  /** SHA-256 of the response body, computed during the same streaming pass. */
+  sha256: string;
+  method: ArtifactSaveMethod;
+}
 
 /**
- * Fetch artifacts from the vault provider and trigger a browser file download.
+ * Fetch artifacts from the vault provider, validate them as they stream, and
+ * save them to `target`.
  *
- * Uses JsonRpcClient.callRaw() so the raw response body can be preserved
- * as a Blob for download without a separate re-serialization pass. The
- * payload is parsed once for schema validation and the download is only
- * triggered after validation succeeds.
+ * Resolves only when the whole body has been validated and durably written.
+ * Throws `JsonRpcError` for an error envelope, `VpResponseValidationError` for
+ * a malformed or truncated payload, `ArtifactFileAccessError` when the save
+ * fails, and `ArtifactDownloadCancelledError` when the caller cancels.
  *
  * @param providerAddress - Vault provider's Ethereum address.
  * @param peginTxid       - Bitcoin pegin transaction ID (hex, with or without 0x prefix).
  * @param depositorPk     - Depositor's Bitcoin public key.
+ * @param target          - Where to write; obtained from `openArtifactSaveTarget`.
  */
 export async function fetchAndDownloadArtifacts(
   providerAddress: string,
   peginTxid: string,
   depositorPk: string,
-): Promise<void> {
+  target: ArtifactSaveTarget,
+  options?: FetchArtifactsOptions,
+): Promise<ArtifactDownloadOutcome> {
   const normalizedPeginTxid = stripHexPrefix(peginTxid);
 
   // The caller (useArtifactDownload) primes the bearer before invoking
   // this service when the registry is cold, so peek() returns the active
   // provider and the request goes out with a valid Authorization header
-  // for this auth-gated RPC. `callRaw` does not reactively refresh on
-  // `auth_expired`, so a token that expires mid-download bubbles up as
-  // an error and the caller's auth-failure retry path handles re-priming.
+  // for this auth-gated RPC. `callRaw` does not reactively refresh when the
+  // server rejects the bearer, so a token that goes stale mid-download
+  // bubbles up as an error and the caller's auth-failure retry path handles
+  // re-priming.
   const tokenProvider = vpTokenRegistry.peek(normalizedPeginTxid);
 
   const client = new JsonRpcClient({
@@ -71,90 +140,153 @@ export async function fetchAndDownloadArtifacts(
     tokenProvider,
   });
 
-  const response = await client.callRaw(
-    "vaultProvider_requestDepositorClaimerArtifacts",
-    {
-      pegin_txid: normalizedPeginTxid,
-      depositor_pk: stripHexPrefix(depositorPk),
-    },
-  );
-
-  const buffer = await response.arrayBuffer();
-  const blob = new Blob([buffer], { type: "application/json" });
-
-  validateArtifactPayload(buffer);
-
-  triggerBlobDownload(blob, peginTxid);
-}
-
-/**
- * Parse the raw JSON-RPC response and validate the artifact payload against
- * its runtime schema. Throws JsonRpcError for RPC-level errors and
- * VpResponseValidationError for malformed or incomplete artifact data.
- *
- * Payloads above ERROR_RESPONSE_SIZE_THRESHOLD are assumed to be real
- * artifact responses and are passed through without parsing - parsing a
- * ~450 MB payload on the main thread would likely exceed V8's string
- * length limit or freeze the tab.
- */
-function validateArtifactPayload(buffer: ArrayBuffer): void {
-  if (buffer.byteLength >= ERROR_RESPONSE_SIZE_THRESHOLD) {
-    return;
-  }
-
-  const text = new TextDecoder("utf-8").decode(buffer);
-
-  let envelope: unknown;
+  let response: Response;
   try {
-    envelope = JSON.parse(text);
-  } catch {
-    throw new VpResponseValidationError(
-      "Artifact response body is not valid JSON",
+    response = await client.callRaw(
+      "vaultProvider_requestDepositorClaimerArtifacts",
+      {
+        pegin_txid: normalizedPeginTxid,
+        depositor_pk: stripHexPrefix(depositorPk),
+      },
+      options?.signal,
     );
+  } catch (err) {
+    throw normalizeCancellation(err, options);
   }
 
-  if (
-    envelope === null ||
-    typeof envelope !== "object" ||
-    Array.isArray(envelope)
-  ) {
-    throw new VpResponseValidationError(
-      "Artifact response envelope is not a JSON object",
-    );
-  }
-
-  const record = envelope as Record<string, unknown>;
-
-  if ("error" in record && record.error != null) {
-    const err = record.error as Record<string, unknown>;
-    const code =
-      typeof err.code === "number"
-        ? err.code
-        : JSON_RPC_ERROR_CODES.INVALID_RESPONSE;
-    const message =
-      typeof err.message === "string" ? err.message : "Unknown RPC error";
-    throw new JsonRpcError(code, message, "wire", err.data);
-  }
-
-  if (!("result" in record)) {
-    throw new VpResponseValidationError(
-      "Artifact response envelope is missing the result field",
-    );
-  }
-
-  validateRequestDepositorClaimerArtifactsResponse(record.result);
+  return downloadArtifactsFromResponse(response, target, options, {
+    peginTxid: normalizedPeginTxid,
+    depositorPk,
+  });
 }
 
 /**
- * Trigger a browser file download from a Blob.
+ * Read the body once, feeding every chunk through the validator, the digest,
+ * and the save stream in that order. Validating before writing means a
+ * rejected chunk never reaches disk.
+ *
+ * Exported so the dev-only artifact mock can drive the real pipeline from a
+ * synthetic response: a simulation that skipped validation and the file sink
+ * would not exercise anything worth exercising.
  */
-function triggerBlobDownload(blob: Blob, peginTxid: string): void {
-  const url = URL.createObjectURL(blob);
-  const anchor = document.createElement("a");
-  anchor.href = url;
-  anchor.download = `babylon-vault-artifacts-${stripHexPrefix(peginTxid).slice(0, 8)}.json`;
-  document.body.appendChild(anchor);
-  anchor.click();
-  document.body.removeChild(anchor);
-  URL.revokeObjectURL(url);
+export async function downloadArtifactsFromResponse(
+  response: Response,
+  target: ArtifactSaveTarget,
+  options: FetchArtifactsOptions | undefined,
+  binding: VaultBindingContext,
+): Promise<ArtifactDownloadOutcome> {
+  if (!response.body) {
+    // Every real transport gives a readable stream; without one we cannot
+    // validate incrementally, and silently buffering instead would reinstate
+    // the unbounded-memory path this service exists to remove.
+    throw new VpResponseValidationError(
+      "Artifact response body is not readable as a stream",
+    );
+  }
+
+  const contentLengthHeader = response.headers.get("content-length");
+  const headerTotal = contentLengthHeader ? Number(contentLengthHeader) : NaN;
+  const totalBytes =
+    Number.isFinite(headerTotal) && headerTotal > 0
+      ? headerTotal
+      : ARTIFACT_TOTAL_FALLBACK_BYTES;
+
+  const stream = await target.open();
+  const validator = new ArtifactStreamValidator();
+  const hasher = sha256.create();
+  const reader = response.body.getReader();
+  let received = 0;
+
+  options?.onProgress?.(0, totalBytes);
+
+  try {
+    while (true) {
+      if (options?.isCancelled?.()) {
+        await reader.cancel().catch(() => undefined);
+        throw new ArtifactDownloadCancelledError();
+      }
+
+      let chunk: ReadableStreamReadResult<Uint8Array<ArrayBuffer>>;
+      try {
+        chunk = await reader.read();
+      } catch (err) {
+        throw normalizeCancellation(err, options);
+      }
+      if (chunk.done) break;
+      if (!chunk.value) continue;
+
+      received += chunk.value.byteLength;
+      if (received > target.maxBytes) {
+        throw new ArtifactDownloadTooLargeError(received, target.maxBytes);
+      }
+
+      validator.update(chunk.value);
+      hasher.update(chunk.value);
+      await stream.write(chunk.value);
+
+      options?.onProgress?.(received, totalBytes);
+    }
+
+    // Rejects a truncated document — the proxy signals a mid-stream backend
+    // failure by destroying the connection, not by sending an error envelope.
+    const validated = validator.finish();
+
+    // Schema-valid is not the same as ours: nothing in the envelope names the
+    // deposit, so the tx graph is what proves the bundle belongs to it.
+    assertBundleBoundToVault(
+      validated.txGraph,
+      Object.keys(validated.result.babe_sessions),
+      binding,
+    );
+  } catch (err) {
+    await discardQuietly(stream);
+    throw err;
+  } finally {
+    reader.releaseLock();
+  }
+
+  try {
+    await stream.commit();
+  } catch (err) {
+    // A rejected close leaves the writable un-aborted, so its temporary file
+    // can linger until the browser reclaims it. Abandon the transaction
+    // explicitly rather than relying on that.
+    await discardQuietly(stream);
+    throw err;
+  }
+
+  return {
+    filename: target.filename,
+    byteLength: received,
+    sha256: bytesToHex(hasher.digest()),
+    method: target.method,
+  };
+}
+
+/**
+ * A cancellation can surface as our own sentinel, the RPC client's "Request
+ * aborted", or a DOM AbortError. Normalize all of them so the caller's catch
+ * swallows the cancel instead of rendering it as a download failure.
+ */
+function normalizeCancellation(
+  err: unknown,
+  options: FetchArtifactsOptions | undefined,
+): unknown {
+  if (err instanceof ArtifactDownloadCancelledError) return err;
+  if (options?.signal?.aborted || options?.isCancelled?.()) {
+    return new ArtifactDownloadCancelledError();
+  }
+  return err;
+}
+
+/** Never let a cleanup failure mask the error that caused the cleanup. */
+async function discardQuietly(stream: ArtifactSaveStream): Promise<void> {
+  try {
+    await stream.discard();
+  } catch (discardErr) {
+    logger.warn("Failed to discard the partial artifact download", {
+      category: "activation",
+      reason: String(discardErr),
+    });
+  }
 }

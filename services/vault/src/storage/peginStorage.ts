@@ -58,12 +58,33 @@ export interface PendingPeginRequest {
   // REFUND_BROADCAST entries (written by `useRefundState`) are tracking
   // records that never drive a Pre-PegIn broadcast and don't need them.
   // For broadcastable statuses (PENDING / PAYOUT_SIGNED / CONFIRMING) the
-  // storage validator requires all three; legacy entries from before this
+  // storage validator requires all of them; legacy entries from before this
   // guard land without them and are filtered out of `getPendingPegins`,
-  // making them non-broadcastable through the in-app button.
+  // making them non-broadcastable through the in-app button. Exception:
+  // records missing ONLY `buildVaultCoreVersion` are backfilled to 1 on
+  // read (see `backfillBuildVaultCoreVersion`).
   buildOffchainParamsVersion?: number;
   buildAppVaultKeepersVersion?: number;
   buildUniversalChallengersVersion?: number;
+  buildVaultCoreVersion?: number;
+  /**
+   * RFC-006 participant operation keys the Pre-PegIn scripts were built with
+   * (x-only, lowercase, no `0x`; the two sets lex-sorted).
+   *
+   * Stored as *keys* rather than the vault's key epochs on purpose: keys are
+   * directly comparable, whereas epochs would need the frozen roster re-derived
+   * before they meant anything. Asserted before a resume broadcast so a
+   * rotation that landed after the build cannot be broadcast against.
+   *
+   * Optional: absent on records written before this shipped, on legacy records,
+   * and on REFUND_BROADCAST tracking entries. Absent simply skips the check —
+   * the versions guard above still applies.
+   */
+  buildParticipantOperationKeys?: {
+    vaultProvider: string;
+    vaultKeepers: string[];
+    universalChallengers: string[];
+  };
 }
 
 // Hex with optional 0x prefix and at least one byte (even-length).
@@ -204,6 +225,7 @@ function hasValidSecurityFields(entry: unknown): entry is PendingPeginRequest {
     "buildOffchainParamsVersion",
     "buildAppVaultKeepersVersion",
     "buildUniversalChallengersVersion",
+    "buildVaultCoreVersion",
   ] as const;
   const versionsRequired = pegin.status !== "refund_broadcast";
   for (const field of versionFields) {
@@ -212,7 +234,34 @@ function hasValidSecurityFields(entry: unknown): entry is PendingPeginRequest {
       if (versionsRequired) return false;
       continue;
     }
-    if (typeof v !== "number" || !Number.isInteger(v) || v < 0) {
+    // vaultCoreVersion 0 is never valid (the contract stamps ≥ 1 and
+    // pre-stamp records backfill to 1) — fail closed like every other
+    // 0-version in the app. The other three fields keep their historical
+    // ≥ 0 acceptance.
+    const min = field === "buildVaultCoreVersion" ? 1 : 0;
+    if (typeof v !== "number" || !Number.isInteger(v) || v < min) {
+      return false;
+    }
+  }
+
+  // RFC-006 build-time operation keys. Optional, but if present the shape must
+  // hold — this is untrusted storage feeding a pre-broadcast equality check.
+  const opKeys = pegin.buildParticipantOperationKeys;
+  if (opKeys !== undefined) {
+    if (!opKeys || typeof opKeys !== "object") return false;
+    const { vaultProvider, vaultKeepers, universalChallengers } =
+      opKeys as Record<string, unknown>;
+    const isXOnly = (k: unknown) =>
+      typeof k === "string" && /^[0-9a-f]{64}$/.test(k);
+    if (
+      !isXOnly(vaultProvider) ||
+      !Array.isArray(vaultKeepers) ||
+      !Array.isArray(universalChallengers) ||
+      vaultKeepers.length === 0 ||
+      universalChallengers.length === 0 ||
+      !vaultKeepers.every(isXOnly) ||
+      !universalChallengers.every(isXOnly)
+    ) {
       return false;
     }
   }
@@ -247,6 +296,34 @@ function dispatchStorageUpdateEvent(ethAddress: string): void {
 }
 
 /**
+ * Every build before the `buildVaultCoreVersion` stamp shipped had all its
+ * WASM construction sites hard-pinned to graph v1 (`TX_GRAPH_VERSION_V1 = 1`),
+ * so a record carrying the other three build fields was built with v1 as a
+ * matter of fact — backfilling is not a guess.
+ */
+const PRE_STAMP_BUILD_VAULT_CORE_VERSION = 1;
+
+/**
+ * Backfill `buildVaultCoreVersion` on records written before the field
+ * existed. Only fires when the record carries the other three build fields
+ * (proving it came from the previous guard's era, not arbitrary data) —
+ * anything else falls through to normal validation.
+ */
+function backfillBuildVaultCoreVersion(entry: unknown): unknown {
+  if (!entry || typeof entry !== "object") return entry;
+  const e = entry as Record<string, unknown>;
+  if (
+    e.buildVaultCoreVersion === undefined &&
+    typeof e.buildOffchainParamsVersion === "number" &&
+    typeof e.buildAppVaultKeepersVersion === "number" &&
+    typeof e.buildUniversalChallengersVersion === "number"
+  ) {
+    return { ...e, buildVaultCoreVersion: PRE_STAMP_BUILD_VAULT_CORE_VERSION };
+  }
+  return entry;
+}
+
+/**
  * Get all pending peg-ins from localStorage for an address
  * Pure read function - no side effects
  */
@@ -261,10 +338,12 @@ export function getPendingPegins(ethAddress: string): PendingPeginRequest[] {
     const parsed: unknown = JSON.parse(stored);
     if (!Array.isArray(parsed)) return [];
 
+    const migrated = parsed.map(backfillBuildVaultCoreVersion);
+
     // Filter out entries whose security-critical fields (unsignedTxHex,
     // selectedUTXOs) fail a strict format check. A tampered entry would
     // otherwise feed malformed hex into downstream consumers.
-    const validated = parsed.filter((entry): entry is PendingPeginRequest => {
+    const validated = migrated.filter((entry): entry is PendingPeginRequest => {
       if (hasValidSecurityFields(entry)) return true;
       const maybeId =
         entry && typeof entry === "object" && "id" in entry

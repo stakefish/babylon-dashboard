@@ -5,95 +5,115 @@
  */
 
 import { Container } from "@babylonlabs-io/core-ui";
-import { useCallback, useMemo, useState } from "react";
-import { useNavigate, useOutletContext } from "react-router";
+import { useMemo } from "react";
+import { useOutletContext } from "react-router";
 
-import { AssetSelectionModal } from "@/applications/aave/components/AssetSelectionModal";
-import { PositionNotificationsDebugPanel } from "@/applications/aave/components/PositionNotificationsDebugPanel";
-import { LOAN_TAB, type LoanTab } from "@/applications/aave/constants";
 import { useSyncPendingVaults } from "@/applications/aave/context";
 import { useAaveVaults } from "@/applications/aave/hooks";
-import type { PositionNotificationsStatus } from "@/applications/aave/hooks/usePositionNotifications";
-import type { CalculatorResult } from "@/applications/aave/positionNotifications";
-import type { Asset } from "@/applications/aave/types";
+import { usePositionNotifications } from "@/applications/aave/hooks/usePositionNotifications";
 import type { RootLayoutContext } from "@/components/pages/RootLayout";
-import { PAGE_CONTENT_CLASS } from "@/components/shared/layoutClasses";
+import {
+  ENTRY_CONTENT_CLASS,
+  PAGE_CONTENT_CLASS,
+} from "@/components/shared/layoutClasses";
+import { isDepositBlocked } from "@/components/shared/protocolStatus";
 import featureFlags from "@/config/featureFlags";
 import { useConnection, useETHWallet } from "@/context/wallet";
+import { COPY } from "@/copy";
 import { useApplicationCap } from "@/hooks/useApplicationCap";
 import { useDashboardState } from "@/hooks/useDashboardState";
-import { usePegoutPolling } from "@/hooks/usePegoutPolling";
-import { ClaimerPegoutStatusValue } from "@/models/pegoutStateMachine";
+import { useLoanActions } from "@/hooks/useLoanActions";
+import { usePrices } from "@/hooks/usePrices";
+import { useProtocolGateState } from "@/hooks/useProtocolGate";
 import {
+  resolveShownHealthFactor,
+  useHealthFactorOverride,
+} from "@/overrides/borrowCapacity";
+import {
+  resolveLiquidationCardState,
+  useLiquidationCardOverride,
+} from "@/overrides/liquidations";
+import { usePositionCascadeOverride } from "@/overrides/position";
+import {
+  formatBasisPointsAsPercent,
   formatBtcAmount,
-  formatLtvPercent,
+  formatLiquidationDistancePercent,
+  formatUsdPrice,
   formatUsdValue,
 } from "@/utils/formatting";
 
-import { CollateralSection } from "./CollateralSection";
-import { LoansSection } from "./LoansSection";
+import { CriticalLiquidationTopBanner } from "./CriticalLiquidationTopBanner";
+import { DisconnectedOverview } from "./DisconnectedOverview";
+import { LiquidationAnalysisSection } from "./LiquidationAnalysisSection";
+import { MaxVaultsNotification } from "./MaxVaultsNotification";
 import { OverviewSection } from "./OverviewSection";
-import { PendingDepositSection } from "./PendingDepositSection";
-import { PendingWithdrawSection } from "./PendingWithdrawSection";
 import { PositionNotificationBanner } from "./PositionNotificationBanner";
-import { SupplyCapSection } from "./SupplyCapSection";
-import WithdrawFlow from "./WithdrawFlow";
+import { RiskSection } from "./RiskSection";
 
 export function DashboardPage() {
-  const navigate = useNavigate();
   const { openDeposit } = useOutletContext<RootLayoutContext>();
   const { address } = useETHWallet();
   const { isConnected } = useConnection();
+  const gate = useProtocolGateState();
 
-  const [isWithdrawOpen, setIsWithdrawOpen] = useState(false);
-  const [selectedVaultIds, setSelectedVaultIds] = useState<string[]>([]);
-  const [isAssetModalOpen, setIsAssetModalOpen] = useState(false);
-  const [debugResultOverride, setDebugResultOverride] =
-    useState<CalculatorResult | null>(null);
-  const [debugStatusOverride, setDebugStatusOverride] =
-    useState<PositionNotificationsStatus | null>(null);
-  const [assetModalMode, setAssetModalMode] = useState<LoanTab>(
-    LOAN_TAB.BORROW,
+  // Dev-only banner override driven by the position-notifications section of
+  // the god-mode panel (see @/overrides/position). Always null in production,
+  // so the banners fall back to the live calculation with no behavioural
+  // change.
+  const cascadeOverride = usePositionCascadeOverride();
+  const liquidationCardOverride = useLiquidationCardOverride();
+  const { result: positionNotifications, params: positionParams } =
+    usePositionNotifications(isConnected ? address : undefined);
+  // The chart takes the god-mode cascade when the panel publishes one, else the
+  // live position cascade. A status-only override (stale price) carries no
+  // cascade, so it falls through to live. Null when neither has a result: the
+  // section shows its empty states rather than charting placeholder numbers.
+  const liquidationCascade = useMemo(
+    () =>
+      cascadeOverride?.result
+        ? { result: cascadeOverride.result, params: cascadeOverride.params }
+        : positionNotifications && positionParams
+          ? { result: positionNotifications, params: positionParams }
+          : null,
+    [cascadeOverride, positionNotifications, positionParams],
   );
   const {
     collateralBtc,
     collateralValueUsd,
     debtValueUsd,
+    maxTotalDebtUsd,
+    availableToBorrowUsd,
+    canBorrow,
+    collateralFactorBps,
     healthFactor,
     healthFactorStatus,
     borrowedAssets,
     hasLoans,
     hasCollateral,
-    collateralVaults,
-    selectableBorrowedAssets,
+    hasDisplayCollateral,
+    isBorrowCapacityLoading,
+    borrowCapacityError,
   } = useDashboardState(isConnected ? address : undefined);
 
-  const { snapshot: capSnapshot, isLoading: isCapLoading } = useApplicationCap(
+  const { openBorrowPicker, openRepay } = useLoanActions({
+    borrowedAssets,
+  });
+
+  const { snapshot: capSnapshot, error: capError } = useApplicationCap(
     isConnected ? address : undefined,
   );
+
+  const { prices, metadata } = usePrices();
 
   const liquidationNotificationsEnabled =
     featureFlags.isLiquidationNotificationsEnabled;
 
-  const { vaults: aaveVaults, redeemedVaults } = useAaveVaults(
-    isConnected ? address : undefined,
-  );
-  const { pegoutStatuses } = usePegoutPolling({
-    redeemedVaults,
-  });
+  // Feed the critical top banner the same debug-aware result the mid-page banner
+  // uses: the debug override when set, otherwise the live calculation.
+  const criticalBannerResult = cascadeOverride?.result ?? positionNotifications;
 
-  // Filter out vaults whose payout has been broadcast (terminal success).
-  // Failed vaults are intentionally kept visible so the user sees the error and can contact support.
-  const pendingWithdrawVaults = useMemo(
-    () =>
-      redeemedVaults.filter((vault) => {
-        const status = pegoutStatuses.get(vault.id);
-        return (
-          status?.response?.claimer?.status !==
-          ClaimerPegoutStatusValue.PAYOUT_BROADCAST
-        );
-      }),
-    [redeemedVaults, pegoutStatuses],
+  const { vaults: aaveVaults } = useAaveVaults(
+    isConnected ? address : undefined,
   );
 
   // Sync pending vault operations (add/withdraw) with indexer data
@@ -101,132 +121,174 @@ export function DashboardPage() {
 
   // Format display values
   const totalCollateralValue = formatUsdValue(collateralValueUsd);
-  const amountToRepay = formatUsdValue(debtValueUsd);
-  const ltv = formatLtvPercent(debtValueUsd, collateralValueUsd);
-  const totalAmountBtc = formatBtcAmount(collateralBtc);
+  const totalBorrowed = formatUsdValue(debtValueUsd);
+  const availableToBorrow = formatUsdValue(availableToBorrowUsd);
+  const collateralBtcText = formatBtcAmount(collateralBtc);
+  // The Overview is purely a financial summary: an empty position renders every
+  // row as a placeholder ("Health factor –", "$0 USD", "$0 USD"), so suppress
+  // the whole panel until there is real collateral or debt to summarize. Gate on
+  // the financial flags (not the display ones) so an optimistic "activating"
+  // vault, whose values are still $0, doesn't surface an empty panel.
+  const hasOverviewData = hasCollateral || hasLoans;
+  const liquidationCardState = resolveLiquidationCardState(
+    liquidationCardOverride,
+    { hasCollateral: hasDisplayCollateral, hasLoans },
+  );
 
-  const handleOpenWithdraw = useCallback(() => {
-    setIsWithdrawOpen(true);
-  }, []);
+  const availableMeterPercent =
+    maxTotalDebtUsd > 0 ? availableToBorrowUsd / maxTotalDebtUsd : 0;
+  const borrowedMeterPercent =
+    maxTotalDebtUsd > 0 ? debtValueUsd / maxTotalDebtUsd : 0;
 
-  // Clear the list selection whenever the dialog closes (cancel or
-  // post-success) so stale checkboxes don't linger on the dashboard.
-  const handleCloseWithdraw = useCallback(() => {
-    setIsWithdrawOpen(false);
-    setSelectedVaultIds([]);
-  }, []);
+  // Liquidation-risk gauge stats. Liquidation price and distance-to-liquidation
+  // come from the first group of the position cascade (the price at which the
+  // first seizure triggers); BTC price comes from the live oracle feed. Fall
+  // back to the empty-value placeholder until the inputs are available, and
+  // suppress the BTC price whenever its oracle round is stale or fetch-failed
+  // (mirroring the guard in usePositionNotifications) so a price sourced from a
+  // bad feed never sits beside liquidation stats derived from that same feed.
+  // Note this does not cover the brief transient while the cascade is still
+  // loading: a freshly-fetched BTC price can render beside placeholder stats.
+  const firstLiquidationGroup = positionNotifications?.groups[0] ?? null;
+  const btcPriceUsd = prices["BTC"];
+  const btcMetadata = metadata["BTC"];
+  const isBtcPriceUsable =
+    btcMetadata !== undefined &&
+    !btcMetadata.isStale &&
+    !btcMetadata.fetchFailed;
+  const usableBtcPriceUsd =
+    isBtcPriceUsable && btcPriceUsd !== undefined && btcPriceUsd > 0
+      ? btcPriceUsd
+      : null;
+  const btcPrice =
+    usableBtcPriceUsd !== null
+      ? formatUsdPrice(usableBtcPriceUsd)
+      : COPY.common.emptyValue;
+  // God-mode override (dev only; null in production). Health factor is
+  // btcPrice / liquidationPrice, so a forced value implies the liquidation
+  // price that produces it — the rail is charted from that price, not the HF.
+  // A forced card is derived wholesale from the override: with no usable BTC
+  // price there is nothing to imply a liquidation price from, and the stats
+  // read as placeholders rather than mixing a forced HF with live liquidation
+  // numbers (the case you hit inspecting the stale-price path).
+  const healthFactorOverride = useHealthFactorOverride();
+  const {
+    healthFactor: shownHealthFactor,
+    healthFactorStatus: shownHealthFactorStatus,
+  } = resolveShownHealthFactor(
+    healthFactorOverride,
+    healthFactor,
+    healthFactorStatus,
+  );
+  const forcedLiquidationPriceUsd =
+    healthFactorOverride !== null && usableBtcPriceUsd !== null
+      ? usableBtcPriceUsd / healthFactorOverride
+      : null;
+  const liquidationPriceUsd =
+    healthFactorOverride !== null
+      ? forcedLiquidationPriceUsd
+      : (firstLiquidationGroup?.liquidationPrice ?? null);
+  const liquidationPrice =
+    liquidationPriceUsd !== null
+      ? formatUsdPrice(liquidationPriceUsd)
+      : COPY.common.emptyValue;
+  const distanceToLiquidationPct =
+    healthFactorOverride !== null
+      ? forcedLiquidationPriceUsd !== null
+        ? 100 * (1 - 1 / healthFactorOverride)
+        : null
+      : firstLiquidationGroup !== null
+        ? -firstLiquidationGroup.distancePct
+        : null;
+  const pctToLiquidation =
+    distanceToLiquidationPct !== null
+      ? formatLiquidationDistancePercent(distanceToLiquidationPct)
+      : COPY.common.emptyValue;
+  const collateralFactorText =
+    collateralFactorBps !== null
+      ? formatBasisPointsAsPercent(collateralFactorBps)
+      : COPY.common.emptyValue;
 
-  const handleBorrow = () => {
-    setAssetModalMode(LOAN_TAB.BORROW);
-    setIsAssetModalOpen(true);
-  };
+  // The cascade banner and the max-vaults notice share the same slot between
+  // the Position and Risk sections — same "Notifications" instance in both
+  // the default and critical states (Figma 10094-26791, 10204-45310).
+  const cascadeBanner = liquidationNotificationsEnabled ? (
+    <PositionNotificationBanner
+      connectedAddress={address}
+      onDeposit={openDeposit}
+      onRepay={openRepay}
+      result={cascadeOverride?.result ?? undefined}
+      statusOverride={cascadeOverride?.status ?? undefined}
+    />
+  ) : null;
 
-  const handleRepay = () => {
-    if (borrowedAssets.length === 1) {
-      const assetSymbol = borrowedAssets[0].symbol;
-      navigate(
-        `/app/aave/reserve/${assetSymbol.toLowerCase()}?tab=${LOAN_TAB.REPAY}`,
-      );
-      return;
-    }
-    setAssetModalMode(LOAN_TAB.REPAY);
-    setIsAssetModalOpen(true);
-  };
-
-  const handleSelectAsset = (assetSymbol: string) => {
-    const basePath = `/app/aave/reserve/${assetSymbol.toLowerCase()}`;
-    const path =
-      assetModalMode === LOAN_TAB.REPAY
-        ? `${basePath}?tab=${LOAN_TAB.REPAY}`
-        : basePath;
-    navigate(path);
-  };
+  if (!isConnected) {
+    return (
+      // `my-auto` completes the Container's built-in `mx-auto` to a full
+      // `margin: auto`, vertically centering the disconnected landing screen in
+      // the remaining viewport height.
+      <Container className={`${ENTRY_CONTENT_CLASS} my-auto pb-6`}>
+        <DisconnectedOverview capSnapshot={capSnapshot} capError={capError} />
+      </Container>
+    );
+  }
 
   return (
     <Container className={`${PAGE_CONTENT_CLASS} pb-6`}>
       <div className="space-y-10">
-        <SupplyCapSection snapshot={capSnapshot} isLoading={isCapLoading} />
-
-        <OverviewSection
-          healthFactor={healthFactor}
-          healthFactorStatus={healthFactorStatus}
-          totalCollateralValue={totalCollateralValue}
-          amountToRepay={amountToRepay}
-          ltv={ltv}
-          isConnected={isConnected}
-        />
-
+        {/* Full-bleed alert bar above the header/sidebar row, not part of this
+            column — it portals into RootLayout's top-banner slot (Figma frame
+            10204-45613; see CriticalLiquidationTopBanner). */}
         {liquidationNotificationsEnabled && (
-          <PositionNotificationBanner
-            connectedAddress={address}
-            onDeposit={openDeposit}
-            onRepay={handleRepay}
-            result={debugResultOverride ?? undefined}
-            statusOverride={debugStatusOverride ?? undefined}
-          />
+          <CriticalLiquidationTopBanner result={criticalBannerResult} />
         )}
 
-        <PendingDepositSection />
-
-        <PendingWithdrawSection
-          pendingWithdrawVaults={pendingWithdrawVaults}
-          pegoutStatuses={pegoutStatuses}
-        />
-
-        <CollateralSection
-          totalAmountBtc={totalAmountBtc}
-          collateralVaults={collateralVaults}
-          hasCollateral={hasCollateral}
-          isConnected={isConnected}
-          collateralBtc={collateralBtc}
-          currentHealthFactor={healthFactor}
-          selectedVaultIds={selectedVaultIds}
-          onSelectedVaultIdsChange={setSelectedVaultIds}
-          onWithdraw={handleOpenWithdraw}
+        <OverviewSection
+          totalCollateralValue={totalCollateralValue}
+          totalBorrowed={totalBorrowed}
+          availableToBorrow={availableToBorrow}
+          collateralBtc={collateralBtcText}
+          availableMeterPercent={availableMeterPercent}
+          borrowCapacityLoading={isBorrowCapacityLoading}
+          borrowCapacityError={borrowCapacityError}
+          borrowedMeterPercent={borrowedMeterPercent}
           onDeposit={openDeposit}
+          isDepositDisabled={isDepositBlocked(gate)}
+          onBorrow={openBorrowPicker}
+          onRepay={openRepay}
+          canBorrow={canBorrow}
+          canRepay={hasLoans}
         />
 
-        <LoansSection
-          hasLoans={hasLoans}
-          hasCollateral={hasCollateral}
-          isConnected={isConnected}
-          borrowedAssets={borrowedAssets}
-          onBorrow={handleBorrow}
-          onRepay={handleRepay}
+        {/* "Maximum vaults reached" is a value-protection capacity fact shown
+            ALWAYS (independent of the liquidation-notifications flag and of BTC
+            price), and decoupled from the cascade banner so a stale-price or
+            all-pending position still surfaces it. */}
+        <MaxVaultsNotification connectedAddress={address} />
+
+        {cascadeBanner}
+
+        <RiskSection
+          healthFactor={shownHealthFactor}
+          healthFactorStatus={shownHealthFactorStatus}
+          hasPosition={hasOverviewData || healthFactorOverride !== null}
+          liquidationPriceText={liquidationPrice}
+          btcPriceText={btcPrice}
+          pctToLiquidationText={pctToLiquidation}
+          collateralFactorText={collateralFactorText}
+          collateralFactorLoading={isBorrowCapacityLoading}
+          btcPriceUsd={usableBtcPriceUsd}
+          liquidationPriceUsd={liquidationPriceUsd}
         />
 
-        {liquidationNotificationsEnabled &&
-          featureFlags.isPositionDebugPanelEnabled && (
-            <PositionNotificationsDebugPanel
-              onResultChange={setDebugResultOverride}
-              onStatusChange={setDebugStatusOverride}
-            />
-          )}
+        <LiquidationAnalysisSection
+          hasCollateral={liquidationCardState.hasCollateral}
+          hasLoans={liquidationCardState.hasLoans}
+          onDeposit={openDeposit}
+          onBorrow={openBorrowPicker}
+          cascade={liquidationCascade}
+        />
       </div>
-
-      {/* Withdraw Flow */}
-      <WithdrawFlow
-        open={isWithdrawOpen}
-        onClose={handleCloseWithdraw}
-        collateralVaults={collateralVaults}
-        collateralBtc={collateralBtc}
-        collateralValueUsd={collateralValueUsd}
-        currentHealthFactor={healthFactor}
-        preSelectedVaultIds={selectedVaultIds}
-      />
-
-      {/* Asset Selection Modal for Borrow/Repay */}
-      <AssetSelectionModal
-        isOpen={isAssetModalOpen}
-        onClose={() => setIsAssetModalOpen(false)}
-        onSelectAsset={handleSelectAsset}
-        mode={assetModalMode}
-        assets={
-          assetModalMode === LOAN_TAB.REPAY
-            ? (selectableBorrowedAssets as Asset[])
-            : undefined
-        }
-      />
     </Container>
   );
 }

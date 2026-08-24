@@ -14,7 +14,6 @@ import {
   deriveVaultRoot,
   deriveWotsBlocksFromSeed,
   expandAuthAnchor,
-  expandHashlockSecret,
   expandWotsSeed,
   hexToUint8Array,
   isWotsMismatchError,
@@ -32,7 +31,10 @@ import { getVaultRegistryReader } from "@/clients/eth-contract/sdk-readers";
 import { computeDepositDerivedState } from "@/components/deposit/DepositSignModal/depositStepHelpers";
 import { usePayoutSigningState } from "@/components/deposit/PayoutSignModal/usePayoutSigningState";
 import { useDepositPollingResult } from "@/context/deposit/PeginPollingContext";
-import { useProtocolParamsContext } from "@/context/ProtocolParamsContext";
+import {
+  hasWotsSubmissionRecord,
+  markWotsSubmitted,
+} from "@/context/deposit/optimisticDepositState";
 import { COPY } from "@/copy";
 import {
   DepositFlowStep,
@@ -42,21 +44,39 @@ import { submitWotsPublicKey } from "@/hooks/deposit/depositFlowSteps/wotsSubmis
 import { useActivationState } from "@/hooks/deposit/useActivationState";
 import { useBroadcastState } from "@/hooks/deposit/useBroadcastState";
 import { useReleaseVpTokenOnUnmount } from "@/hooks/deposit/useReleaseVpTokenOnUnmount";
-import { useBtcDepthStartedAt } from "@/hooks/useBtcDepthStartedAt";
+import { useRequiredPrePeginDepth } from "@/hooks/deposit/useRequiredPrePeginDepth";
+import { useSplitVaultProgress } from "@/hooks/deposit/useSplitVaultProgress";
 import { useRunOnce } from "@/hooks/useRunOnce";
 import { logger } from "@/infrastructure";
+import {
+  captureFunnelFailure,
+  TELEMETRY_STAGE,
+} from "@/infrastructure/telemetryEvents";
 import {
   ContractStatus,
   getPeginDisplayStep,
 } from "@/models/peginStateMachine";
+import { deriveHtlcSecretHex } from "@/services/vault/htlcSecretDerivation";
+import { resolveVpAuthPinnedPubkey } from "@/services/vault/vpAuthPinnedPubkey";
 import type { VaultActivity } from "@/types/activity";
 import {
   shouldProbeWalletLiveness,
   verifyBtcWalletLiveness,
 } from "@/utils/btc";
+import { mapDepositError } from "@/utils/errors";
 import { getVpProxyUrl } from "@/utils/rpc";
 
 import { DepositProgressView } from "./DepositProgressView";
+import { VaultActivatedView } from "./VaultActivatedView";
+
+/**
+ * Caught-error state wrapper: keeps the typed error intact for the render-seam
+ * `mapDepositError` call (flattening to `.message` loses wallet codes and
+ * `cause` chains) while giving `unknown` well-defined truthiness in state.
+ */
+interface CaughtError {
+  raw: unknown;
+}
 
 // ---------------------------------------------------------------------------
 // Sign Payouts Content
@@ -66,6 +86,13 @@ export interface ResumeSignContentProps {
   activity: VaultActivity;
   btcPublicKey: string;
   depositorEthAddress: Hex;
+  /**
+   * Every vault ID sharing this deposit's Pre-PegIn (the split-pegin
+   * siblings). When length > 1 the progress view renders the multi-column
+   * split UI with this vault highlighted. Defaults to just this vault, so
+   * standalone deposits render as a single column.
+   */
+  siblingVaultIds?: string[];
   onClose: () => void;
   onSuccess: () => void;
 }
@@ -74,18 +101,51 @@ export function ResumeSignContent({
   activity,
   btcPublicKey,
   depositorEthAddress,
+  siblingVaultIds,
   onClose,
   onSuccess,
 }: ResumeSignContentProps) {
-  const { signing, progress, error, isComplete, handleSign } =
-    usePayoutSigningState({
-      activity,
-      btcPublicKey,
-      depositorEthAddress,
-      onSuccess,
-    });
+  const {
+    signing,
+    progress,
+    error,
+    errorTerminal,
+    isComplete,
+    handleSign,
+    canCancel,
+    cancelRequested,
+    handleCancel,
+  } = usePayoutSigningState({
+    activity,
+    btcPublicKey,
+    depositorEthAddress,
+    onSuccess,
+  });
 
   useRunOnce(handleSign);
+
+  // A self-requested cancel settles QUIETLY in the hook (idle, no error, not
+  // complete). Left alone, that state renders a disabled Sign button with no
+  // retry seam, so route it into the view's pre-sign entry state instead —
+  // its CTA re-runs the full ceremony, matching the WOTS re-offer pattern.
+  const [reofferAfterCancel, setReofferAfterCancel] = useState(false);
+  const sawCancelRequestRef = useRef(false);
+  useEffect(() => {
+    if (cancelRequested) {
+      sawCancelRequestRef.current = true;
+      return;
+    }
+    if (!sawCancelRequestRef.current || signing) return;
+    // The requested cancel has settled (the hook consumes the request on
+    // every settle path); only the quiet outcome becomes a re-offer.
+    sawCancelRequestRef.current = false;
+    if (!error && !isComplete) setReofferAfterCancel(true);
+  }, [cancelRequested, signing, error, isComplete]);
+
+  const handleResign = useCallback(() => {
+    setReofferAfterCancel(false);
+    void handleSign();
+  }, [handleSign]);
 
   // Once signing is done the deposit waits on the vault provider. Track the
   // live contract status so the "Awaiting vault provider verification" wait has
@@ -119,13 +179,29 @@ export function ResumeSignContent({
     renderStep,
     signing,
     renderIsWaiting,
-    error?.message ?? null,
+    error != null,
   );
+
+  const { vaultCount, currentVaultIndex, perVaultSteps } =
+    useSplitVaultProgress(siblingVaultIds, activity.id, renderStep);
 
   return (
     <DepositProgressView
       currentStep={renderStep}
-      error={error?.message ?? null}
+      offchainParamsVersion={activity.offchainParamsVersion}
+      // usePayoutSigningState already produces structured { title, message }
+      // errors with actionable guard titles (missing/mismatched payout address,
+      // wallet liveness, etc.). Pass them through directly so the callout keeps
+      // that title instead of collapsing to the generic mapped fallback.
+      error={
+        error
+          ? {
+              title: error.title,
+              body: error.message,
+              diagnostics: error.diagnostics,
+            }
+          : null
+      }
       isComplete={derived.isComplete}
       isProcessing={derived.isProcessing}
       canClose={derived.canClose}
@@ -135,9 +211,19 @@ export function ResumeSignContent({
       }
       payoutSigningProgress={signing ? progress : null}
       peginSigningProgress={null}
+      vaultCount={vaultCount}
+      currentVaultIndex={currentVaultIndex}
+      perVaultSteps={perVaultSteps}
       onClose={onClose}
-      onRetry={error ? handleSign : undefined}
-      waitDetailPersistKey={activity.id}
+      // A terminal refusal (ack window elapsed, signing already over, device
+      // rejected the terms) re-runs the whole chain-read chain and fails
+      // identically — no Retry CTA, same seam as the activation branch.
+      onRetry={error && !errorTerminal ? handleSign : undefined}
+      started={!reofferAfterCancel}
+      onSign={handleResign}
+      canCancelSigning={canCancel}
+      cancelSigningRequested={cancelRequested}
+      onCancelSigning={handleCancel}
     />
   );
 }
@@ -165,12 +251,22 @@ export function ResumeBroadcastContent({
   onClose,
   onSuccess,
 }: ResumeBroadcastContentProps) {
-  const { broadcasting, error, handleBroadcast } = useBroadcastState({
-    activity,
-    batchVaultIds,
-    depositorEthAddress,
-    onSuccess,
-  });
+  const { broadcasting, error, ethConfirmationDetail, handleBroadcast } =
+    useBroadcastState({
+      activity,
+      batchVaultIds,
+      depositorEthAddress,
+      onSuccess,
+    });
+
+  // While the Ethereum finality gate holds, the honest step is the ETH
+  // registration — it genuinely is not final yet — not the BTC broadcast the
+  // user has not been asked to sign. Only ever true for a deposit registered
+  // in the last ~1.6 min; every older resume renders the broadcast step
+  // exactly as before.
+  const step = ethConfirmationDetail
+    ? DepositFlowStep.SUBMIT_PEGIN
+    : DepositFlowStep.BROADCAST_PRE_PEGIN;
 
   const btcConnector = useChainConnector("BTC");
   const btcWalletProvider = btcConnector?.connectedWallet?.provider;
@@ -185,15 +281,22 @@ export function ResumeBroadcastContent({
   );
 
   const derived = computeDepositDerivedState(
-    DepositFlowStep.BROADCAST_PRE_PEGIN,
+    step,
     broadcasting,
     false,
-    error,
+    error != null,
   );
+
+  // During the trunk (broadcast) phase every sibling is at the same shared
+  // step, so the active-vault index is irrelevant — what matters is that the
+  // multi-column UI lights up when the deposit is a split.
+  const { vaultCount, currentVaultIndex, perVaultSteps } =
+    useSplitVaultProgress(batchVaultIds, activity.id, step);
 
   return (
     <DepositProgressView
-      currentStep={DepositFlowStep.BROADCAST_PRE_PEGIN}
+      currentStep={step}
+      offchainParamsVersion={activity.offchainParamsVersion}
       error={error}
       isComplete={derived.isComplete}
       isProcessing={derived.isProcessing}
@@ -201,6 +304,10 @@ export function ResumeBroadcastContent({
       canContinueInBackground={derived.canContinueInBackground}
       payoutSigningProgress={null}
       peginSigningProgress={null}
+      ethConfirmationDetail={ethConfirmationDetail}
+      vaultCount={vaultCount}
+      currentVaultIndex={currentVaultIndex}
+      perVaultSteps={perVaultSteps}
       onClose={onClose}
       successMessage={COPY.deposit.resume.broadcastSuccessMessage}
       onRetry={error ? handleBroadcast : undefined}
@@ -214,12 +321,15 @@ export function ResumeBroadcastContent({
 
 export interface ResumeWotsContentProps {
   activity: VaultActivity;
+  /** Sibling vault IDs sharing this Pre-PegIn (see ResumeSignContentProps). */
+  siblingVaultIds?: string[];
   onClose: () => void;
   onSuccess: () => void;
 }
 
 export function ResumeWotsContent({
   activity,
+  siblingVaultIds,
   onClose,
   onSuccess,
 }: ResumeWotsContentProps) {
@@ -229,11 +339,34 @@ export function ResumeWotsContent({
     null;
   const connectedBtcAddress = btcConnector?.connectedWallet?.account?.address;
 
-  // Starts true: useRunOnce auto-fires handleSubmit on mount, so the
-  // first render must show processing — not a false-success banner from
-  // `isComplete = !loading && !error`.
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
+  // A submission already recorded for this deposit means the user has been
+  // through this step in this session, so this mount is the suppression TTL
+  // lapsing and re-offering the action — not a first visit. Auto-submitting
+  // there would fire a wallet prompt at an idle open modal with no user
+  // gesture behind it, so a re-offer waits for an explicit click instead.
+  // Read once at mount: `markWotsSubmitted` below flips it, and re-reading
+  // would swap the component into the wrong mode mid-flight.
+  //
+  // Deliberately gated even when the user just clicked the re-offered row
+  // action — where that click was already a gesture and this costs a second
+  // one. A re-offer means the VP is still asking after a submission this
+  // session watched resolve, so something may genuinely be wrong; making the
+  // user confirm the fresh wallet popup on that abnormal path is worth more
+  // than the click it saves, and it spares the mount site from having to
+  // report whether this render is a fresh open or a branch swap under an
+  // already-open modal.
+  const [isReoffer] = useState(() => hasWotsSubmissionRecord(activity.id));
+
+  // `started` false parks DepositProgressView on its pre-sign entry state,
+  // where the CTA calls `onSign` — the same seam DepositSignContent uses.
+  const [started, setStarted] = useState(!isReoffer);
+
+  // Starts true on the auto-submit path: useRunOnce fires handleSubmit on
+  // mount, so the first render must show processing — not a false-success
+  // banner from `isComplete = !loading && !error`. A re-offer has not
+  // submitted anything yet, so it starts idle.
+  const [loading, setLoading] = useState(!isReoffer);
+  const [error, setError] = useState<CaughtError | null>(null);
 
   // Track mount for setState guards after the long async chain below.
   // The hosting modal can be closed mid-flight (PostDepositContinuationView
@@ -241,6 +374,7 @@ export function ResumeWotsContent({
   // would otherwise warn about updates on an unmounted component.
   const mountedRef = useRef(true);
   useEffect(() => {
+    mountedRef.current = true; // reset on remount (StrictMode setup→cleanup→setup)
     return () => {
       mountedRef.current = false;
     };
@@ -253,7 +387,7 @@ export function ResumeWotsContent({
 
   const handleSubmit = useCallback(async () => {
     if (!btcWalletProvider || !connectedBtcAddress) {
-      setError("BTC wallet is not connected");
+      setError({ raw: COPY.deposit.resume.walletNotConnected });
       setLoading(false);
       return;
     }
@@ -264,11 +398,11 @@ export function ResumeWotsContent({
     try {
       const peginTxHash = activity.peginTxHash ?? null;
       if (!peginTxHash) {
-        throw new Error("Missing pegin transaction hash");
+        throw new Error("Missing peg-in transaction hash");
       }
       if (!activity.unsignedPrePeginTx) {
         throw new Error(
-          "Missing pre-pegin transaction; cannot recover WOTS seed inputs",
+          "Missing Pre-Pegin transaction; cannot recover WOTS seed inputs",
         );
       }
 
@@ -286,15 +420,15 @@ export function ResumeWotsContent({
 
       // Best-effort priming: VP pubkey fetch can fail without blocking the
       // resume flow because submitWotsPublicKey re-derives on cache miss.
-      const pinnedServerPubkeyPromise = reader
-        .getVaultProviderBtcPubKey(providerAddress as Address)
-        .catch((err: unknown) => {
-          logger.warn("Failed to fetch VP pubkey for registry priming", {
-            peginTxHash,
-            error: err instanceof Error ? err.message : String(err),
-          });
-          return null;
+      const pinnedServerPubkeyPromise = resolveVpAuthPinnedPubkey(
+        providerAddress as Address,
+      ).catch((err: unknown) => {
+        logger.warn("Failed to fetch VP pubkey for registry priming", {
+          peginTxHash,
+          error: err instanceof Error ? err.message : String(err),
         });
+        return null;
+      });
 
       // Indexer-supplied tx is untrusted. Verify against on-chain
       // prePeginTxHash before deriveVaultRoot fires the wallet popup.
@@ -361,6 +495,7 @@ export function ResumeWotsContent({
           peginTxid: primedTxid,
           authAnchorHex,
           pinnedServerPubkey,
+          depositorBtcPubkey,
         });
         trackPrimedTxid(primedTxid);
       }
@@ -375,6 +510,11 @@ export function ResumeWotsContent({
         unsignedPrePeginTxHex: activity.unsignedPrePeginTx,
       });
 
+      // Recorded regardless of mount: the submission landed, so the dashboard
+      // row must stop offering "Submit WOTS Key" even if the user already
+      // closed this modal. The store is app-scoped, not tied to this tree.
+      markWotsSubmitted(activity.id);
+
       if (mountedRef.current) {
         setLoading(false);
         // Refetch dashboard activities so the next action surfaces while
@@ -382,16 +522,21 @@ export function ResumeWotsContent({
         onSuccess();
       }
     } catch (err) {
+      // Capture regardless of mount — these resume flows have no abort signal,
+      // so a real WOTS-submission / derivation-drift failure is worth knowing
+      // even if the user has already closed the modal. Only the UI update below
+      // is mount-gated. A mismatch is flagged for faceting.
+      captureFunnelFailure(TELEMETRY_STAGE.ACTIVATION_WOTS, err, activity.id, {
+        extra: { wotsMismatch: isWotsMismatchError(err) },
+      });
       if (mountedRef.current) {
-        const msg =
-          err instanceof Error ? err.message : "Failed to submit WOTS key";
         // VP-side mismatch gets the same wording as the local pre-flight
         // so the user can act on either path.
-        if (isWotsMismatchError(err)) {
-          setError(COPY.deposit.resume.wotsMismatchError);
-        } else {
-          setError(msg);
-        }
+        setError({
+          raw: isWotsMismatchError(err)
+            ? COPY.deposit.resume.wotsMismatchError
+            : err,
+        });
         setLoading(false);
       }
     } finally {
@@ -414,7 +559,18 @@ export function ResumeWotsContent({
   // wallet before its account hydrates: in that case useRunOnce (one-shot)
   // would defer rather than fire into the "not connected" guard. When there is
   // genuinely no provider it fires, so the real "not connected" error surfaces.
-  useRunOnce(handleSubmit, !btcWalletProvider || Boolean(connectedBtcAddress));
+  //
+  // `!isReoffer` keeps the auto-run to a first visit; a re-offer submits only
+  // through `handleStart`, behind a click.
+  useRunOnce(
+    handleSubmit,
+    !isReoffer && (!btcWalletProvider || Boolean(connectedBtcAddress)),
+  );
+
+  const handleStart = useCallback(() => {
+    setStarted(true);
+    void handleSubmit();
+  }, [handleSubmit]);
 
   // Reconcile the displayed step with the polled VP status instead of trusting
   // local `loading`/`error` alone. Without this the modal computes its step
@@ -440,7 +596,13 @@ export function ResumeWotsContent({
   // status confirms acceptance. Then the modal sits on the next step as a
   // closeable background wait ("Close & continue later"), matching the other
   // resume waits — no separate success banner needed.
-  const advanced = (!loading && !error) || pastWots;
+  //
+  // `started` gates the local half: a re-offer sits idle (not loading, no
+  // error) until the user clicks, and without this that idle state would read
+  // as "submit resolved" and skip the step entirely. `pastWots` is unguarded
+  // — the VP confirming acceptance advances regardless of what this instance
+  // did.
+  const advanced = pastWots || (started && !loading && !error);
   const renderStep = advanced
     ? DepositFlowStep.AWAIT_PAYOUT_TRANSACTIONS
     : DepositFlowStep.SUBMIT_WOTS_KEYS;
@@ -448,45 +610,47 @@ export function ResumeWotsContent({
     renderStep,
     loading && !advanced,
     advanced,
-    error,
+    error != null,
   );
 
-  // requiredDepth is pinned to the version this deposit registered against
-  // (matches PeginPollingContext.getRequiredPrePeginDepth).
-  const { config, getOffchainParamsByVersion } = useProtocolParamsContext();
-  const requiredDepth =
-    (activity.offchainParamsVersion !== undefined
-      ? getOffchainParamsByVersion(activity.offchainParamsVersion)
-          ?.minPrepeginDepth
-      : undefined) ?? config.offchainParams.minPrepeginDepth;
+  const requiredDepth = useRequiredPrePeginDepth(
+    activity.offchainParamsVersion,
+  );
   const showBtcDepthPanel =
     renderStep === DepositFlowStep.AWAIT_PAYOUT_TRANSACTIONS &&
     Boolean(activity.prePeginTxHash);
-  const startedAt = useBtcDepthStartedAt(activity.id, showBtcDepthPanel);
   const btcConfirmationDetail =
-    showBtcDepthPanel && activity.prePeginTxHash && startedAt
+    showBtcDepthPanel && activity.prePeginTxHash
       ? {
-          startedAt,
           prePeginTxid: activity.prePeginTxHash,
           requiredDepth,
           depositIds: [activity.id],
         }
       : null;
 
+  const { vaultCount, currentVaultIndex, perVaultSteps } =
+    useSplitVaultProgress(siblingVaultIds, activity.id, renderStep);
+
   return (
     <DepositProgressView
       currentStep={renderStep}
-      error={error}
+      error={error ? mapDepositError(error.raw) : null}
       isComplete={derived.isComplete}
       isProcessing={derived.isProcessing}
       canClose={derived.canClose}
       canContinueInBackground={derived.canContinueInBackground}
       payoutSigningProgress={null}
       peginSigningProgress={null}
+      vaultCount={vaultCount}
+      currentVaultIndex={currentVaultIndex}
+      perVaultSteps={perVaultSteps}
       onClose={onClose}
       onRetry={error ? handleSubmit : undefined}
-      waitDetailPersistKey={activity.id}
+      started={started}
+      onSign={handleStart}
       btcConfirmationDetail={btcConfirmationDetail}
+      wotsApprovalHint={COPY.deposit.resume.wotsWalletApprovalHint}
+      offchainParamsVersion={activity.offchainParamsVersion}
     />
   );
 }
@@ -498,15 +662,19 @@ export function ResumeWotsContent({
 export interface ResumeActivationContentProps {
   activity: VaultActivity;
   depositorEthAddress: string;
+  /** Sibling vault IDs sharing this Pre-PegIn (see ResumeSignContentProps). */
+  siblingVaultIds?: string[];
   onClose: () => void;
-  onSuccess: () => void;
+  /** Navigates to the dashboard; drives the activated success screen's CTA. */
+  onGoToDashboard: () => void;
 }
 
 export function ResumeActivationContent({
   activity,
   depositorEthAddress,
+  siblingVaultIds,
   onClose,
-  onSuccess,
+  onGoToDashboard,
 }: ResumeActivationContentProps) {
   const btcConnector = useChainConnector("BTC");
   const btcWalletProvider =
@@ -517,7 +685,7 @@ export function ResumeActivationContent({
   // Starts true: useRunOnce auto-fires handleSubmit on mount, so the
   // first render must show processing.
   const [loading, setLoading] = useState(true);
-  const [localError, setLocalError] = useState<string | null>(null);
+  const [localError, setLocalError] = useState<CaughtError | null>(null);
 
   // Track mount for setState guards after the long async chain below.
   // The hosting modal can be closed mid-flight, so the post-await
@@ -525,6 +693,7 @@ export function ResumeActivationContent({
   // an unmounted component.
   const mountedRef = useRef(true);
   useEffect(() => {
+    mountedRef.current = true; // reset on remount (StrictMode setup→cleanup→setup)
     return () => {
       mountedRef.current = false;
     };
@@ -534,6 +703,7 @@ export function ResumeActivationContent({
     activating,
     activated,
     error: activationError,
+    errorTerminal,
     handleActivation,
   } = useActivationState({
     activity,
@@ -542,73 +712,29 @@ export function ResumeActivationContent({
 
   const handleSubmit = useCallback(async () => {
     if (!btcWalletProvider || !connectedBtcAddress) {
-      setLocalError("BTC wallet is not connected");
+      setLocalError({
+        raw: COPY.deposit.resume.walletNotConnected,
+      });
       setLoading(false);
       return;
     }
     if (!activity.unsignedPrePeginTx) {
-      setLocalError(
-        "Missing pre-pegin transaction; cannot recover HTLC secret",
-      );
+      setLocalError({
+        raw: COPY.deposit.resume.secretRecoveryMissingPrePegin,
+      });
       setLoading(false);
       return;
     }
     setLoading(true);
     setLocalError(null);
 
-    let root: Uint8Array | null = null;
-    let secretBytes: Uint8Array | null = null;
     try {
-      // Read signing-critical inputs (depositor pubkey, htlcVout) directly
-      // from the registry. Indexer data is untrusted for derivation domain
-      // separators.
-      const reader = getVaultRegistryReader();
-      const { basic, protocol } = await reader.getVaultData(activity.id as Hex);
-      const depositorBtcPubkey = basic.depositorBtcPubKey;
-      const htlcVout = protocol.htlcVout;
-      const onChainPrePeginTxHash = protocol.prePeginTxHash;
-
-      // Indexer-supplied tx is untrusted. Verify against on-chain
-      // prePeginTxHash before deriveVaultRoot fires the wallet popup.
-      const computedTxHash = calculateBtcTxHash(activity.unsignedPrePeginTx);
-      if (
-        computedTxHash.toLowerCase() !== onChainPrePeginTxHash.toLowerCase()
-      ) {
-        throw new Error(
-          `Pre-PegIn transaction hash mismatch: computed ${computedTxHash} from indexer tx, ` +
-            `but on-chain contract has ${onChainPrePeginTxHash}. ` +
-            `Aborting to prevent potential attack.`,
-        );
-      }
-
-      const fundingOutpoints = parseFundingOutpointsFromTx(
-        activity.unsignedPrePeginTx,
-      );
-
-      // Probe the wallet before deriveVaultRoot fires the signing popup. A
-      // wallet that locked since the modal opened fails fast here with an
-      // actionable error instead of a silent no-op (no popup appears).
-      await verifyBtcWalletLiveness(btcWalletProvider, connectedBtcAddress, {
-        probeConnection: shouldProbeWalletLiveness(
-          btcConnector?.connectedWallet?.id,
-        ),
+      const secretHex = await deriveHtlcSecretHex({
+        activity,
+        btcWalletProvider,
+        connectedBtcAddress,
+        walletId: btcConnector?.connectedWallet?.id,
       });
-
-      root = await deriveVaultRoot(btcWalletProvider, {
-        depositorBtcPubkey: hexToUint8Array(depositorBtcPubkey),
-        fundingOutpoints,
-      });
-
-      secretBytes = await expandHashlockSecret(root, htlcVout);
-      const secretHex = uint8ArrayToHex(secretBytes);
-
-      // Wipe before the unrelated `handleActivation` await — neither buffer
-      // is needed past secretHex extraction. Keeps live secret material out
-      // of memory while the activation state machine runs its on-chain calls.
-      secretBytes.fill(0);
-      secretBytes = null;
-      root.fill(0);
-      root = null;
 
       // Hand off to the existing activation state machine. It fetches
       // the canonical hashlock from the on-chain registry and rejects
@@ -616,16 +742,14 @@ export function ResumeActivationContent({
       // error there, not a silent submission.
       await handleActivation(secretHex);
     } catch (err) {
+      // Capture regardless of mount (no abort signal on this flow). The error
+      // message carries only tx hashes (regex-scrubbed) and derivation errors,
+      // never secret bytes. Only the UI update below is mount-gated.
+      captureFunnelFailure(TELEMETRY_STAGE.ACTIVATION_SECRET, err, activity.id);
       if (mountedRef.current) {
-        const msg =
-          err instanceof Error ? err.message : "Failed to activate BTC Vault";
-        setLocalError(msg);
+        setLocalError({ raw: err });
       }
     } finally {
-      // Memory wipes run regardless of mount: secret material must not
-      // linger if the user closed the modal mid-flight.
-      root?.fill(0);
-      secretBytes?.fill(0);
       if (mountedRef.current) setLoading(false);
     }
   }, [
@@ -641,55 +765,63 @@ export function ResumeActivationContent({
   // "not connected" error surfaces.
   useRunOnce(handleSubmit, !btcWalletProvider || Boolean(connectedBtcAddress));
 
-  const error = localError ?? activationError;
+  const error: CaughtError | null =
+    localError ?? (activationError != null ? { raw: activationError } : null);
+  // Terminal only applies to the activation failure (deadline passed), never a
+  // local pre-flight error — which localError would override via `??` above.
+  const isTerminal = localError == null && errorTerminal;
 
-  // After broadcasting the activation transaction the deposit waits for the
-  // contract to confirm. Track the live status so "Awaiting vault activation
-  // confirmation" has a terminal condition: once the contract reports ACTIVE we
-  // mark the flow complete instead of spinning forever (the dashboard already
-  // shows the vault as active by then).
+  // Track the live contract status so an activation completed elsewhere
+  // (another tab, a previous session) still lands on the success terminal
+  // while this branch is mounted.
   const pollingResult = useDepositPollingResult(activity.id);
   const active =
     pollingResult?.peginState?.contractStatus === ContractStatus.ACTIVE;
 
-  const renderStep = active
-    ? DepositFlowStep.COMPLETED
-    : activated
-      ? DepositFlowStep.AWAIT_ACTIVATION_CONFIRMATION
-      : activating
-        ? DepositFlowStep.ACTIVATE_VAULT
-        : DepositFlowStep.RETRIEVE_SECRET;
-  // Waiting only while the broadcast is in flight or confirmation is pending;
-  // the ACTIVE milestone is a completed terminal, not a background wait.
+  const renderStep = activating
+    ? DepositFlowStep.ACTIVATE_VAULT
+    : DepositFlowStep.RETRIEVE_SECRET;
   const derived = computeDepositDerivedState(
     renderStep,
     activating || loading,
-    activated && !active,
-    error,
+    false,
+    error != null,
   );
 
-  const handleDone = useCallback(() => {
-    if (activated) {
-      onSuccess();
-    } else {
-      onClose();
-    }
-  }, [activated, onSuccess, onClose]);
+  const { vaultCount, currentVaultIndex, perVaultSteps } =
+    useSplitVaultProgress(siblingVaultIds, activity.id, renderStep);
+
+  // Terminal: once activation is submitted (optimistic CONFIRMED) or the
+  // contract reports ACTIVE, show the activated success screen — never the
+  // completed stepper. PostDepositContinuationView swaps to the same screen
+  // when it re-selects on the polling update; this covers any window where
+  // this branch is still mounted.
+  if (activated || active) {
+    return <VaultActivatedView onGoToDashboard={onGoToDashboard} />;
+  }
 
   return (
     <DepositProgressView
       currentStep={renderStep}
-      error={error}
+      error={
+        error
+          ? isTerminal
+            ? COPY.deposit.errors.activationDeadlinePassed
+            : mapDepositError(error.raw)
+          : null
+      }
       isComplete={derived.isComplete}
       isProcessing={derived.isProcessing}
       canClose={derived.canClose}
       canContinueInBackground={derived.canContinueInBackground}
       payoutSigningProgress={null}
       peginSigningProgress={null}
-      onClose={handleDone}
-      successMessage={COPY.deposit.resume.activationSuccessMessage}
-      onRetry={error ? handleSubmit : undefined}
-      waitDetailPersistKey={activity.id}
+      vaultCount={vaultCount}
+      currentVaultIndex={currentVaultIndex}
+      perVaultSteps={perVaultSteps}
+      onClose={onClose}
+      onRetry={error && !isTerminal ? handleSubmit : undefined}
+      offchainParamsVersion={activity.offchainParamsVersion}
     />
   );
 }

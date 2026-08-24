@@ -1,5 +1,6 @@
 /** Tests for vaultTransactionService. */
 
+import type { DepositTerms } from "@babylonlabs-io/ts-sdk/tbv/core";
 import { beforeEach, describe, expect, it, vi, type Mock } from "vitest";
 
 import {
@@ -84,19 +85,35 @@ describe("vaultTransactionService - preparePeginTransaction", () => {
   ];
 
   const baseParams: PreparePeginParams = {
+    vaultCoreVersion: 1,
     pegInAmounts: [100000n],
     protocolFeeRate: 10n,
     minPeginFeeRate: 20n,
     mempoolFeeRate: 10,
     changeAddress: "bc1qtest",
     vaultProviderBtcPubkey: "pubkey",
+    commissionBps: 100,
     vaultKeeperBtcPubkeys: ["keeper1"],
     universalChallengerBtcPubkeys: ["challenger1"],
+    timelockAssert: 100,
     timelockPegin: 100,
     timelockRefund: 50,
     councilQuorum: 2,
     councilSize: 3,
     availableUTXOs: mockUTXOs,
+  };
+
+  const mockDepositTerms: DepositTerms = {
+    vaultCoreVersion: 1,
+    protocolFeeRate: 10n,
+    timelockPegin: 100,
+    timelockAssert: 100,
+    timelockRefund: 50,
+    prepeginTxid: "txhash123",
+    prepeginMaxFee: 1000n,
+    vaultKeeperBtcPubkeys: ["keeper1"],
+    universalChallengerBtcPubkeys: ["challenger1"],
+    vaults: [],
   };
 
   beforeEach(() => {
@@ -122,6 +139,7 @@ describe("vaultTransactionService - preparePeginTransaction", () => {
         wotsPkHashes: ["0x" + "00".repeat(32)],
         htlcSecretHexes: ["00".repeat(32)],
       },
+      depositTerms: mockDepositTerms,
     });
 
     mockBtcWallet = {
@@ -158,6 +176,7 @@ describe("vaultTransactionService - preparePeginTransaction", () => {
       // sizes the PegIn tx fee — distinct values, must not be swapped.
       expect(callArgs.protocolFeeRate).toBe(baseParams.protocolFeeRate);
       expect(callArgs.minPeginFeeRate).toBe(baseParams.minPeginFeeRate);
+      expect(callArgs.commissionBps).toBe(baseParams.commissionBps);
     });
 
     it("should return batch-shaped result with perVault array", async () => {
@@ -172,6 +191,7 @@ describe("vaultTransactionService - preparePeginTransaction", () => {
       expect(result.perVault[0].peginTxHash).toBe("0xtxhash123");
       expect(result.perVault[0].peginTxHex).toBe("0xpeginHex");
       expect(result.fundedPrePeginTxHex).toBe("0x123abc");
+      expect(result.depositTerms).toBe(mockDepositTerms);
     });
 
     it("should handle multi-vault params", async () => {

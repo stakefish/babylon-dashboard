@@ -14,12 +14,26 @@ export const MAX_PENDING_DURATION = 24 * 60 * 60 * 1000; // 24 hours - cleanup s
 // Pending collateral storage constants
 export const PENDING_COLLATERAL_KEY_PREFIX = "vault-pending-collateral";
 
-// Sentry replay sampling rate (5% by default)
-export const REPLAYS_ON_ERROR_RATE = Number.parseFloat(
-  process.env.NEXT_PUBLIC_REPLAYS_RATE ?? "0.05",
-);
+// External links surfaced on the pending-withdraw card.
+// Support points to the Babylon Discord invite (confirmed).
+// TODO(product): swap in the exact withdrawal-latency doc page once confirmed.
+export const WITHDRAWAL_LATENCY_DOCS_URL = "https://docs.babylonlabs.io";
+export const SUPPORT_URL = "https://discord.com/invite/babylonglobal";
+
+// Two-vault split docs link, surfaced from the split-option description in
+// UtxoSplitSelector. Points at the "decide how to split your BTC" step.
+export const TWO_VAULT_SPLIT_DOCS_URL =
+  "https://docs.babylonlabs.io/trustless-bitcoin-vault/use-for-lending/create-a-vault/#step-1-decide-how-to-split-your-btc";
+
+// Vault provider docs link, surfaced from the v3 provider picker intro. Null
+// until the exact "learn about / create your own vault provider" page exists;
+// the picker hides the link (and its clause) while this is null rather than
+// pointing the "create your own" copy at a placeholder page.
+// TODO(product): set the real vault-provider docs URL, then the link renders.
+export const VAULT_PROVIDER_DOCS_URL: string | null = null;
 
 // Bitcoin protocol constants
 export const BTC_BLOCK_TIME_MINS = 10;
 export const MINS_PER_HOUR = 60;
+export const MINS_PER_DAY = 1440;
 export const FALLBACK_FEE_RATE_SATS_VB = 1;

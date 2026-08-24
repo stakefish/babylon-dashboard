@@ -47,35 +47,115 @@ await walletClient.sendTransaction({ to: borrowTx.to, data: borrowTx.data });
 
 ## Interfaces
 
-### DepositorStruct
+### AssetDrawnRateRequest
 
-Defined in: [packages/babylon-ts-sdk/src/tbv/integrations/aave/types.ts:12](../../packages/babylon-ts-sdk/src/tbv/integrations/aave/types.ts#L12)
+Defined in: [packages/babylon-ts-sdk/src/tbv/integrations/aave/clients/hub.ts](https://github.com/babylonlabs-io/babylon-toolkit/blob/main/packages/babylon-ts-sdk/src/tbv/integrations/aave/clients/hub.ts)
 
-Depositor structure from contract
+Identifies one Hub asset to read the drawn rate for.
 
 #### Properties
 
-##### ethAddress
+##### hub
 
 ```ts
-ethAddress: `0x${string}`;
+hub: `0x${string}`;
 ```
 
-Defined in: [packages/babylon-ts-sdk/src/tbv/integrations/aave/types.ts:13](../../packages/babylon-ts-sdk/src/tbv/integrations/aave/types.ts#L13)
+Defined in: [packages/babylon-ts-sdk/src/tbv/integrations/aave/clients/hub.ts](https://github.com/babylonlabs-io/babylon-toolkit/blob/main/packages/babylon-ts-sdk/src/tbv/integrations/aave/clients/hub.ts)
 
-##### btcPubKey
+Hub contract address (from the reserve's `hub` field).
+
+##### assetId
 
 ```ts
-btcPubKey: `0x${string}`;
+assetId: number;
 ```
 
-Defined in: [packages/babylon-ts-sdk/src/tbv/integrations/aave/types.ts:14](../../packages/babylon-ts-sdk/src/tbv/integrations/aave/types.ts#L14)
+Defined in: [packages/babylon-ts-sdk/src/tbv/integrations/aave/clients/hub.ts](https://github.com/babylonlabs-io/babylon-toolkit/blob/main/packages/babylon-ts-sdk/src/tbv/integrations/aave/clients/hub.ts)
+
+Asset identifier on that Hub (from the reserve's `assetId` field).
+
+***
+
+### AssetDrawnRateResult
+
+Defined in: [packages/babylon-ts-sdk/src/tbv/integrations/aave/clients/hub.ts](https://github.com/babylonlabs-io/babylon-toolkit/blob/main/packages/babylon-ts-sdk/src/tbv/integrations/aave/clients/hub.ts)
+
+#### Properties
+
+##### hub
+
+```ts
+hub: `0x${string}`;
+```
+
+Defined in: [packages/babylon-ts-sdk/src/tbv/integrations/aave/clients/hub.ts](https://github.com/babylonlabs-io/babylon-toolkit/blob/main/packages/babylon-ts-sdk/src/tbv/integrations/aave/clients/hub.ts)
+
+##### assetId
+
+```ts
+assetId: number;
+```
+
+Defined in: [packages/babylon-ts-sdk/src/tbv/integrations/aave/clients/hub.ts](https://github.com/babylonlabs-io/babylon-toolkit/blob/main/packages/babylon-ts-sdk/src/tbv/integrations/aave/clients/hub.ts)
+
+##### rateRay
+
+```ts
+rateRay: bigint | null;
+```
+
+Defined in: [packages/babylon-ts-sdk/src/tbv/integrations/aave/clients/hub.ts](https://github.com/babylonlabs-io/babylon-toolkit/blob/main/packages/babylon-ts-sdk/src/tbv/integrations/aave/clients/hub.ts)
+
+Annual borrow (drawn) rate in RAY (1e27 = 100%), or null on revert.
+
+##### error
+
+```ts
+error: Error | null;
+```
+
+Defined in: [packages/babylon-ts-sdk/src/tbv/integrations/aave/clients/hub.ts](https://github.com/babylonlabs-io/babylon-toolkit/blob/main/packages/babylon-ts-sdk/src/tbv/integrations/aave/clients/hub.ts)
+
+***
+
+### ReservePriceResult
+
+Defined in: [packages/babylon-ts-sdk/src/tbv/integrations/aave/clients/oracle.ts](https://github.com/babylonlabs-io/babylon-toolkit/blob/main/packages/babylon-ts-sdk/src/tbv/integrations/aave/clients/oracle.ts)
+
+#### Properties
+
+##### reserveId
+
+```ts
+reserveId: bigint;
+```
+
+Defined in: [packages/babylon-ts-sdk/src/tbv/integrations/aave/clients/oracle.ts](https://github.com/babylonlabs-io/babylon-toolkit/blob/main/packages/babylon-ts-sdk/src/tbv/integrations/aave/clients/oracle.ts)
+
+##### priceRaw
+
+```ts
+priceRaw: bigint | null;
+```
+
+Defined in: [packages/babylon-ts-sdk/src/tbv/integrations/aave/clients/oracle.ts](https://github.com/babylonlabs-io/babylon-toolkit/blob/main/packages/babylon-ts-sdk/src/tbv/integrations/aave/clients/oracle.ts)
+
+Raw 1e8 base units, or null on revert.
+
+##### error
+
+```ts
+error: Error | null;
+```
+
+Defined in: [packages/babylon-ts-sdk/src/tbv/integrations/aave/clients/oracle.ts](https://github.com/babylonlabs-io/babylon-toolkit/blob/main/packages/babylon-ts-sdk/src/tbv/integrations/aave/clients/oracle.ts)
 
 ***
 
 ### AaveMarketPosition
 
-Defined in: [packages/babylon-ts-sdk/src/tbv/integrations/aave/types.ts:21](../../packages/babylon-ts-sdk/src/tbv/integrations/aave/types.ts#L21)
+Defined in: [packages/babylon-ts-sdk/src/tbv/integrations/aave/types.ts](https://github.com/babylonlabs-io/babylon-toolkit/blob/main/packages/babylon-ts-sdk/src/tbv/integrations/aave/types.ts)
 
 Aave position structure from the contract.
 The adapter resolves the user's proxy and vaults from their address.
@@ -88,7 +168,7 @@ The adapter resolves the user's proxy and vaults from their address.
 proxyContract: `0x${string}`;
 ```
 
-Defined in: [packages/babylon-ts-sdk/src/tbv/integrations/aave/types.ts:22](../../packages/babylon-ts-sdk/src/tbv/integrations/aave/types.ts#L22)
+Defined in: [packages/babylon-ts-sdk/src/tbv/integrations/aave/types.ts](https://github.com/babylonlabs-io/babylon-toolkit/blob/main/packages/babylon-ts-sdk/src/tbv/integrations/aave/types.ts)
 
 ##### vaultIds
 
@@ -96,7 +176,7 @@ Defined in: [packages/babylon-ts-sdk/src/tbv/integrations/aave/types.ts:22](../.
 vaultIds: `0x${string}`[];
 ```
 
-Defined in: [packages/babylon-ts-sdk/src/tbv/integrations/aave/types.ts:23](../../packages/babylon-ts-sdk/src/tbv/integrations/aave/types.ts#L23)
+Defined in: [packages/babylon-ts-sdk/src/tbv/integrations/aave/types.ts](https://github.com/babylonlabs-io/babylon-toolkit/blob/main/packages/babylon-ts-sdk/src/tbv/integrations/aave/types.ts)
 
 ##### totalCollateralBTC
 
@@ -104,7 +184,7 @@ Defined in: [packages/babylon-ts-sdk/src/tbv/integrations/aave/types.ts:23](../.
 totalCollateralBTC: bigint;
 ```
 
-Defined in: [packages/babylon-ts-sdk/src/tbv/integrations/aave/types.ts:29](../../packages/babylon-ts-sdk/src/tbv/integrations/aave/types.ts#L29)
+Defined in: [packages/babylon-ts-sdk/src/tbv/integrations/aave/types.ts](https://github.com/babylonlabs-io/babylon-toolkit/blob/main/packages/babylon-ts-sdk/src/tbv/integrations/aave/types.ts)
 
 Sum (in satoshis) of all vault amounts collateralised in this position.
 Mirrors `MarketPosition.totalCollateralBTC` returned by
@@ -114,7 +194,7 @@ Mirrors `MarketPosition.totalCollateralBTC` returned by
 
 ### AaveSpokeUserAccountData
 
-Defined in: [packages/babylon-ts-sdk/src/tbv/integrations/aave/types.ts:36](../../packages/babylon-ts-sdk/src/tbv/integrations/aave/types.ts#L36)
+Defined in: [packages/babylon-ts-sdk/src/tbv/integrations/aave/types.ts](https://github.com/babylonlabs-io/babylon-toolkit/blob/main/packages/babylon-ts-sdk/src/tbv/integrations/aave/types.ts)
 
 User account data from the Spoke
 Contains aggregated position health data calculated by Aave using on-chain oracle prices.
@@ -127,7 +207,7 @@ Contains aggregated position health data calculated by Aave using on-chain oracl
 riskPremium: bigint;
 ```
 
-Defined in: [packages/babylon-ts-sdk/src/tbv/integrations/aave/types.ts:38](../../packages/babylon-ts-sdk/src/tbv/integrations/aave/types.ts#L38)
+Defined in: [packages/babylon-ts-sdk/src/tbv/integrations/aave/types.ts](https://github.com/babylonlabs-io/babylon-toolkit/blob/main/packages/babylon-ts-sdk/src/tbv/integrations/aave/types.ts)
 
 Risk premium
 
@@ -137,7 +217,7 @@ Risk premium
 avgCollateralFactor: bigint;
 ```
 
-Defined in: [packages/babylon-ts-sdk/src/tbv/integrations/aave/types.ts:40](../../packages/babylon-ts-sdk/src/tbv/integrations/aave/types.ts#L40)
+Defined in: [packages/babylon-ts-sdk/src/tbv/integrations/aave/types.ts](https://github.com/babylonlabs-io/babylon-toolkit/blob/main/packages/babylon-ts-sdk/src/tbv/integrations/aave/types.ts)
 
 Weighted average collateral factor in WAD (1e18 = 100%)
 
@@ -147,7 +227,7 @@ Weighted average collateral factor in WAD (1e18 = 100%)
 healthFactor: bigint;
 ```
 
-Defined in: [packages/babylon-ts-sdk/src/tbv/integrations/aave/types.ts:42](../../packages/babylon-ts-sdk/src/tbv/integrations/aave/types.ts#L42)
+Defined in: [packages/babylon-ts-sdk/src/tbv/integrations/aave/types.ts](https://github.com/babylonlabs-io/babylon-toolkit/blob/main/packages/babylon-ts-sdk/src/tbv/integrations/aave/types.ts)
 
 Health factor in WAD (1e18 = 1.00)
 
@@ -157,7 +237,7 @@ Health factor in WAD (1e18 = 1.00)
 totalCollateralValue: bigint;
 ```
 
-Defined in: [packages/babylon-ts-sdk/src/tbv/integrations/aave/types.ts:44](../../packages/babylon-ts-sdk/src/tbv/integrations/aave/types.ts#L44)
+Defined in: [packages/babylon-ts-sdk/src/tbv/integrations/aave/types.ts](https://github.com/babylonlabs-io/babylon-toolkit/blob/main/packages/babylon-ts-sdk/src/tbv/integrations/aave/types.ts)
 
 Total collateral value in base currency (1e26 = $1 USD)
 
@@ -167,7 +247,7 @@ Total collateral value in base currency (1e26 = $1 USD)
 totalDebtValueRay: bigint;
 ```
 
-Defined in: [packages/babylon-ts-sdk/src/tbv/integrations/aave/types.ts:46](../../packages/babylon-ts-sdk/src/tbv/integrations/aave/types.ts#L46)
+Defined in: [packages/babylon-ts-sdk/src/tbv/integrations/aave/types.ts](https://github.com/babylonlabs-io/babylon-toolkit/blob/main/packages/babylon-ts-sdk/src/tbv/integrations/aave/types.ts)
 
 Total debt value in base currency, scaled by RAY (1e35 = $1 USD)
 
@@ -177,7 +257,7 @@ Total debt value in base currency, scaled by RAY (1e35 = $1 USD)
 activeCollateralCount: bigint;
 ```
 
-Defined in: [packages/babylon-ts-sdk/src/tbv/integrations/aave/types.ts:48](../../packages/babylon-ts-sdk/src/tbv/integrations/aave/types.ts#L48)
+Defined in: [packages/babylon-ts-sdk/src/tbv/integrations/aave/types.ts](https://github.com/babylonlabs-io/babylon-toolkit/blob/main/packages/babylon-ts-sdk/src/tbv/integrations/aave/types.ts)
 
 Number of active collateral reserves
 
@@ -187,7 +267,7 @@ Number of active collateral reserves
 borrowCount: bigint;
 ```
 
-Defined in: [packages/babylon-ts-sdk/src/tbv/integrations/aave/types.ts:50](../../packages/babylon-ts-sdk/src/tbv/integrations/aave/types.ts#L50)
+Defined in: [packages/babylon-ts-sdk/src/tbv/integrations/aave/types.ts](https://github.com/babylonlabs-io/babylon-toolkit/blob/main/packages/babylon-ts-sdk/src/tbv/integrations/aave/types.ts)
 
 Number of borrowed reserves
 
@@ -195,7 +275,7 @@ Number of borrowed reserves
 
 ### AaveSpokeUserPosition
 
-Defined in: [packages/babylon-ts-sdk/src/tbv/integrations/aave/types.ts:56](../../packages/babylon-ts-sdk/src/tbv/integrations/aave/types.ts#L56)
+Defined in: [packages/babylon-ts-sdk/src/tbv/integrations/aave/types.ts](https://github.com/babylonlabs-io/babylon-toolkit/blob/main/packages/babylon-ts-sdk/src/tbv/integrations/aave/types.ts)
 
 User position data from the Spoke
 
@@ -207,7 +287,7 @@ User position data from the Spoke
 drawnShares: bigint;
 ```
 
-Defined in: [packages/babylon-ts-sdk/src/tbv/integrations/aave/types.ts:58](../../packages/babylon-ts-sdk/src/tbv/integrations/aave/types.ts#L58)
+Defined in: [packages/babylon-ts-sdk/src/tbv/integrations/aave/types.ts](https://github.com/babylonlabs-io/babylon-toolkit/blob/main/packages/babylon-ts-sdk/src/tbv/integrations/aave/types.ts)
 
 Drawn debt shares
 
@@ -217,7 +297,7 @@ Drawn debt shares
 premiumShares: bigint;
 ```
 
-Defined in: [packages/babylon-ts-sdk/src/tbv/integrations/aave/types.ts:60](../../packages/babylon-ts-sdk/src/tbv/integrations/aave/types.ts#L60)
+Defined in: [packages/babylon-ts-sdk/src/tbv/integrations/aave/types.ts](https://github.com/babylonlabs-io/babylon-toolkit/blob/main/packages/babylon-ts-sdk/src/tbv/integrations/aave/types.ts)
 
 Premium shares (interest)
 
@@ -227,7 +307,7 @@ Premium shares (interest)
 premiumOffsetRay: bigint;
 ```
 
-Defined in: [packages/babylon-ts-sdk/src/tbv/integrations/aave/types.ts:62](../../packages/babylon-ts-sdk/src/tbv/integrations/aave/types.ts#L62)
+Defined in: [packages/babylon-ts-sdk/src/tbv/integrations/aave/types.ts](https://github.com/babylonlabs-io/babylon-toolkit/blob/main/packages/babylon-ts-sdk/src/tbv/integrations/aave/types.ts)
 
 Premium offset, expressed in asset units scaled by RAY (signed)
 
@@ -237,7 +317,7 @@ Premium offset, expressed in asset units scaled by RAY (signed)
 suppliedShares: bigint;
 ```
 
-Defined in: [packages/babylon-ts-sdk/src/tbv/integrations/aave/types.ts:64](../../packages/babylon-ts-sdk/src/tbv/integrations/aave/types.ts#L64)
+Defined in: [packages/babylon-ts-sdk/src/tbv/integrations/aave/types.ts](https://github.com/babylonlabs-io/babylon-toolkit/blob/main/packages/babylon-ts-sdk/src/tbv/integrations/aave/types.ts)
 
 Supplied collateral shares
 
@@ -247,7 +327,7 @@ Supplied collateral shares
 dynamicConfigKey: number;
 ```
 
-Defined in: [packages/babylon-ts-sdk/src/tbv/integrations/aave/types.ts:66](../../packages/babylon-ts-sdk/src/tbv/integrations/aave/types.ts#L66)
+Defined in: [packages/babylon-ts-sdk/src/tbv/integrations/aave/types.ts](https://github.com/babylonlabs-io/babylon-toolkit/blob/main/packages/babylon-ts-sdk/src/tbv/integrations/aave/types.ts)
 
 Dynamic config key
 
@@ -255,7 +335,7 @@ Dynamic config key
 
 ### TransactionParams
 
-Defined in: [packages/babylon-ts-sdk/src/tbv/integrations/aave/types.ts:73](../../packages/babylon-ts-sdk/src/tbv/integrations/aave/types.ts#L73)
+Defined in: [packages/babylon-ts-sdk/src/tbv/integrations/aave/types.ts](https://github.com/babylonlabs-io/babylon-toolkit/blob/main/packages/babylon-ts-sdk/src/tbv/integrations/aave/types.ts)
 
 Transaction parameters for unsigned transactions
 Compatible with viem's transaction format
@@ -268,7 +348,7 @@ Compatible with viem's transaction format
 to: `0x${string}`;
 ```
 
-Defined in: [packages/babylon-ts-sdk/src/tbv/integrations/aave/types.ts:75](../../packages/babylon-ts-sdk/src/tbv/integrations/aave/types.ts#L75)
+Defined in: [packages/babylon-ts-sdk/src/tbv/integrations/aave/types.ts](https://github.com/babylonlabs-io/babylon-toolkit/blob/main/packages/babylon-ts-sdk/src/tbv/integrations/aave/types.ts)
 
 Contract address to call
 
@@ -278,7 +358,7 @@ Contract address to call
 data: `0x${string}`;
 ```
 
-Defined in: [packages/babylon-ts-sdk/src/tbv/integrations/aave/types.ts:77](../../packages/babylon-ts-sdk/src/tbv/integrations/aave/types.ts#L77)
+Defined in: [packages/babylon-ts-sdk/src/tbv/integrations/aave/types.ts](https://github.com/babylonlabs-io/babylon-toolkit/blob/main/packages/babylon-ts-sdk/src/tbv/integrations/aave/types.ts)
 
 Encoded function data
 
@@ -288,7 +368,7 @@ Encoded function data
 optional value: bigint;
 ```
 
-Defined in: [packages/babylon-ts-sdk/src/tbv/integrations/aave/types.ts:79](../../packages/babylon-ts-sdk/src/tbv/integrations/aave/types.ts#L79)
+Defined in: [packages/babylon-ts-sdk/src/tbv/integrations/aave/types.ts](https://github.com/babylonlabs-io/babylon-toolkit/blob/main/packages/babylon-ts-sdk/src/tbv/integrations/aave/types.ts)
 
 Value to send (optional, defaults to 0)
 
@@ -296,7 +376,7 @@ Value to send (optional, defaults to 0)
 
 ### PositionSizeParams
 
-Defined in: [packages/babylon-ts-sdk/src/tbv/integrations/aave/types.ts:86](../../packages/babylon-ts-sdk/src/tbv/integrations/aave/types.ts#L86)
+Defined in: [packages/babylon-ts-sdk/src/tbv/integrations/aave/types.ts](https://github.com/babylonlabs-io/babylon-toolkit/blob/main/packages/babylon-ts-sdk/src/tbv/integrations/aave/types.ts)
 
 Position size parameters from the AaveIntegrationAdapter contract.
 Controls maximum BTC position size and vault count per user.
@@ -309,7 +389,7 @@ Controls maximum BTC position size and vault count per user.
 maxPositionBTC: bigint;
 ```
 
-Defined in: [packages/babylon-ts-sdk/src/tbv/integrations/aave/types.ts:88](../../packages/babylon-ts-sdk/src/tbv/integrations/aave/types.ts#L88)
+Defined in: [packages/babylon-ts-sdk/src/tbv/integrations/aave/types.ts](https://github.com/babylonlabs-io/babylon-toolkit/blob/main/packages/babylon-ts-sdk/src/tbv/integrations/aave/types.ts)
 
 Maximum BTC position size allowed (in satoshis)
 
@@ -319,7 +399,7 @@ Maximum BTC position size allowed (in satoshis)
 maxVaultsPerPosition: bigint;
 ```
 
-Defined in: [packages/babylon-ts-sdk/src/tbv/integrations/aave/types.ts:90](../../packages/babylon-ts-sdk/src/tbv/integrations/aave/types.ts#L90)
+Defined in: [packages/babylon-ts-sdk/src/tbv/integrations/aave/types.ts](https://github.com/babylonlabs-io/babylon-toolkit/blob/main/packages/babylon-ts-sdk/src/tbv/integrations/aave/types.ts)
 
 Maximum number of vaults per position
 
@@ -327,7 +407,7 @@ Maximum number of vaults per position
 
 ### CascadeVault
 
-Defined in: [packages/babylon-ts-sdk/src/tbv/integrations/aave/utils/cascadeSimulation.ts:17](../../packages/babylon-ts-sdk/src/tbv/integrations/aave/utils/cascadeSimulation.ts#L17)
+Defined in: [packages/babylon-ts-sdk/src/tbv/integrations/aave/utils/cascadeSimulation.ts](https://github.com/babylonlabs-io/babylon-toolkit/blob/main/packages/babylon-ts-sdk/src/tbv/integrations/aave/utils/cascadeSimulation.ts)
 
 Minimal vault shape for cascade simulation.
 UI layers extend this with display fields (e.g. `name`).
@@ -340,7 +420,7 @@ UI layers extend this with display fields (e.g. `name`).
 id: string;
 ```
 
-Defined in: [packages/babylon-ts-sdk/src/tbv/integrations/aave/utils/cascadeSimulation.ts:18](../../packages/babylon-ts-sdk/src/tbv/integrations/aave/utils/cascadeSimulation.ts#L18)
+Defined in: [packages/babylon-ts-sdk/src/tbv/integrations/aave/utils/cascadeSimulation.ts](https://github.com/babylonlabs-io/babylon-toolkit/blob/main/packages/babylon-ts-sdk/src/tbv/integrations/aave/utils/cascadeSimulation.ts)
 
 ##### btc
 
@@ -348,250 +428,13 @@ Defined in: [packages/babylon-ts-sdk/src/tbv/integrations/aave/utils/cascadeSimu
 btc: number;
 ```
 
-Defined in: [packages/babylon-ts-sdk/src/tbv/integrations/aave/utils/cascadeSimulation.ts:19](../../packages/babylon-ts-sdk/src/tbv/integrations/aave/utils/cascadeSimulation.ts#L19)
-
-***
-
-### OrderedVault
-
-Defined in: [packages/babylon-ts-sdk/src/tbv/integrations/aave/utils/seizureSimulation.ts:17](../../packages/babylon-ts-sdk/src/tbv/integrations/aave/utils/seizureSimulation.ts#L17)
-
-A vault with its on-chain ID and BTC amount, in liquidation-priority order.
-
-#### Properties
-
-##### id
-
-```ts
-id: string;
-```
-
-Defined in: [packages/babylon-ts-sdk/src/tbv/integrations/aave/utils/seizureSimulation.ts:19](../../packages/babylon-ts-sdk/src/tbv/integrations/aave/utils/seizureSimulation.ts#L19)
-
-On-chain vault ID (bytes32 hex string)
-
-##### amountSats
-
-```ts
-amountSats: bigint;
-```
-
-Defined in: [packages/babylon-ts-sdk/src/tbv/integrations/aave/utils/seizureSimulation.ts:21](../../packages/babylon-ts-sdk/src/tbv/integrations/aave/utils/seizureSimulation.ts#L21)
-
-Vault amount in satoshis
-
-***
-
-### PrefixSeizureParams
-
-Defined in: [packages/babylon-ts-sdk/src/tbv/integrations/aave/utils/seizureSimulation.ts:27](../../packages/babylon-ts-sdk/src/tbv/integrations/aave/utils/seizureSimulation.ts#L27)
-
-Parameters for simulating prefix seizure.
-
-#### Properties
-
-##### orderedVaults
-
-```ts
-orderedVaults: OrderedVault[];
-```
-
-Defined in: [packages/babylon-ts-sdk/src/tbv/integrations/aave/utils/seizureSimulation.ts:29](../../packages/babylon-ts-sdk/src/tbv/integrations/aave/utils/seizureSimulation.ts#L29)
-
-Vaults in their current on-chain order (index 0 is seized first)
-
-##### targetSeizureSats
-
-```ts
-targetSeizureSats: bigint;
-```
-
-Defined in: [packages/babylon-ts-sdk/src/tbv/integrations/aave/utils/seizureSimulation.ts:31](../../packages/babylon-ts-sdk/src/tbv/integrations/aave/utils/seizureSimulation.ts#L31)
-
-Target seizure amount in satoshis
-
-***
-
-### PrefixSeizureResult
-
-Defined in: [packages/babylon-ts-sdk/src/tbv/integrations/aave/utils/seizureSimulation.ts:37](../../packages/babylon-ts-sdk/src/tbv/integrations/aave/utils/seizureSimulation.ts#L37)
-
-Result of a prefix seizure simulation.
-
-#### Properties
-
-##### seizedVaults
-
-```ts
-seizedVaults: OrderedVault[];
-```
-
-Defined in: [packages/babylon-ts-sdk/src/tbv/integrations/aave/utils/seizureSimulation.ts:39](../../packages/babylon-ts-sdk/src/tbv/integrations/aave/utils/seizureSimulation.ts#L39)
-
-Vaults that would be seized (the prefix)
-
-##### protectedVaults
-
-```ts
-protectedVaults: OrderedVault[];
-```
-
-Defined in: [packages/babylon-ts-sdk/src/tbv/integrations/aave/utils/seizureSimulation.ts:41](../../packages/babylon-ts-sdk/src/tbv/integrations/aave/utils/seizureSimulation.ts#L41)
-
-Vaults that survive liquidation
-
-##### overSeizureSats
-
-```ts
-overSeizureSats: bigint;
-```
-
-Defined in: [packages/babylon-ts-sdk/src/tbv/integrations/aave/utils/seizureSimulation.ts:43](../../packages/babylon-ts-sdk/src/tbv/integrations/aave/utils/seizureSimulation.ts#L43)
-
-Over-seizure amount in satoshis (total seized - target)
-
-##### cutoffIndex
-
-```ts
-cutoffIndex: number;
-```
-
-Defined in: [packages/babylon-ts-sdk/src/tbv/integrations/aave/utils/seizureSimulation.ts:45](../../packages/babylon-ts-sdk/src/tbv/integrations/aave/utils/seizureSimulation.ts#L45)
-
-Index where seizure stops (exclusive: vaults[0..cutoffIndex] are seized)
-
-##### totalSeizedSats
-
-```ts
-totalSeizedSats: bigint;
-```
-
-Defined in: [packages/babylon-ts-sdk/src/tbv/integrations/aave/utils/seizureSimulation.ts:47](../../packages/babylon-ts-sdk/src/tbv/integrations/aave/utils/seizureSimulation.ts#L47)
-
-Total amount seized in satoshis
-
-***
-
-### TargetSeizureParams
-
-Defined in: [packages/babylon-ts-sdk/src/tbv/integrations/aave/utils/seizureSimulation.ts:53](../../packages/babylon-ts-sdk/src/tbv/integrations/aave/utils/seizureSimulation.ts#L53)
-
-Parameters for computing target seizure in satoshis.
-
-#### Properties
-
-##### totalCollateralSats
-
-```ts
-totalCollateralSats: bigint;
-```
-
-Defined in: [packages/babylon-ts-sdk/src/tbv/integrations/aave/utils/seizureSimulation.ts:55](../../packages/babylon-ts-sdk/src/tbv/integrations/aave/utils/seizureSimulation.ts#L55)
-
-Total collateral in satoshis
-
-##### CF
-
-```ts
-CF: number;
-```
-
-Defined in: [packages/babylon-ts-sdk/src/tbv/integrations/aave/utils/seizureSimulation.ts:57](../../packages/babylon-ts-sdk/src/tbv/integrations/aave/utils/seizureSimulation.ts#L57)
-
-Collateral factor (e.g. 0.75)
-
-##### LB
-
-```ts
-LB: number;
-```
-
-Defined in: [packages/babylon-ts-sdk/src/tbv/integrations/aave/utils/seizureSimulation.ts:59](../../packages/babylon-ts-sdk/src/tbv/integrations/aave/utils/seizureSimulation.ts#L59)
-
-Liquidation bonus (e.g. 1.05)
-
-##### THF
-
-```ts
-THF: number;
-```
-
-Defined in: [packages/babylon-ts-sdk/src/tbv/integrations/aave/utils/seizureSimulation.ts:61](../../packages/babylon-ts-sdk/src/tbv/integrations/aave/utils/seizureSimulation.ts#L61)
-
-Target health factor (e.g. 1.10)
-
-##### expectedHF
-
-```ts
-expectedHF: number;
-```
-
-Defined in: [packages/babylon-ts-sdk/src/tbv/integrations/aave/utils/seizureSimulation.ts:63](../../packages/babylon-ts-sdk/src/tbv/integrations/aave/utils/seizureSimulation.ts#L63)
-
-Expected health factor at liquidation (e.g. 0.95)
-
-***
-
-### SelectableVault
-
-Defined in: [packages/babylon-ts-sdk/src/tbv/integrations/aave/utils/vaultSelection.ts:8](../../packages/babylon-ts-sdk/src/tbv/integrations/aave/utils/vaultSelection.ts#L8)
-
-Vault Selection Utilities for Aave
-
-Provides functions for selecting vaults to match a target collateral amount.
-Uses a greedy algorithm that prioritizes larger vaults first.
-
-#### Properties
-
-##### id
-
-```ts
-id: string;
-```
-
-Defined in: [packages/babylon-ts-sdk/src/tbv/integrations/aave/utils/vaultSelection.ts:9](../../packages/babylon-ts-sdk/src/tbv/integrations/aave/utils/vaultSelection.ts#L9)
-
-##### amount
-
-```ts
-amount: number;
-```
-
-Defined in: [packages/babylon-ts-sdk/src/tbv/integrations/aave/utils/vaultSelection.ts:10](../../packages/babylon-ts-sdk/src/tbv/integrations/aave/utils/vaultSelection.ts#L10)
-
-***
-
-### VaultSelectionResult
-
-Defined in: [packages/babylon-ts-sdk/src/tbv/integrations/aave/utils/vaultSelection.ts:13](../../packages/babylon-ts-sdk/src/tbv/integrations/aave/utils/vaultSelection.ts#L13)
-
-#### Properties
-
-##### vaultIds
-
-```ts
-vaultIds: string[];
-```
-
-Defined in: [packages/babylon-ts-sdk/src/tbv/integrations/aave/utils/vaultSelection.ts:15](../../packages/babylon-ts-sdk/src/tbv/integrations/aave/utils/vaultSelection.ts#L15)
-
-IDs of selected vaults
-
-##### actualAmount
-
-```ts
-actualAmount: number;
-```
-
-Defined in: [packages/babylon-ts-sdk/src/tbv/integrations/aave/utils/vaultSelection.ts:17](../../packages/babylon-ts-sdk/src/tbv/integrations/aave/utils/vaultSelection.ts#L17)
-
-Actual total amount from selected vaults
+Defined in: [packages/babylon-ts-sdk/src/tbv/integrations/aave/utils/cascadeSimulation.ts](https://github.com/babylonlabs-io/babylon-toolkit/blob/main/packages/babylon-ts-sdk/src/tbv/integrations/aave/utils/cascadeSimulation.ts)
 
 ***
 
 ### OptimalSplitParams
 
-Defined in: [packages/babylon-ts-sdk/src/tbv/integrations/aave/utils/vaultSplit.ts:44](../../packages/babylon-ts-sdk/src/tbv/integrations/aave/utils/vaultSplit.ts#L44)
+Defined in: [packages/babylon-ts-sdk/src/tbv/integrations/aave/utils/vaultSplit.ts](https://github.com/babylonlabs-io/babylon-toolkit/blob/main/packages/babylon-ts-sdk/src/tbv/integrations/aave/utils/vaultSplit.ts)
 
 Parameters for computing the optimal vault split.
 
@@ -603,7 +446,7 @@ Parameters for computing the optimal vault split.
 totalBtc: bigint;
 ```
 
-Defined in: [packages/babylon-ts-sdk/src/tbv/integrations/aave/utils/vaultSplit.ts:46](../../packages/babylon-ts-sdk/src/tbv/integrations/aave/utils/vaultSplit.ts#L46)
+Defined in: [packages/babylon-ts-sdk/src/tbv/integrations/aave/utils/vaultSplit.ts](https://github.com/babylonlabs-io/babylon-toolkit/blob/main/packages/babylon-ts-sdk/src/tbv/integrations/aave/utils/vaultSplit.ts)
 
 Total deposit amount in satoshis
 
@@ -613,7 +456,7 @@ Total deposit amount in satoshis
 CF: number;
 ```
 
-Defined in: [packages/babylon-ts-sdk/src/tbv/integrations/aave/utils/vaultSplit.ts:48](../../packages/babylon-ts-sdk/src/tbv/integrations/aave/utils/vaultSplit.ts#L48)
+Defined in: [packages/babylon-ts-sdk/src/tbv/integrations/aave/utils/vaultSplit.ts](https://github.com/babylonlabs-io/babylon-toolkit/blob/main/packages/babylon-ts-sdk/src/tbv/integrations/aave/utils/vaultSplit.ts)
 
 Collateral factor (e.g. 0.75 for 75%)
 
@@ -623,7 +466,7 @@ Collateral factor (e.g. 0.75 for 75%)
 LB: number;
 ```
 
-Defined in: [packages/babylon-ts-sdk/src/tbv/integrations/aave/utils/vaultSplit.ts:50](../../packages/babylon-ts-sdk/src/tbv/integrations/aave/utils/vaultSplit.ts#L50)
+Defined in: [packages/babylon-ts-sdk/src/tbv/integrations/aave/utils/vaultSplit.ts](https://github.com/babylonlabs-io/babylon-toolkit/blob/main/packages/babylon-ts-sdk/src/tbv/integrations/aave/utils/vaultSplit.ts)
 
 Liquidation bonus (e.g. 1.05 for 5% bonus)
 
@@ -633,7 +476,7 @@ Liquidation bonus (e.g. 1.05 for 5% bonus)
 THF: number;
 ```
 
-Defined in: [packages/babylon-ts-sdk/src/tbv/integrations/aave/utils/vaultSplit.ts:52](../../packages/babylon-ts-sdk/src/tbv/integrations/aave/utils/vaultSplit.ts#L52)
+Defined in: [packages/babylon-ts-sdk/src/tbv/integrations/aave/utils/vaultSplit.ts](https://github.com/babylonlabs-io/babylon-toolkit/blob/main/packages/babylon-ts-sdk/src/tbv/integrations/aave/utils/vaultSplit.ts)
 
 Target health factor (e.g. 1.10)
 
@@ -643,7 +486,7 @@ Target health factor (e.g. 1.10)
 expectedHF: number;
 ```
 
-Defined in: [packages/babylon-ts-sdk/src/tbv/integrations/aave/utils/vaultSplit.ts:54](../../packages/babylon-ts-sdk/src/tbv/integrations/aave/utils/vaultSplit.ts#L54)
+Defined in: [packages/babylon-ts-sdk/src/tbv/integrations/aave/utils/vaultSplit.ts](https://github.com/babylonlabs-io/babylon-toolkit/blob/main/packages/babylon-ts-sdk/src/tbv/integrations/aave/utils/vaultSplit.ts)
 
 Expected health factor at liquidation (e.g. 0.95)
 
@@ -653,7 +496,7 @@ Expected health factor at liquidation (e.g. 0.95)
 safetyMargin: number;
 ```
 
-Defined in: [packages/babylon-ts-sdk/src/tbv/integrations/aave/utils/vaultSplit.ts:56](../../packages/babylon-ts-sdk/src/tbv/integrations/aave/utils/vaultSplit.ts#L56)
+Defined in: [packages/babylon-ts-sdk/src/tbv/integrations/aave/utils/vaultSplit.ts](https://github.com/babylonlabs-io/babylon-toolkit/blob/main/packages/babylon-ts-sdk/src/tbv/integrations/aave/utils/vaultSplit.ts)
 
 Safety margin multiplier for the sacrificial vault (e.g. 1.05 for 5% buffer)
 
@@ -661,7 +504,7 @@ Safety margin multiplier for the sacrificial vault (e.g. 1.05 for 5% buffer)
 
 ### OptimalSplitResult
 
-Defined in: [packages/babylon-ts-sdk/src/tbv/integrations/aave/utils/vaultSplit.ts:62](../../packages/babylon-ts-sdk/src/tbv/integrations/aave/utils/vaultSplit.ts#L62)
+Defined in: [packages/babylon-ts-sdk/src/tbv/integrations/aave/utils/vaultSplit.ts](https://github.com/babylonlabs-io/babylon-toolkit/blob/main/packages/babylon-ts-sdk/src/tbv/integrations/aave/utils/vaultSplit.ts)
 
 Result of the optimal vault split computation.
 
@@ -673,7 +516,7 @@ Result of the optimal vault split computation.
 sacrificialVault: bigint;
 ```
 
-Defined in: [packages/babylon-ts-sdk/src/tbv/integrations/aave/utils/vaultSplit.ts:64](../../packages/babylon-ts-sdk/src/tbv/integrations/aave/utils/vaultSplit.ts#L64)
+Defined in: [packages/babylon-ts-sdk/src/tbv/integrations/aave/utils/vaultSplit.ts](https://github.com/babylonlabs-io/babylon-toolkit/blob/main/packages/babylon-ts-sdk/src/tbv/integrations/aave/utils/vaultSplit.ts)
 
 Sacrificial vault amount in satoshis (index 0, seized first)
 
@@ -683,7 +526,7 @@ Sacrificial vault amount in satoshis (index 0, seized first)
 protectedVault: bigint;
 ```
 
-Defined in: [packages/babylon-ts-sdk/src/tbv/integrations/aave/utils/vaultSplit.ts:66](../../packages/babylon-ts-sdk/src/tbv/integrations/aave/utils/vaultSplit.ts#L66)
+Defined in: [packages/babylon-ts-sdk/src/tbv/integrations/aave/utils/vaultSplit.ts](https://github.com/babylonlabs-io/babylon-toolkit/blob/main/packages/babylon-ts-sdk/src/tbv/integrations/aave/utils/vaultSplit.ts)
 
 Protected vault amount in satoshis (index 1, survives liquidation)
 
@@ -693,7 +536,7 @@ Protected vault amount in satoshis (index 1, survives liquidation)
 seizedFraction: number;
 ```
 
-Defined in: [packages/babylon-ts-sdk/src/tbv/integrations/aave/utils/vaultSplit.ts:68](../../packages/babylon-ts-sdk/src/tbv/integrations/aave/utils/vaultSplit.ts#L68)
+Defined in: [packages/babylon-ts-sdk/src/tbv/integrations/aave/utils/vaultSplit.ts](https://github.com/babylonlabs-io/babylon-toolkit/blob/main/packages/babylon-ts-sdk/src/tbv/integrations/aave/utils/vaultSplit.ts)
 
 Fraction of collateral that would be seized (0–1)
 
@@ -703,7 +546,7 @@ Fraction of collateral that would be seized (0–1)
 targetSeizureBtc: bigint;
 ```
 
-Defined in: [packages/babylon-ts-sdk/src/tbv/integrations/aave/utils/vaultSplit.ts:70](../../packages/babylon-ts-sdk/src/tbv/integrations/aave/utils/vaultSplit.ts#L70)
+Defined in: [packages/babylon-ts-sdk/src/tbv/integrations/aave/utils/vaultSplit.ts](https://github.com/babylonlabs-io/babylon-toolkit/blob/main/packages/babylon-ts-sdk/src/tbv/integrations/aave/utils/vaultSplit.ts)
 
 Raw target seizure amount in satoshis (before safety margin)
 
@@ -711,7 +554,7 @@ Raw target seizure amount in satoshis (before safety margin)
 
 ### MinDepositForSplitParams
 
-Defined in: [packages/babylon-ts-sdk/src/tbv/integrations/aave/utils/vaultSplit.ts:76](../../packages/babylon-ts-sdk/src/tbv/integrations/aave/utils/vaultSplit.ts#L76)
+Defined in: [packages/babylon-ts-sdk/src/tbv/integrations/aave/utils/vaultSplit.ts](https://github.com/babylonlabs-io/babylon-toolkit/blob/main/packages/babylon-ts-sdk/src/tbv/integrations/aave/utils/vaultSplit.ts)
 
 Parameters for computing the minimum deposit required for a split.
 
@@ -723,7 +566,7 @@ Parameters for computing the minimum deposit required for a split.
 minPegin: bigint;
 ```
 
-Defined in: [packages/babylon-ts-sdk/src/tbv/integrations/aave/utils/vaultSplit.ts:78](../../packages/babylon-ts-sdk/src/tbv/integrations/aave/utils/vaultSplit.ts#L78)
+Defined in: [packages/babylon-ts-sdk/src/tbv/integrations/aave/utils/vaultSplit.ts](https://github.com/babylonlabs-io/babylon-toolkit/blob/main/packages/babylon-ts-sdk/src/tbv/integrations/aave/utils/vaultSplit.ts)
 
 Minimum peg-in amount in satoshis
 
@@ -733,7 +576,7 @@ Minimum peg-in amount in satoshis
 seizedFraction: number;
 ```
 
-Defined in: [packages/babylon-ts-sdk/src/tbv/integrations/aave/utils/vaultSplit.ts:80](../../packages/babylon-ts-sdk/src/tbv/integrations/aave/utils/vaultSplit.ts#L80)
+Defined in: [packages/babylon-ts-sdk/src/tbv/integrations/aave/utils/vaultSplit.ts](https://github.com/babylonlabs-io/babylon-toolkit/blob/main/packages/babylon-ts-sdk/src/tbv/integrations/aave/utils/vaultSplit.ts)
 
 Seized fraction (0–1), from computeOptimalSplit or computeSeizedFraction
 
@@ -743,129 +586,9 @@ Seized fraction (0–1), from computeOptimalSplit or computeSeizedFraction
 safetyMargin: number;
 ```
 
-Defined in: [packages/babylon-ts-sdk/src/tbv/integrations/aave/utils/vaultSplit.ts:82](../../packages/babylon-ts-sdk/src/tbv/integrations/aave/utils/vaultSplit.ts#L82)
+Defined in: [packages/babylon-ts-sdk/src/tbv/integrations/aave/utils/vaultSplit.ts](https://github.com/babylonlabs-io/babylon-toolkit/blob/main/packages/babylon-ts-sdk/src/tbv/integrations/aave/utils/vaultSplit.ts)
 
 Safety margin multiplier (e.g. 1.05)
-
-***
-
-### RebalanceCheckParams
-
-Defined in: [packages/babylon-ts-sdk/src/tbv/integrations/aave/utils/vaultSplit.ts:88](../../packages/babylon-ts-sdk/src/tbv/integrations/aave/utils/vaultSplit.ts#L88)
-
-Parameters for checking if a vault rebalance is needed.
-
-#### Properties
-
-##### vaultAmounts
-
-```ts
-vaultAmounts: bigint[];
-```
-
-Defined in: [packages/babylon-ts-sdk/src/tbv/integrations/aave/utils/vaultSplit.ts:90](../../packages/babylon-ts-sdk/src/tbv/integrations/aave/utils/vaultSplit.ts#L90)
-
-Ordered vault amounts in satoshis (index 0 is sacrificial)
-
-##### CF
-
-```ts
-CF: number;
-```
-
-Defined in: [packages/babylon-ts-sdk/src/tbv/integrations/aave/utils/vaultSplit.ts:92](../../packages/babylon-ts-sdk/src/tbv/integrations/aave/utils/vaultSplit.ts#L92)
-
-Collateral factor (e.g. 0.75)
-
-##### LB
-
-```ts
-LB: number;
-```
-
-Defined in: [packages/babylon-ts-sdk/src/tbv/integrations/aave/utils/vaultSplit.ts:94](../../packages/babylon-ts-sdk/src/tbv/integrations/aave/utils/vaultSplit.ts#L94)
-
-Liquidation bonus (e.g. 1.05)
-
-##### THF
-
-```ts
-THF: number;
-```
-
-Defined in: [packages/babylon-ts-sdk/src/tbv/integrations/aave/utils/vaultSplit.ts:96](../../packages/babylon-ts-sdk/src/tbv/integrations/aave/utils/vaultSplit.ts#L96)
-
-Target health factor (e.g. 1.10)
-
-##### expectedHF
-
-```ts
-expectedHF: number;
-```
-
-Defined in: [packages/babylon-ts-sdk/src/tbv/integrations/aave/utils/vaultSplit.ts:98](../../packages/babylon-ts-sdk/src/tbv/integrations/aave/utils/vaultSplit.ts#L98)
-
-Expected health factor at liquidation (e.g. 0.95)
-
-##### safetyMargin
-
-```ts
-safetyMargin: number;
-```
-
-Defined in: [packages/babylon-ts-sdk/src/tbv/integrations/aave/utils/vaultSplit.ts:100](../../packages/babylon-ts-sdk/src/tbv/integrations/aave/utils/vaultSplit.ts#L100)
-
-Safety margin multiplier (e.g. 1.05)
-
-***
-
-### RebalanceCheckResult
-
-Defined in: [packages/babylon-ts-sdk/src/tbv/integrations/aave/utils/vaultSplit.ts:106](../../packages/babylon-ts-sdk/src/tbv/integrations/aave/utils/vaultSplit.ts#L106)
-
-Result of a vault rebalance check.
-
-#### Properties
-
-##### needsRebalance
-
-```ts
-needsRebalance: boolean;
-```
-
-Defined in: [packages/babylon-ts-sdk/src/tbv/integrations/aave/utils/vaultSplit.ts:108](../../packages/babylon-ts-sdk/src/tbv/integrations/aave/utils/vaultSplit.ts#L108)
-
-Whether the sacrificial vault needs to be increased
-
-##### deficit
-
-```ts
-deficit: bigint;
-```
-
-Defined in: [packages/babylon-ts-sdk/src/tbv/integrations/aave/utils/vaultSplit.ts:110](../../packages/babylon-ts-sdk/src/tbv/integrations/aave/utils/vaultSplit.ts#L110)
-
-How much more the sacrificial vault needs in satoshis (0n if no rebalance needed)
-
-##### currentCoverage
-
-```ts
-currentCoverage: bigint;
-```
-
-Defined in: [packages/babylon-ts-sdk/src/tbv/integrations/aave/utils/vaultSplit.ts:112](../../packages/babylon-ts-sdk/src/tbv/integrations/aave/utils/vaultSplit.ts#L112)
-
-Current sacrificial vault coverage in satoshis
-
-##### targetCoverage
-
-```ts
-targetCoverage: bigint;
-```
-
-Defined in: [packages/babylon-ts-sdk/src/tbv/integrations/aave/utils/vaultSplit.ts:114](../../packages/babylon-ts-sdk/src/tbv/integrations/aave/utils/vaultSplit.ts#L114)
-
-Required sacrificial vault coverage in satoshis
 
 ## Type Aliases
 
@@ -875,9 +598,165 @@ Required sacrificial vault coverage in satoshis
 type HealthFactorStatus = "safe" | "warning" | "danger" | "no_debt";
 ```
 
-Defined in: [packages/babylon-ts-sdk/src/tbv/integrations/aave/utils/healthFactor.ts:16](../../packages/babylon-ts-sdk/src/tbv/integrations/aave/utils/healthFactor.ts#L16)
+Defined in: [packages/babylon-ts-sdk/src/tbv/integrations/aave/utils/healthFactor.ts](https://github.com/babylonlabs-io/babylon-toolkit/blob/main/packages/babylon-ts-sdk/src/tbv/integrations/aave/utils/healthFactor.ts)
 
 ## Functions
+
+### getAssetDrawnRatesSafe()
+
+```ts
+function getAssetDrawnRatesSafe(publicClient, requests): Promise<AssetDrawnRateResult[]>;
+```
+
+Defined in: [packages/babylon-ts-sdk/src/tbv/integrations/aave/clients/hub.ts](https://github.com/babylonlabs-io/babylon-toolkit/blob/main/packages/babylon-ts-sdk/src/tbv/integrations/aave/clients/hub.ts)
+
+Per-asset isolated read of `getAssetDrawnRate` for display lists (one bad
+asset ≠ whole list blank). One multicall round-trip instead of one
+`eth_call` per asset, with `allowFailure: true` so a single reverting asset
+isolates to its own error entry. A network-level multicall failure marks
+every asset failed rather than throwing — callers (display hooks) rely on
+always getting a per-asset result array.
+
+The returned rate is the linear annual rate in RAY (the Hub accrues
+interest as `rate * dt / SECONDS_PER_YEAR`), i.e. an APR, not an APY.
+
+#### Parameters
+
+##### publicClient
+
+##### requests
+
+[`AssetDrawnRateRequest`](#assetdrawnraterequest)[]
+
+#### Returns
+
+`Promise`\<[`AssetDrawnRateResult`](#assetdrawnrateresult)[]\>
+
+***
+
+### getOracleAddress()
+
+```ts
+function getOracleAddress(publicClient, spokeAddress): Promise<`0x${string}`>;
+```
+
+Defined in: [packages/babylon-ts-sdk/src/tbv/integrations/aave/clients/oracle.ts](https://github.com/babylonlabs-io/babylon-toolkit/blob/main/packages/babylon-ts-sdk/src/tbv/integrations/aave/clients/oracle.ts)
+
+`Spoke.ORACLE` is `immutable`; the result is safe to cache forever.
+
+#### Parameters
+
+##### publicClient
+
+##### spokeAddress
+
+`` `0x${string}` ``
+
+#### Returns
+
+`Promise`\<`` `0x${string}` ``\>
+
+***
+
+### getReservesPrices()
+
+```ts
+function getReservesPrices(
+   publicClient, 
+   oracleAddress, 
+reserveIds): Promise<bigint[]>;
+```
+
+Defined in: [packages/babylon-ts-sdk/src/tbv/integrations/aave/clients/oracle.ts](https://github.com/babylonlabs-io/babylon-toolkit/blob/main/packages/babylon-ts-sdk/src/tbv/integrations/aave/clients/oracle.ts)
+
+Batch read; reverts the WHOLE batch on the first bad reserve.
+
+#### Parameters
+
+##### publicClient
+
+##### oracleAddress
+
+`` `0x${string}` ``
+
+##### reserveIds
+
+`bigint`[]
+
+#### Returns
+
+`Promise`\<`bigint`[]\>
+
+***
+
+### getReservesPricesSafe()
+
+```ts
+function getReservesPricesSafe(
+   publicClient, 
+   oracleAddress, 
+reserveIds): Promise<ReservePriceResult[]>;
+```
+
+Defined in: [packages/babylon-ts-sdk/src/tbv/integrations/aave/clients/oracle.ts](https://github.com/babylonlabs-io/babylon-toolkit/blob/main/packages/babylon-ts-sdk/src/tbv/integrations/aave/clients/oracle.ts)
+
+Per-reserve isolated read for display lists (one bad source ≠ whole list
+blank). One multicall round-trip instead of one `eth_call` per reserve:
+each entry is `getReservesPrices([reserveId])` with `allowFailure: true`, so
+a single reverting reserve isolates to its own error entry. A network-level
+multicall failure marks every reserve failed rather than throwing — callers
+(display hooks) rely on always getting a per-reserve result array.
+
+#### Parameters
+
+##### publicClient
+
+##### oracleAddress
+
+`` `0x${string}` ``
+
+##### reserveIds
+
+`bigint`[]
+
+#### Returns
+
+`Promise`\<[`ReservePriceResult`](#reservepriceresult)[]\>
+
+***
+
+### getPositionReserveTotalDebt()
+
+```ts
+function getPositionReserveTotalDebt(
+   publicClient, 
+   proxyContract, 
+reserveId): Promise<bigint>;
+```
+
+Defined in: [packages/babylon-ts-sdk/src/tbv/integrations/aave/clients/positionProxy.ts](https://github.com/babylonlabs-io/babylon-toolkit/blob/main/packages/babylon-ts-sdk/src/tbv/integrations/aave/clients/positionProxy.ts)
+
+Fee-inclusive total debt of the position held by `proxyContract` for
+`reserveId`: Spoke debt plus the adapter's uncollected interest fee
+(rounded up), computed lazily at the current block.
+
+#### Parameters
+
+##### publicClient
+
+##### proxyContract
+
+`` `0x${string}` ``
+
+##### reserveId
+
+`bigint`
+
+#### Returns
+
+`Promise`\<`bigint`\>
+
+***
 
 ### getPosition()
 
@@ -888,7 +767,7 @@ function getPosition(
 user): Promise<AaveMarketPosition | null>;
 ```
 
-Defined in: [packages/babylon-ts-sdk/src/tbv/integrations/aave/clients/query.ts:27](../../packages/babylon-ts-sdk/src/tbv/integrations/aave/clients/query.ts#L27)
+Defined in: [packages/babylon-ts-sdk/src/tbv/integrations/aave/clients/query.ts](https://github.com/babylonlabs-io/babylon-toolkit/blob/main/packages/babylon-ts-sdk/src/tbv/integrations/aave/clients/query.ts)
 
 Get a position by user address.
 
@@ -930,7 +809,7 @@ Market position data or null if position doesn't exist
 function getPositionSizeParams(publicClient, contractAddress): Promise<PositionSizeParams>;
 ```
 
-Defined in: [packages/babylon-ts-sdk/src/tbv/integrations/aave/clients/query.ts:69](../../packages/babylon-ts-sdk/src/tbv/integrations/aave/clients/query.ts#L69)
+Defined in: [packages/babylon-ts-sdk/src/tbv/integrations/aave/clients/query.ts](https://github.com/babylonlabs-io/babylon-toolkit/blob/main/packages/babylon-ts-sdk/src/tbv/integrations/aave/clients/query.ts)
 
 Get position size parameters from the adapter contract.
 
@@ -966,7 +845,7 @@ function getUserAccountData(
 userAddress): Promise<AaveSpokeUserAccountData>;
 ```
 
-Defined in: [packages/babylon-ts-sdk/src/tbv/integrations/aave/clients/spoke.ts:101](../../packages/babylon-ts-sdk/src/tbv/integrations/aave/clients/spoke.ts#L101)
+Defined in: [packages/babylon-ts-sdk/src/tbv/integrations/aave/clients/spoke.ts](https://github.com/babylonlabs-io/babylon-toolkit/blob/main/packages/babylon-ts-sdk/src/tbv/integrations/aave/clients/spoke.ts)
 
 Get aggregated user account health data from AAVE spoke.
 
@@ -1038,6 +917,51 @@ console.log("Debt (USD):", accountData.totalDebtValueRay);
 
 ***
 
+### getUserPositionAndAccountData()
+
+```ts
+function getUserPositionAndAccountData(
+   publicClient, 
+   spokeAddress, 
+   reserveId, 
+   userAddress): Promise<{
+  position: AaveSpokeUserPosition;
+  accountData: AaveSpokeUserAccountData;
+}>;
+```
+
+Defined in: [packages/babylon-ts-sdk/src/tbv/integrations/aave/clients/spoke.ts](https://github.com/babylonlabs-io/babylon-toolkit/blob/main/packages/babylon-ts-sdk/src/tbv/integrations/aave/clients/spoke.ts)
+
+Read a user's position for one reserve and their aggregate account data in a
+single hard-fail multicall. Both reads are required for the live position
+view, so a revert on either rejects the whole call (matching the prior
+`Promise.all`); the gain is one round-trip instead of two `eth_call`s.
+
+#### Parameters
+
+##### publicClient
+
+##### spokeAddress
+
+`` `0x${string}` ``
+
+##### reserveId
+
+`bigint`
+
+##### userAddress
+
+`` `0x${string}` ``
+
+#### Returns
+
+`Promise`\<\{
+  `position`: [`AaveSpokeUserPosition`](#aavespokeuserposition);
+  `accountData`: [`AaveSpokeUserAccountData`](#aavespokeuseraccountdata);
+\}\>
+
+***
+
 ### getUserPosition()
 
 ```ts
@@ -1048,7 +972,7 @@ function getUserPosition(
 userAddress): Promise<AaveSpokeUserPosition>;
 ```
 
-Defined in: [packages/babylon-ts-sdk/src/tbv/integrations/aave/clients/spoke.ts:137](../../packages/babylon-ts-sdk/src/tbv/integrations/aave/clients/spoke.ts#L137)
+Defined in: [packages/babylon-ts-sdk/src/tbv/integrations/aave/clients/spoke.ts](https://github.com/babylonlabs-io/babylon-toolkit/blob/main/packages/babylon-ts-sdk/src/tbv/integrations/aave/clients/spoke.ts)
 
 Get user position from the Spoke
 
@@ -1087,98 +1011,6 @@ User position data
 
 ***
 
-### hasDebt()
-
-```ts
-function hasDebt(
-   publicClient, 
-   spokeAddress, 
-   reserveId, 
-userAddress): Promise<boolean>;
-```
-
-Defined in: [packages/babylon-ts-sdk/src/tbv/integrations/aave/clients/spoke.ts:162](../../packages/babylon-ts-sdk/src/tbv/integrations/aave/clients/spoke.ts#L162)
-
-Check if a user has any debt in a reserve
-
-#### Parameters
-
-##### publicClient
-
-Viem public client for reading contracts
-
-##### spokeAddress
-
-`` `0x${string}` ``
-
-Aave Spoke contract address
-
-##### reserveId
-
-`bigint`
-
-Reserve ID
-
-##### userAddress
-
-`` `0x${string}` ``
-
-User's proxy contract address
-
-#### Returns
-
-`Promise`\<`boolean`\>
-
-true if user has debt
-
-***
-
-### hasCollateral()
-
-```ts
-function hasCollateral(
-   publicClient, 
-   spokeAddress, 
-   reserveId, 
-userAddress): Promise<boolean>;
-```
-
-Defined in: [packages/babylon-ts-sdk/src/tbv/integrations/aave/clients/spoke.ts:186](../../packages/babylon-ts-sdk/src/tbv/integrations/aave/clients/spoke.ts#L186)
-
-Check if a user has supplied collateral in a reserve
-
-#### Parameters
-
-##### publicClient
-
-Viem public client for reading contracts
-
-##### spokeAddress
-
-`` `0x${string}` ``
-
-Aave Spoke contract address
-
-##### reserveId
-
-`bigint`
-
-Reserve ID
-
-##### userAddress
-
-`` `0x${string}` ``
-
-User's proxy contract address
-
-#### Returns
-
-`Promise`\<`boolean`\>
-
-true if user has supplied collateral
-
-***
-
 ### getUserTotalDebt()
 
 ```ts
@@ -1189,12 +1021,13 @@ function getUserTotalDebt(
 userAddress): Promise<bigint>;
 ```
 
-Defined in: [packages/babylon-ts-sdk/src/tbv/integrations/aave/clients/spoke.ts:237](../../packages/babylon-ts-sdk/src/tbv/integrations/aave/clients/spoke.ts#L237)
+Defined in: [packages/babylon-ts-sdk/src/tbv/integrations/aave/clients/spoke.ts](https://github.com/babylonlabs-io/babylon-toolkit/blob/main/packages/babylon-ts-sdk/src/tbv/integrations/aave/clients/spoke.ts)
 
 Get user's exact total debt in a reserve (token units, not shares).
 
-Returns the precise amount owed including accrued interest. Essential for full repayment.
-Debt accrues interest every block, so this must be fetched live from the contract.
+Returns the Spoke-side amount owed including accrued interest — but NOT the
+adapter's uncollected interest fee. Display/routing only; for full repayment
+see the remarks below. Debt accrues interest every block, so fetch it live.
 
 #### Parameters
 
@@ -1229,7 +1062,7 @@ Total debt amount in token units (e.g., for USDC: `100000000n` = 100 USDC)
 #### Example
 
 ```typescript
-import { getUserTotalDebt, FULL_REPAY_BUFFER_DIVISOR } from "@babylonlabs-io/ts-sdk/tbv/integrations/aave";
+import { getUserTotalDebt } from "@babylonlabs-io/ts-sdk/tbv/integrations/aave";
 import { formatUnits } from "viem";
 
 const totalDebt = await getUserTotalDebt(
@@ -1239,18 +1072,99 @@ const totalDebt = await getUserTotalDebt(
   proxyAddress
 );
 
-// For full repayment, add buffer to account for interest accrual
-const repayAmount = totalDebt + (totalDebt / FULL_REPAY_BUFFER_DIVISOR);
-
 console.log("Debt:", formatUnits(totalDebt, 6), "USDC");
 ```
 
 #### Remarks
 
-**Important for full repayment:**
-- Add `FULL_REPAY_BUFFER_DIVISOR` buffer to account for interest between fetch and tx execution
-- Contract only takes what's owed; excess stays in wallet
-- For partial repayment, use any amount less than total debt
+**Important for full repayment:** do NOT repay a plain amount derived from
+this quote — it excludes the adapter's interest fee, and rounding can leave
+residual debt shares (dust). Send the repay-all sentinel
+(`type(uint256).max`) with an approval sized from the position proxy's
+fee-inclusive `getPositionReserveTotalDebt` plus
+`FULL_REPAY_BUFFER_DIVISOR` headroom; the adapter pulls only what's owed.
+For partial repayment, use any amount less than total debt.
+
+***
+
+### getUserPositions()
+
+```ts
+function getUserPositions(
+   publicClient, 
+   spokeAddress, 
+   reserveIds, 
+userAddress): Promise<(AaveSpokeUserPosition | null)[]>;
+```
+
+Defined in: [packages/babylon-ts-sdk/src/tbv/integrations/aave/clients/spoke.ts](https://github.com/babylonlabs-io/babylon-toolkit/blob/main/packages/babylon-ts-sdk/src/tbv/integrations/aave/clients/spoke.ts)
+
+Probe `getUserPosition` for many reserves in a single multicall.
+
+Returns one entry per `reserveId` in input order. Per-reserve reverts are
+isolated (`allowFailure: true`): that entry is `null` while the rest of the
+batch still resolves. Use for debt-reserve discovery, where a failed read
+means "treat as no debt", not a fatal error.
+
+#### Parameters
+
+##### publicClient
+
+##### spokeAddress
+
+`` `0x${string}` ``
+
+##### reserveIds
+
+`bigint`[]
+
+##### userAddress
+
+`` `0x${string}` ``
+
+#### Returns
+
+`Promise`\<([`AaveSpokeUserPosition`](#aavespokeuserposition) \| `null`)[]\>
+
+***
+
+### getUserTotalDebts()
+
+```ts
+function getUserTotalDebts(
+   publicClient, 
+   spokeAddress, 
+   reserveIds, 
+userAddress): Promise<bigint[]>;
+```
+
+Defined in: [packages/babylon-ts-sdk/src/tbv/integrations/aave/clients/spoke.ts](https://github.com/babylonlabs-io/babylon-toolkit/blob/main/packages/babylon-ts-sdk/src/tbv/integrations/aave/clients/spoke.ts)
+
+Read `getUserTotalDebt` for many reserves in a single multicall.
+
+Hard-fails (`allowFailure: false`): any reserve's revert rejects the whole
+call. Use only for reserves already known to carry debt — there a failed
+read is a genuine error, not a "no debt" signal.
+
+#### Parameters
+
+##### publicClient
+
+##### spokeAddress
+
+`` `0x${string}` ``
+
+##### reserveIds
+
+`bigint`[]
+
+##### userAddress
+
+`` `0x${string}` ``
+
+#### Returns
+
+`Promise`\<`bigint`[]\>
 
 ***
 
@@ -1263,7 +1177,7 @@ function getReserve(
 reserveId): Promise<ReserveResult>;
 ```
 
-Defined in: [packages/babylon-ts-sdk/src/tbv/integrations/aave/clients/spoke.ts:294](../../packages/babylon-ts-sdk/src/tbv/integrations/aave/clients/spoke.ts#L294)
+Defined in: [packages/babylon-ts-sdk/src/tbv/integrations/aave/clients/spoke.ts](https://github.com/babylonlabs-io/babylon-toolkit/blob/main/packages/babylon-ts-sdk/src/tbv/integrations/aave/clients/spoke.ts)
 
 Get reserve data from the Core Spoke contract via the `getReserve` selector.
 
@@ -1306,7 +1220,7 @@ Reserve data including `dynamicConfigKey`
 function getTargetHealthFactor(publicClient, spokeAddress): Promise<bigint>;
 ```
 
-Defined in: [packages/babylon-ts-sdk/src/tbv/integrations/aave/clients/spoke.ts:332](../../packages/babylon-ts-sdk/src/tbv/integrations/aave/clients/spoke.ts#L332)
+Defined in: [packages/babylon-ts-sdk/src/tbv/integrations/aave/clients/spoke.ts](https://github.com/babylonlabs-io/babylon-toolkit/blob/main/packages/babylon-ts-sdk/src/tbv/integrations/aave/clients/spoke.ts)
 
 Get the target health factor (THF) from the Core Spoke contract.
 
@@ -1343,7 +1257,7 @@ function getDynamicReserveConfig(
 dynamicConfigKey): Promise<DynamicReserveConfigResult>;
 ```
 
-Defined in: [packages/babylon-ts-sdk/src/tbv/integrations/aave/clients/spoke.ts:357](../../packages/babylon-ts-sdk/src/tbv/integrations/aave/clients/spoke.ts#L357)
+Defined in: [packages/babylon-ts-sdk/src/tbv/integrations/aave/clients/spoke.ts](https://github.com/babylonlabs-io/babylon-toolkit/blob/main/packages/babylon-ts-sdk/src/tbv/integrations/aave/clients/spoke.ts)
 
 Get the dynamic reserve config from the Core Spoke contract.
 
@@ -1388,7 +1302,7 @@ Dynamic reserve config with collateralFactor (BPS), maxLiquidationBonus (BPS), l
 function buildReorderVaultsTx(contractAddress, permutedVaultIds): TransactionParams;
 ```
 
-Defined in: [packages/babylon-ts-sdk/src/tbv/integrations/aave/clients/transaction.ts:28](../../packages/babylon-ts-sdk/src/tbv/integrations/aave/clients/transaction.ts#L28)
+Defined in: [packages/babylon-ts-sdk/src/tbv/integrations/aave/clients/transaction.ts](https://github.com/babylonlabs-io/babylon-toolkit/blob/main/packages/babylon-ts-sdk/src/tbv/integrations/aave/clients/transaction.ts)
 
 Build transaction to reorder vaults for liquidation priority.
 
@@ -1424,7 +1338,7 @@ Unsigned transaction parameters
 function buildWithdrawCollateralsTx(contractAddress, vaultIds): TransactionParams;
 ```
 
-Defined in: [packages/babylon-ts-sdk/src/tbv/integrations/aave/clients/transaction.ts:54](../../packages/babylon-ts-sdk/src/tbv/integrations/aave/clients/transaction.ts#L54)
+Defined in: [packages/babylon-ts-sdk/src/tbv/integrations/aave/clients/transaction.ts](https://github.com/babylonlabs-io/babylon-toolkit/blob/main/packages/babylon-ts-sdk/src/tbv/integrations/aave/clients/transaction.ts)
 
 Build transaction to withdraw selected vaults from AAVE position.
 
@@ -1463,7 +1377,7 @@ function buildBorrowTx(
    receiver): TransactionParams;
 ```
 
-Defined in: [packages/babylon-ts-sdk/src/tbv/integrations/aave/clients/transaction.ts:120](../../packages/babylon-ts-sdk/src/tbv/integrations/aave/clients/transaction.ts#L120)
+Defined in: [packages/babylon-ts-sdk/src/tbv/integrations/aave/clients/transaction.ts](https://github.com/babylonlabs-io/babylon-toolkit/blob/main/packages/babylon-ts-sdk/src/tbv/integrations/aave/clients/transaction.ts)
 
 Build transaction to borrow assets against vBTC collateral.
 
@@ -1554,7 +1468,7 @@ function buildRepayTx(
    amount): TransactionParams;
 ```
 
-Defined in: [packages/babylon-ts-sdk/src/tbv/integrations/aave/clients/transaction.ts:182](../../packages/babylon-ts-sdk/src/tbv/integrations/aave/clients/transaction.ts#L182)
+Defined in: [packages/babylon-ts-sdk/src/tbv/integrations/aave/clients/transaction.ts](https://github.com/babylonlabs-io/babylon-toolkit/blob/main/packages/babylon-ts-sdk/src/tbv/integrations/aave/clients/transaction.ts)
 
 Build transaction to repay debt on AAVE position.
 
@@ -1585,7 +1499,12 @@ AAVE reserve ID for the debt asset
 
 `bigint`
 
-Amount to repay in token units. Can repay partial or full debt. For full repay, use `getUserTotalDebt()` to get exact amount.
+Amount to repay in token units for a partial repay. For a
+  FULL repay, pass `type(uint256).max` (the repay-all sentinel): the adapter
+  resolves it to the position's fee-inclusive debt in the same transaction
+  and pulls exactly that. Size the prior approval from
+  `getPositionReserveTotalDebt()` plus ceiling-divided
+  `FULL_REPAY_BUFFER_DIVISOR` headroom.
 
 #### Returns
 
@@ -1635,7 +1554,7 @@ const hash = await walletClient.sendTransaction({
 function aaveValueToUsd(value): number;
 ```
 
-Defined in: [packages/babylon-ts-sdk/src/tbv/integrations/aave/utils/aaveConversions.ts:21](../../packages/babylon-ts-sdk/src/tbv/integrations/aave/utils/aaveConversions.ts#L21)
+Defined in: [packages/babylon-ts-sdk/src/tbv/integrations/aave/utils/aaveConversions.ts](https://github.com/babylonlabs-io/babylon-toolkit/blob/main/packages/babylon-ts-sdk/src/tbv/integrations/aave/utils/aaveConversions.ts)
 
 Convert Aave base currency value to USD
 
@@ -1663,7 +1582,7 @@ Value in USD
 function aaveRayValueToUsd(value): number;
 ```
 
-Defined in: [packages/babylon-ts-sdk/src/tbv/integrations/aave/utils/aaveConversions.ts:33](../../packages/babylon-ts-sdk/src/tbv/integrations/aave/utils/aaveConversions.ts#L33)
+Defined in: [packages/babylon-ts-sdk/src/tbv/integrations/aave/utils/aaveConversions.ts](https://github.com/babylonlabs-io/babylon-toolkit/blob/main/packages/babylon-ts-sdk/src/tbv/integrations/aave/utils/aaveConversions.ts)
 
 Convert Aave RAY-scaled base currency value to USD
 
@@ -1691,7 +1610,7 @@ Value in USD
 function wadToNumber(value): number;
 ```
 
-Defined in: [packages/babylon-ts-sdk/src/tbv/integrations/aave/utils/aaveConversions.ts:45](../../packages/babylon-ts-sdk/src/tbv/integrations/aave/utils/aaveConversions.ts#L45)
+Defined in: [packages/babylon-ts-sdk/src/tbv/integrations/aave/utils/aaveConversions.ts](https://github.com/babylonlabs-io/babylon-toolkit/blob/main/packages/babylon-ts-sdk/src/tbv/integrations/aave/utils/aaveConversions.ts)
 
 Convert Aave WAD value to number
 
@@ -1713,38 +1632,6 @@ Decimal number
 
 ***
 
-### calculateBorrowRatio()
-
-```ts
-function calculateBorrowRatio(debtUsd, collateralValueUsd): string;
-```
-
-Defined in: [packages/babylon-ts-sdk/src/tbv/integrations/aave/utils/borrowRatio.ts:15](../../packages/babylon-ts-sdk/src/tbv/integrations/aave/utils/borrowRatio.ts#L15)
-
-Calculate borrow ratio (debt / collateral) as percentage string
-
-#### Parameters
-
-##### debtUsd
-
-`number`
-
-Total debt in USD
-
-##### collateralValueUsd
-
-`number`
-
-Total collateral value in USD
-
-#### Returns
-
-`string`
-
-Formatted percentage string (e.g., "15.7%")
-
-***
-
 ### getGroup1FromOrder()
 
 ```ts
@@ -1754,7 +1641,7 @@ function getGroup1FromOrder<T>(
    seizureTol): T[];
 ```
 
-Defined in: [packages/babylon-ts-sdk/src/tbv/integrations/aave/utils/cascadeSimulation.ts:45](../../packages/babylon-ts-sdk/src/tbv/integrations/aave/utils/cascadeSimulation.ts#L45)
+Defined in: [packages/babylon-ts-sdk/src/tbv/integrations/aave/utils/cascadeSimulation.ts](https://github.com/babylonlabs-io/babylon-toolkit/blob/main/packages/babylon-ts-sdk/src/tbv/integrations/aave/utils/cascadeSimulation.ts)
 
 Prefix walk: consume vaults front-to-back until target seizure is covered.
 Returns the vaults in the first liquidation group.
@@ -1799,7 +1686,7 @@ function simulateCascade<T>(
    expectedHF): object;
 ```
 
-Defined in: [packages/babylon-ts-sdk/src/tbv/integrations/aave/utils/cascadeSimulation.ts:103](../../packages/babylon-ts-sdk/src/tbv/integrations/aave/utils/cascadeSimulation.ts#L103)
+Defined in: [packages/babylon-ts-sdk/src/tbv/integrations/aave/utils/cascadeSimulation.ts](https://github.com/babylonlabs-io/babylon-toolkit/blob/main/packages/babylon-ts-sdk/src/tbv/integrations/aave/utils/cascadeSimulation.ts)
 
 Simulate full liquidation cascade with debt model.
 
@@ -1871,7 +1758,7 @@ btcAfterG1: number;
 function hasDebtFromPosition(position): boolean;
 ```
 
-Defined in: [packages/babylon-ts-sdk/src/tbv/integrations/aave/utils/debtUtils.ts:19](../../packages/babylon-ts-sdk/src/tbv/integrations/aave/utils/debtUtils.ts#L19)
+Defined in: [packages/babylon-ts-sdk/src/tbv/integrations/aave/utils/debtUtils.ts](https://github.com/babylonlabs-io/babylon-toolkit/blob/main/packages/babylon-ts-sdk/src/tbv/integrations/aave/utils/debtUtils.ts)
 
 Check if a position has any debt based on Spoke position data.
 
@@ -1901,7 +1788,7 @@ true if the position has any debt
 function getHealthFactorStatus(healthFactor, hasDebt): HealthFactorStatus;
 ```
 
-Defined in: [packages/babylon-ts-sdk/src/tbv/integrations/aave/utils/healthFactor.ts:25](../../packages/babylon-ts-sdk/src/tbv/integrations/aave/utils/healthFactor.ts#L25)
+Defined in: [packages/babylon-ts-sdk/src/tbv/integrations/aave/utils/healthFactor.ts](https://github.com/babylonlabs-io/babylon-toolkit/blob/main/packages/babylon-ts-sdk/src/tbv/integrations/aave/utils/healthFactor.ts)
 
 Determine health factor status for UI display
 
@@ -1927,39 +1814,13 @@ The status classification
 
 ***
 
-### isHealthFactorHealthy()
-
-```ts
-function isHealthFactorHealthy(healthFactor): boolean;
-```
-
-Defined in: [packages/babylon-ts-sdk/src/tbv/integrations/aave/utils/healthFactor.ts:42](../../packages/babylon-ts-sdk/src/tbv/integrations/aave/utils/healthFactor.ts#L42)
-
-Checks if a health factor value represents a healthy position.
-
-#### Parameters
-
-##### healthFactor
-
-The health factor as a number
-
-`number` | `null`
-
-#### Returns
-
-`boolean`
-
-true if the health factor is >= 1.0 (healthy), false otherwise
-
-***
-
 ### getHealthFactorStatusFromValue()
 
 ```ts
 function getHealthFactorStatusFromValue(value): HealthFactorStatus;
 ```
 
-Defined in: [packages/babylon-ts-sdk/src/tbv/integrations/aave/utils/healthFactor.ts:56](../../packages/babylon-ts-sdk/src/tbv/integrations/aave/utils/healthFactor.ts#L56)
+Defined in: [packages/babylon-ts-sdk/src/tbv/integrations/aave/utils/healthFactor.ts](https://github.com/babylonlabs-io/babylon-toolkit/blob/main/packages/babylon-ts-sdk/src/tbv/integrations/aave/utils/healthFactor.ts)
 
 Get health factor status from a numeric value.
 Used for UI components that work with Infinity for no-debt scenarios.
@@ -1989,7 +1850,7 @@ function calculateHealthFactor(
    liquidationThresholdBps): number;
 ```
 
-Defined in: [packages/babylon-ts-sdk/src/tbv/integrations/aave/utils/healthFactor.ts:104](../../packages/babylon-ts-sdk/src/tbv/integrations/aave/utils/healthFactor.ts#L104)
+Defined in: [packages/babylon-ts-sdk/src/tbv/integrations/aave/utils/healthFactor.ts](https://github.com/babylonlabs-io/babylon-toolkit/blob/main/packages/babylon-ts-sdk/src/tbv/integrations/aave/utils/healthFactor.ts)
 
 Calculate health factor for an AAVE position.
 
@@ -2069,11 +1930,11 @@ function computeOptimalOrder<T>(
    expectedHF): object;
 ```
 
-Defined in: [packages/babylon-ts-sdk/src/tbv/integrations/aave/utils/optimalOrder.ts:87](../../packages/babylon-ts-sdk/src/tbv/integrations/aave/utils/optimalOrder.ts#L87)
+Defined in: [packages/babylon-ts-sdk/src/tbv/integrations/aave/utils/optimalOrder.ts](https://github.com/babylonlabs-io/babylon-toolkit/blob/main/packages/babylon-ts-sdk/src/tbv/integrations/aave/utils/optimalOrder.ts)
 
 Main optimizer: bitmask DP over seized subsets.
 
-State: T = bitmask of pre-joint groups that have already been seized.
+State: T = bitmask of vaults that have already been seized.
 Transition: for each valid "last group" G ⊆ T, dp[T] = dp[T\G] + btcAfter
   where btcAfter = totalBtc − btcOf(T)   (BTC remaining after T is seized).
 Validation: btcOf(G) must cover target seizure at the moment G fires, i.e.
@@ -2150,161 +2011,6 @@ btcAfterG1: number;
 
 ***
 
-### computeTargetSeizureSats()
-
-```ts
-function computeTargetSeizureSats(params): bigint;
-```
-
-Defined in: [packages/babylon-ts-sdk/src/tbv/integrations/aave/utils/seizureSimulation.ts:87](../../packages/babylon-ts-sdk/src/tbv/integrations/aave/utils/seizureSimulation.ts#L87)
-
-Compute the target seizure amount in satoshis.
-
-Uses `computeSeizedFraction` to determine what fraction of total collateral
-would be seized, then converts to an absolute satoshi amount.
-
-#### Parameters
-
-##### params
-
-[`TargetSeizureParams`](#targetseizureparams)
-
-Total collateral and risk parameters
-
-#### Returns
-
-`bigint`
-
-Target seizure amount in satoshis (rounded up)
-
-#### Example
-
-```typescript
-const targetSats = computeTargetSeizureSats({
-  totalCollateralSats: 1_000_000_000n, // 10 BTC
-  CF: 0.75,
-  LB: 1.05,
-  THF: 1.10,
-  expectedHF: 0.95,
-});
-// targetSats ≈ 398_000_000n (3.98 BTC)
-```
-
-***
-
-### simulatePrefixSeizure()
-
-```ts
-function simulatePrefixSeizure(params): PrefixSeizureResult;
-```
-
-Defined in: [packages/babylon-ts-sdk/src/tbv/integrations/aave/utils/seizureSimulation.ts:130](../../packages/babylon-ts-sdk/src/tbv/integrations/aave/utils/seizureSimulation.ts#L130)
-
-Simulate prefix seizure for a given set of ordered vaults.
-
-Walks the ordered vault list, accumulating amounts until the target
-seizure is covered. Returns which vaults are seized vs protected,
-the over-seizure amount, and the cutoff index.
-
-#### Parameters
-
-##### params
-
-[`PrefixSeizureParams`](#prefixseizureparams)
-
-Ordered vaults and target seizure amount
-
-#### Returns
-
-[`PrefixSeizureResult`](#prefixseizureresult)
-
-Seizure simulation result
-
-#### Throws
-
-Error if orderedVaults is empty
-
-#### Throws
-
-Error if targetSeizureSats is <= 0
-
-#### Example
-
-```typescript
-const result = simulatePrefixSeizure({
-  orderedVaults: [
-    { id: "0xabc...", amountSats: 200_000_000n },
-    { id: "0xdef...", amountSats: 300_000_000n },
-    { id: "0x123...", amountSats: 500_000_000n },
-  ],
-  targetSeizureSats: 400_000_000n,
-});
-// result.seizedVaults = first 2 vaults (200M + 300M = 500M >= 400M)
-// result.overSeizureSats = 100_000_000n
-// result.cutoffIndex = 2
-```
-
-***
-
-### selectVaultsForAmount()
-
-```ts
-function selectVaultsForAmount(vaults, targetAmount): VaultSelectionResult;
-```
-
-Defined in: [packages/babylon-ts-sdk/src/tbv/integrations/aave/utils/vaultSelection.ts:28](../../packages/babylon-ts-sdk/src/tbv/integrations/aave/utils/vaultSelection.ts#L28)
-
-Select vaults to match the target amount using a greedy algorithm.
-Sorts vaults by amount descending and picks until target is met.
-
-#### Parameters
-
-##### vaults
-
-[`SelectableVault`](#selectablevault)[]
-
-Available vaults to select from
-
-##### targetAmount
-
-`number`
-
-Target amount to reach
-
-#### Returns
-
-[`VaultSelectionResult`](#vaultselectionresult)
-
-Selected vault IDs and actual amount
-
-***
-
-### calculateTotalVaultAmount()
-
-```ts
-function calculateTotalVaultAmount(vaults): number;
-```
-
-Defined in: [packages/babylon-ts-sdk/src/tbv/integrations/aave/utils/vaultSelection.ts:56](../../packages/babylon-ts-sdk/src/tbv/integrations/aave/utils/vaultSelection.ts#L56)
-
-Calculate total amount from a list of vaults
-
-#### Parameters
-
-##### vaults
-
-[`SelectableVault`](#selectablevault)[]
-
-Vaults to sum
-
-#### Returns
-
-`number`
-
-Total amount in BTC
-
-***
-
 ### computeSeizedFractionDetailed()
 
 ```ts
@@ -2315,7 +2021,7 @@ function computeSeizedFractionDetailed(
    expectedHF): object;
 ```
 
-Defined in: [packages/babylon-ts-sdk/src/tbv/integrations/aave/utils/vaultSplit.ts:136](../../packages/babylon-ts-sdk/src/tbv/integrations/aave/utils/vaultSplit.ts#L136)
+Defined in: [packages/babylon-ts-sdk/src/tbv/integrations/aave/utils/vaultSplit.ts](https://github.com/babylonlabs-io/babylon-toolkit/blob/main/packages/babylon-ts-sdk/src/tbv/integrations/aave/utils/vaultSplit.ts)
 
 Compute the fraction of collateral that would be seized during liquidation,
 returning both the raw (unclamped) and clamped values.
@@ -2385,7 +2091,7 @@ function computeSeizedFraction(
    expectedHF): number;
 ```
 
-Defined in: [packages/babylon-ts-sdk/src/tbv/integrations/aave/utils/vaultSplit.ts:174](../../packages/babylon-ts-sdk/src/tbv/integrations/aave/utils/vaultSplit.ts#L174)
+Defined in: [packages/babylon-ts-sdk/src/tbv/integrations/aave/utils/vaultSplit.ts](https://github.com/babylonlabs-io/babylon-toolkit/blob/main/packages/babylon-ts-sdk/src/tbv/integrations/aave/utils/vaultSplit.ts)
 
 Compute the fraction of collateral that would be seized during liquidation.
 
@@ -2429,7 +2135,7 @@ Seized fraction clamped to [0, 1]
 function computeOptimalSplit(params): OptimalSplitResult;
 ```
 
-Defined in: [packages/babylon-ts-sdk/src/tbv/integrations/aave/utils/vaultSplit.ts:208](../../packages/babylon-ts-sdk/src/tbv/integrations/aave/utils/vaultSplit.ts#L208)
+Defined in: [packages/babylon-ts-sdk/src/tbv/integrations/aave/utils/vaultSplit.ts](https://github.com/babylonlabs-io/babylon-toolkit/blob/main/packages/babylon-ts-sdk/src/tbv/integrations/aave/utils/vaultSplit.ts)
 
 Compute the optimal split between a sacrificial vault and a protected vault.
 
@@ -2475,7 +2181,7 @@ const result = computeOptimalSplit({
 function computeMinDepositForSplit(params): bigint;
 ```
 
-Defined in: [packages/babylon-ts-sdk/src/tbv/integrations/aave/utils/vaultSplit.ts:285](../../packages/babylon-ts-sdk/src/tbv/integrations/aave/utils/vaultSplit.ts#L285)
+Defined in: [packages/babylon-ts-sdk/src/tbv/integrations/aave/utils/vaultSplit.ts](https://github.com/babylonlabs-io/babylon-toolkit/blob/main/packages/babylon-ts-sdk/src/tbv/integrations/aave/utils/vaultSplit.ts)
 
 Compute the minimum total deposit required for a 2-vault split.
 
@@ -2511,60 +2217,6 @@ const minDeposit = computeMinDepositForSplit({
 });
 ```
 
-***
-
-### checkRebalanceNeeded()
-
-```ts
-function checkRebalanceNeeded(params): RebalanceCheckResult;
-```
-
-Defined in: [packages/babylon-ts-sdk/src/tbv/integrations/aave/utils/vaultSplit.ts:347](../../packages/babylon-ts-sdk/src/tbv/integrations/aave/utils/vaultSplit.ts#L347)
-
-Check if the sacrificial vault (index 0) needs to be increased to cover
-the current target seizure amount.
-
-**Scope:** This function only checks whether the sacrificial vault's sizing
-is adequate. It does NOT detect whether a split exists — a single vault that
-exceeds the target coverage returns `needsRebalance: false`. Callers should
-check `vaultAmounts.length < 2` separately to detect unsplit positions.
-
-Used on position page load to detect when parameter changes (THF, CF, LB)
-have made the current split insufficient.
-
-#### Parameters
-
-##### params
-
-[`RebalanceCheckParams`](#rebalancecheckparams)
-
-Current vault amounts and risk parameters
-
-#### Returns
-
-[`RebalanceCheckResult`](#rebalancecheckresult)
-
-Whether rebalance is needed, with deficit details
-
-#### Example
-
-```typescript
-import { checkRebalanceNeeded } from "@babylonlabs-io/ts-sdk/tbv/integrations/aave";
-
-const result = checkRebalanceNeeded({
-  vaultAmounts: [300_000_000n, 700_000_000n], // 3 BTC sacrificial, 7 BTC protected
-  CF: 0.75,
-  LB: 1.05,
-  THF: 1.10,
-  expectedHF: 0.95,
-  safetyMargin: 1.05,
-});
-
-if (result.needsRebalance) {
-  console.log(`Sacrificial vault needs ${result.deficit} more sats`);
-}
-```
-
 ## Variables
 
 ### AAVE\_FUNCTION\_NAMES
@@ -2573,7 +2225,7 @@ if (result.needsRebalance) {
 const AAVE_FUNCTION_NAMES: object;
 ```
 
-Defined in: [packages/babylon-ts-sdk/src/tbv/integrations/aave/constants.ts:12](../../packages/babylon-ts-sdk/src/tbv/integrations/aave/constants.ts#L12)
+Defined in: [packages/babylon-ts-sdk/src/tbv/integrations/aave/constants.ts](https://github.com/babylonlabs-io/babylon-toolkit/blob/main/packages/babylon-ts-sdk/src/tbv/integrations/aave/constants.ts)
 
 Aave contract function names
 Centralized constants for contract interactions
@@ -2614,59 +2266,13 @@ Reorder vault prefix ordering for liquidation priority
 
 ***
 
-### BTC\_DECIMALS
-
-```ts
-const BTC_DECIMALS: 8 = 8;
-```
-
-Defined in: [packages/babylon-ts-sdk/src/tbv/integrations/aave/constants.ts:27](../../packages/babylon-ts-sdk/src/tbv/integrations/aave/constants.ts#L27)
-
-BTC token decimals (satoshis)
-1 BTC = 100,000,000 satoshis
-
-***
-
-### USDC\_DECIMALS
-
-```ts
-const USDC_DECIMALS: 6 = 6;
-```
-
-Defined in: [packages/babylon-ts-sdk/src/tbv/integrations/aave/constants.ts:33](../../packages/babylon-ts-sdk/src/tbv/integrations/aave/constants.ts#L33)
-
-USDC token decimals
-Used for debt calculations
-
-***
-
-### BPS\_TO\_PERCENT\_DIVISOR
-
-```ts
-const BPS_TO_PERCENT_DIVISOR: 100 = 100;
-```
-
-Defined in: [packages/babylon-ts-sdk/src/tbv/integrations/aave/constants.ts:46](../../packages/babylon-ts-sdk/src/tbv/integrations/aave/constants.ts#L46)
-
-Divisor to convert basis points (BPS) to percentage
-
-In Aave v4, risk parameters like collateralRisk are stored in BPS
-where 10000 BPS = 100%.
-
-Example: 8000 BPS / 100 = 80%
-
-Reference: ISpoke.sol - "collateralRisk The risk associated with a
-collateral asset, expressed in BPS"
-
-***
-
 ### BPS\_SCALE
 
 ```ts
 const BPS_SCALE: 10000 = 10000;
 ```
 
-Defined in: [packages/babylon-ts-sdk/src/tbv/integrations/aave/constants.ts:54](../../packages/babylon-ts-sdk/src/tbv/integrations/aave/constants.ts#L54)
+Defined in: [packages/babylon-ts-sdk/src/tbv/integrations/aave/constants.ts](https://github.com/babylonlabs-io/babylon-toolkit/blob/main/packages/babylon-ts-sdk/src/tbv/integrations/aave/constants.ts)
 
 Full basis points scale (10000 BPS = 100%)
 
@@ -2681,7 +2287,7 @@ Example: 8000 BPS / 10000 = 0.80
 const AAVE_BASE_CURRENCY_DECIMALS: 26 = 26;
 ```
 
-Defined in: [packages/babylon-ts-sdk/src/tbv/integrations/aave/constants.ts:62](../../packages/babylon-ts-sdk/src/tbv/integrations/aave/constants.ts#L62)
+Defined in: [packages/babylon-ts-sdk/src/tbv/integrations/aave/constants.ts](https://github.com/babylonlabs-io/babylon-toolkit/blob/main/packages/babylon-ts-sdk/src/tbv/integrations/aave/constants.ts)
 
 Aave base currency decimals
 Account data values (collateral, debt) use 1e26 = $1 USD
@@ -2696,7 +2302,7 @@ Reference: ISpoke.sol UserAccountData
 const AAVE_BASE_CURRENCY_RAY_DECIMALS: 53 = 53;
 ```
 
-Defined in: [packages/babylon-ts-sdk/src/tbv/integrations/aave/constants.ts:71](../../packages/babylon-ts-sdk/src/tbv/integrations/aave/constants.ts#L71)
+Defined in: [packages/babylon-ts-sdk/src/tbv/integrations/aave/constants.ts](https://github.com/babylonlabs-io/babylon-toolkit/blob/main/packages/babylon-ts-sdk/src/tbv/integrations/aave/constants.ts)
 
 Aave RAY-scaled base currency decimals
 Debt values (totalDebtValueRay) use 1e53 = $1 USD
@@ -2706,28 +2312,13 @@ Reference: IAaveSpoke.sol UserAccountData.totalDebtValueRay
 
 ***
 
-### WAD\_DECIMALS
-
-```ts
-const WAD_DECIMALS: 18 = 18;
-```
-
-Defined in: [packages/babylon-ts-sdk/src/tbv/integrations/aave/constants.ts:79](../../packages/babylon-ts-sdk/src/tbv/integrations/aave/constants.ts#L79)
-
-WAD decimals (1e18 = 1.0)
-Used for health factor and collateral factor values
-
-Reference: ISpoke.sol - "healthFactor expressed in WAD. 1e18 represents a health factor of 1.00"
-
-***
-
 ### HEALTH\_FACTOR\_WARNING\_THRESHOLD
 
 ```ts
 const HEALTH_FACTOR_WARNING_THRESHOLD: 1.5 = 1.5;
 ```
 
-Defined in: [packages/babylon-ts-sdk/src/tbv/integrations/aave/constants.ts:85](../../packages/babylon-ts-sdk/src/tbv/integrations/aave/constants.ts#L85)
+Defined in: [packages/babylon-ts-sdk/src/tbv/integrations/aave/constants.ts](https://github.com/babylonlabs-io/babylon-toolkit/blob/main/packages/babylon-ts-sdk/src/tbv/integrations/aave/constants.ts)
 
 Health factor warning threshold
 Positions below this are considered at risk of liquidation
@@ -2737,13 +2328,13 @@ Positions below this are considered at risk of liquidation
 ### MIN\_HEALTH\_FACTOR\_FOR\_BORROW
 
 ```ts
-const MIN_HEALTH_FACTOR_FOR_BORROW: 1.2 = 1.2;
+const MIN_HEALTH_FACTOR_FOR_BORROW: 1.05 = 1.05;
 ```
 
-Defined in: [packages/babylon-ts-sdk/src/tbv/integrations/aave/constants.ts:91](../../packages/babylon-ts-sdk/src/tbv/integrations/aave/constants.ts#L91)
+Defined in: [packages/babylon-ts-sdk/src/tbv/integrations/aave/constants.ts](https://github.com/babylonlabs-io/babylon-toolkit/blob/main/packages/babylon-ts-sdk/src/tbv/integrations/aave/constants.ts)
 
-Minimum health factor allowed for borrowing
-Prevents users from borrowing if resulting health factor would be below this.
+Minimum health factor allowed for borrowing. Collateral factor doubles as the
+liquidation threshold here, so this floor is the only borrow→liquidation cushion.
 
 ***
 
@@ -2753,32 +2344,16 @@ Prevents users from borrowing if resulting health factor would be below this.
 const FULL_REPAY_BUFFER_DIVISOR: 200n = 200n;
 ```
 
-Defined in: [packages/babylon-ts-sdk/src/tbv/integrations/aave/constants.ts:106](../../packages/babylon-ts-sdk/src/tbv/integrations/aave/constants.ts#L106)
+Defined in: [packages/babylon-ts-sdk/src/tbv/integrations/aave/constants.ts](https://github.com/babylonlabs-io/babylon-toolkit/blob/main/packages/babylon-ts-sdk/src/tbv/integrations/aave/constants.ts)
 
-Buffer for full repayment to account for interest accrual
-between fetching debt and transaction execution.
+Approval headroom for repay-all, sized against interest accrual between
+quoting the debt and transaction execution.
 
 0.5% buffer (50 basis points). Sized to absorb hours of execution delay
-(e.g. Safe-multisig quorum collection) without leaving residual dust.
-The adapter only pulls what's actually owed; excess approval/balance
-stays with the user.
-
-Users whose wallet balance covers the debt but not the full buffer are
-routed through the "max-capped" repay path instead of `repayFull`, so
-a larger buffer never blocks a legitimate max-repay.
-
-***
-
-### FULL\_REPAY\_BUFFER\_FRACTION
-
-```ts
-const FULL_REPAY_BUFFER_FRACTION: number;
-```
-
-Defined in: [packages/babylon-ts-sdk/src/tbv/integrations/aave/constants.ts:112](../../packages/babylon-ts-sdk/src/tbv/integrations/aave/constants.ts#L112)
-
-Same buffer as `FULL_REPAY_BUFFER_DIVISOR`, expressed as a float fraction
-for UI-side comparisons that operate in `number` rather than `bigint`.
+(e.g. Safe-multisig quorum collection). The repay itself sends the
+repay-all sentinel and the adapter pulls only what's actually owed; the
+buffer only pads the approval cap, and the cap is additionally bounded by
+the user's balance, so a larger buffer never blocks a legitimate repay.
 
 ***
 
@@ -2788,7 +2363,7 @@ for UI-side comparisons that operate in `number` rather than `bigint`.
 const SEIZURE_TOL: 0.01 = 0.01;
 ```
 
-Defined in: [packages/babylon-ts-sdk/src/tbv/integrations/aave/utils/cascadeSimulation.ts:33](../../packages/babylon-ts-sdk/src/tbv/integrations/aave/utils/cascadeSimulation.ts#L33)
+Defined in: [packages/babylon-ts-sdk/src/tbv/integrations/aave/utils/cascadeSimulation.ts](https://github.com/babylonlabs-io/babylon-toolkit/blob/main/packages/babylon-ts-sdk/src/tbv/integrations/aave/utils/cascadeSimulation.ts)
 
 1% tolerance for prefix walk coverage — avoids cliff flip at boundary
 
@@ -2800,7 +2375,7 @@ Defined in: [packages/babylon-ts-sdk/src/tbv/integrations/aave/utils/cascadeSimu
 const MAX_GROUPS: 20 = 20;
 ```
 
-Defined in: [packages/babylon-ts-sdk/src/tbv/integrations/aave/utils/cascadeSimulation.ts:36](../../packages/babylon-ts-sdk/src/tbv/integrations/aave/utils/cascadeSimulation.ts#L36)
+Defined in: [packages/babylon-ts-sdk/src/tbv/integrations/aave/utils/cascadeSimulation.ts](https://github.com/babylonlabs-io/babylon-toolkit/blob/main/packages/babylon-ts-sdk/src/tbv/integrations/aave/utils/cascadeSimulation.ts)
 
 Circuit breaker for group cascade loop
 
@@ -2812,6 +2387,21 @@ Circuit breaker for group cascade loop
 const MIN_DEBT_THRESHOLD: 0.01 = 0.01;
 ```
 
-Defined in: [packages/babylon-ts-sdk/src/tbv/integrations/aave/utils/cascadeSimulation.ts:39](../../packages/babylon-ts-sdk/src/tbv/integrations/aave/utils/cascadeSimulation.ts#L39)
+Defined in: [packages/babylon-ts-sdk/src/tbv/integrations/aave/utils/cascadeSimulation.ts](https://github.com/babylonlabs-io/babylon-toolkit/blob/main/packages/babylon-ts-sdk/src/tbv/integrations/aave/utils/cascadeSimulation.ts)
 
 Minimum debt threshold to continue cascade (avoids infinite loop on dust)
+
+***
+
+### MAX\_DP\_N
+
+```ts
+const MAX_DP_N: 17 = 17;
+```
+
+Defined in: [packages/babylon-ts-sdk/src/tbv/integrations/aave/utils/optimalOrder.ts](https://github.com/babylonlabs-io/babylon-toolkit/blob/main/packages/babylon-ts-sdk/src/tbv/integrations/aave/utils/optimalOrder.ts)
+
+Hard cap on vault count for the bitmask DP optimizer. 2^n memory + 3^n work
+blow up past this. For n > MAX_DP_N the optimizer falls back to a
+largest-first heuristic. Benchmark: n=18 ≈ 720ms, n=20 ≈ 5.8s — anything past
+n=17 is too slow for interactive UI, so we cap here.

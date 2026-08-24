@@ -4,6 +4,7 @@
 
 import type { PropsWithChildren } from "react";
 
+import type { DepositFlowStep } from "../hooks/deposit/depositFlowSteps/types";
 import type {
   LocalStorageStatus,
   PeginState,
@@ -37,8 +38,18 @@ export interface DepositPollingResult {
    * `requiredPrePeginDepth` directly.
    */
   prePeginConfirmations: number | null;
-  /** Protocol-required confirmation depth (`minPrepeginDepth`) for this vault. */
-  requiredPrePeginDepth: number;
+  /**
+   * Protocol-required confirmation depth (`minPrepeginDepth`) for this vault.
+   * `undefined` while the protocol params are still loading or failed to load —
+   * consumers must withhold any depth conclusion rather than assume a default.
+   */
+  requiredPrePeginDepth: number | undefined;
+  /**
+   * Forces the card's displayed progress step instead of deriving it from
+   * `peginState`. Undefined on every production path — used only by the dev
+   * god-mode panel to mock arbitrary deposit-flow steps (1–15).
+   */
+  displayStepOverride?: DepositFlowStep;
 }
 
 /** Context value type */
@@ -60,8 +71,12 @@ export interface PeginPollingContextValue {
     newStatus: LocalStorageStatus,
     refundBroadcastAt?: number,
   ) => void;
-  /** Clear optimistic status (after actual data refresh) */
-  clearOptimisticStatus: (depositId: string) => void;
+  /**
+   * Mark a vault's HTLC refund as confirmed-settled: persist it to the
+   * refunded-HTLC cache AND update the in-memory set, so the dashboard shows
+   * "Refunded" immediately in-session — not only after a reload/next poll.
+   */
+  addConfirmedRefund: (depositId: string) => void;
 }
 
 /** Provider props */

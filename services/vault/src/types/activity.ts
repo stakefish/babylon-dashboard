@@ -115,6 +115,13 @@ export interface VaultActivity {
   /** Unsigned pre-pegin transaction hex (spends depositor's UTXOs — used for UTXO validation and refund) */
   unsignedPrePeginTx: string;
 
+  /**
+   * Index of this vault's HTLC output in the Pre-PegIn tx. Indexer-provided;
+   * used (display-only) to probe whether the HTLC has already been refunded.
+   * The signing/broadcast path re-reads it from chain, never from here.
+   */
+  htlcVout?: number;
+
   /** Depositor-specified BTC payout address (raw scriptPubKey hex from indexer) */
   depositorPayoutBtcAddress?: Hex;
 
@@ -135,15 +142,4 @@ export interface VaultActivity {
    * back to latest if the vault predates the indexer exposing this field.
    */
   offchainParamsVersion?: number;
-}
-
-/**
- * Legacy activity interface for simple activity displays
- */
-export interface Activity {
-  id: string;
-  date: string;
-  type: "Deposit" | "Withdraw" | "Borrow" | "Repay";
-  amount: string;
-  transactionHash: string;
 }

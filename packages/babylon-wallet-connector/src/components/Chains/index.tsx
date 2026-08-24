@@ -1,4 +1,4 @@
-import { Button, DialogBody, DialogFooter, DialogHeader, Text } from "@babylonlabs-io/core-ui";
+import { Button, Heading, Text } from "@babylonlabs-io/core-ui";
 import { memo } from "react";
 import { twMerge } from "tailwind-merge";
 
@@ -6,14 +6,20 @@ import { ChainButton } from "@/components/ChainButton";
 import { ConnectedWallet } from "@/components/ConnectedWallet";
 import type { IChain, IWallet } from "@/core/types";
 
+const DISABLED_CONNECT_BG = "disabled:!bg-[#CCCCCC] dark:disabled:!bg-secondary-strokeDark";
+
+const SELECT_WALLET_TITLE_PREFIX = "Select ";
+const SELECT_WALLET_TITLE_SUFFIX = " Wallet";
+const OPTIONAL_CHAIN_TITLE_SUFFIX = " (Optional)";
+
 interface ChainsProps {
   disabled?: boolean;
   chains: IChain[];
+  /** Chains outside this set are labelled optional. Omit to label none. */
+  requiredChainIds?: readonly string[];
   className?: string;
   selectedWallets?: Record<string, IWallet | undefined>;
-  onClose?: () => void;
   onConfirm?: () => void;
-  onDisconnectWallet?: (chainId: string) => void;
   onSelectChain?: (chain: IChain) => void;
 }
 
@@ -21,59 +27,85 @@ export const Chains = memo(
   ({
     disabled = false,
     chains,
+    requiredChainIds,
     selectedWallets = {},
     className,
-    onClose,
     onConfirm,
     onSelectChain,
-    onDisconnectWallet,
-  }: ChainsProps) => {
-    const chainNames = chains.map((chain) => chain.name).join(" and ");
-    const subtitle = `Connect to both ${chainNames} Wallets`;
+  }: ChainsProps) => (
+    <div
+      className={twMerge(
+        "flex flex-col overflow-hidden rounded-2xl border border-secondary-strokeLight text-accent-primary",
+        className,
+      )}
+    >
+      <div className="border-b border-secondary-strokeLight p-6">
+        <Heading variant="h5" className="text-accent-primary">
+          Connect Wallets
+        </Heading>
+      </div>
 
-    return (
-      <div className={twMerge("flex flex-1 flex-col text-accent-primary", className)}>
-        <DialogHeader className="mb-10" title="Connect Wallets" onClose={onClose}>
-          <Text className="text-accent-secondary">{subtitle}</Text>
-        </DialogHeader>
-
-        <DialogBody className="flex flex-col gap-6">
+      <div className="flex flex-col gap-4 p-6">
+        <div className="flex flex-col gap-2">
           {chains.map((chain) => {
             const selectedWallet = selectedWallets[chain.id];
+            const optional = requiredChainIds !== undefined && !requiredChainIds.includes(chain.id);
 
             return (
               <ChainButton
                 key={chain.id}
-                disabled={Boolean(selectedWallet)}
-                title={`Select ${chain.name} Wallet`}
+                title={`${SELECT_WALLET_TITLE_PREFIX}${chain.name}${SELECT_WALLET_TITLE_SUFFIX}${
+                  optional ? OPTIONAL_CHAIN_TITLE_SUFFIX : ""
+                }`}
                 logo={chain.icon}
                 alt={chain.name}
                 onClick={() => void onSelectChain?.(chain)}
               >
                 {selectedWallet && (
                   <ConnectedWallet
-                    chainId={chain.id}
                     logo={selectedWallet.icon}
-                    name={selectedWallet.name}
+                    logoBackground={selectedWallet.iconBackground}
                     address={selectedWallet.account?.address ?? ""}
-                    onDisconnect={onDisconnectWallet}
                   />
                 )}
               </ChainButton>
             );
           })}
-        </DialogBody>
 
-        <DialogFooter className="mt-auto flex gap-4 pt-10">
-          <Button variant="outlined" fluid onClick={onClose}>
-            Cancel
+          <Button
+            color="secondary"
+            disabled={disabled}
+            fluid
+            onClick={onConfirm}
+            className={twMerge("text-sm disabled:!opacity-100", DISABLED_CONNECT_BG)}
+            data-testid="chains-connect-button"
+          >
+            Connect
           </Button>
+        </div>
 
-          <Button disabled={disabled} fluid onClick={onConfirm} data-testid="chains-done-button">
-            Done
-          </Button>
-        </DialogFooter>
+        <Text variant="body2" className="text-center text-accent-secondary">
+            By clicking Connect you agree with the{" "}
+            <a
+              href="https://babylonlabs.io/terms-of-use"
+              target="_blank"
+              rel="noopener noreferrer"
+              className="text-accent-primary underline"
+            >
+              Terms of Use
+            </a>{" "}
+            and{" "}
+            <a
+              href="https://babylonlabs.io/privacy-policy"
+              target="_blank"
+              rel="noopener noreferrer"
+              className="text-accent-primary underline"
+            >
+              Privacy Policy
+            </a>
+            .
+        </Text>
       </div>
-    );
-  },
+    </div>
+  ),
 );

@@ -29,6 +29,16 @@ export const ASSERT_PAYOUT_OUTPUT_INDEX = 0;
  */
 export const PAYOUT_ANCHOR_DUST_SATS = 546;
 
+/**
+ * Payout transaction literals btc-vault builds deterministically
+ * (`crates/vault/src/transactions/payout.rs`: `Version::TWO`,
+ * `LockTime::ZERO`). The depositor's signature commits to both, so a
+ * VP-supplied payout that deviates would produce a signature over a
+ * transaction the protocol never constructs.
+ */
+export const PAYOUT_TX_VERSION = 2;
+export const PAYOUT_TX_LOCKTIME = 0;
+
 /** VP-claimer payout output count: [depositor payout, VP commission, CPFP anchor]. */
 export const VP_CLAIMER_PAYOUT_OUTPUT_COUNT = 3;
 
@@ -36,9 +46,34 @@ export const VP_CLAIMER_PAYOUT_OUTPUT_COUNT = 3;
 export const NON_VP_CLAIMER_PAYOUT_OUTPUT_COUNT = 2;
 
 /**
- * Exclusive upper bound on VP commission (bps), and the bps denominator for
- * `floor(peginValue * bps / 10_000)`. Matches `BTCVaultRegistry._validateCommission`
- * (`commissionBps >= 10000` reverts). The minimum is version-locked
- * (`minVpCommissionBps`) and enforced upstream, not here.
+ * ChallengeAssert connectors the VP returns per challenger: one for the
+ * ChallengeAssertX transaction and one for ChallengeAssertY — two single-input
+ * transactions, not a single multi-input one. This is a per-challenger array
+ * cardinality, NOT a count of inputs in one transaction.
+ * @see btc-vault crates/vault/docs/btc-transactions-spec.md (ChallengeAssertX / ChallengeAssertY)
+ */
+export const CHALLENGE_ASSERT_CONNECTORS_PER_CHALLENGER = 2;
+
+/**
+ * Exclusive upper bound on VP commission (bps). Matches
+ * `VPKeyRegistryLogic.sol` (`commissionBps >= 10000` reverts).
+ * The minimum is version-locked (`minVpCommissionBps`) and enforced upstream,
+ * not here.
  */
 export const MAX_VP_COMMISSION_BPS_EXCLUSIVE = 10_000;
+
+/**
+ * Basis-points denominator for commission math:
+ * `floor(value * bps / BPS_DENOMINATOR)`. Numerically equal to
+ * {@link MAX_VP_COMMISSION_BPS_EXCLUSIVE} but a distinct concept — tightening
+ * the accepted bps range must never change the arithmetic.
+ */
+export const BPS_DENOMINATOR = 10_000;
+
+/**
+ * Contract cap on a registered payout/commission scriptPubKey's byte length
+ * (`MAX_PAYOUT_ADDRESS_LENGTH`, Constants.sol; empty scripts are rejected at
+ * registration, so valid lengths are `[1, 128]`). A measured length outside
+ * this range is provably not a registered script.
+ */
+export const MAX_PAYOUT_SCRIPT_LEN = 128;

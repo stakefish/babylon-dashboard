@@ -83,13 +83,30 @@ Create a `.env` file with the following variables:
   - Set to `"true"` to disable borrowing functionality
   - When disabled, users will see "Borrowing Unavailable" and the borrow button will be disabled
 
-- `NEXT_PUBLIC_FF_SIMPLIFIED_TERMS` - Controls whether the wallet connection dialog shows simplified terms
-  - Default: `false` (all three checkboxes shown unless explicitly set to `"true"`)
-  - Set to `"true"` to show only the Terms of Use & Privacy Policy checkbox, hiding the inscriptions and hardware wallet warnings
-
 - `NEXT_PUBLIC_FF_FORCE_PARTIAL_LIQUIDATION_SPLIT` - Forces partial liquidation split to always be suggested, even with active vaults
   - Default: `false` (disabled unless explicitly set to `"true"`)
   - Set to `"true"` to bypass the active-vaults check — useful for dev/QA testing of the split deposit flow
+
+- `NEXT_PUBLIC_FF_PROTOCOL_FROZEN` - Shows the teal "Protocol is frozen" banner and disables new deposits and borrows (Freeze blocks new entry; exits like repay/withdraw/liquidation stay available)
+  - Default: `false` (banner hidden unless explicitly set to `"true"`)
+  - Operator-controlled; the banner reflects the flag (the on-chain Frozen/Paused state exists but isn't read yet)
+
+- `NEXT_PUBLIC_FF_PROTOCOL_PAUSED` - Shows the red "Protocol is paused" banner (the full stop; last-resort emergency)
+  - Default: `false` (banner hidden unless explicitly set to `"true"`)
+  - Takes precedence over `NEXT_PUBLIC_FF_PROTOCOL_FROZEN` when both are set
+
+- `NEXT_PUBLIC_FF_ENABLE_EXPLORE` - Shows the Explore section: the `/explore` page and its sidebar entry
+  - Default: `false` (the route redirects to `/` and the nav item is hidden unless explicitly set to `"true"`)
+  - Off until the partner list is backed by the contributor registry rather than a hand-authored seed list
+
+- `NEXT_PUBLIC_FF_ENABLE_ACTIVATION_DELAY` - Holds Activate closed until the on-chain peg-in activation window has elapsed (`verifiedAt + peginActivationDelay`)
+  - Default: `false` (no floor gate, and no contract read is issued at all)
+  - Only the mint path is gated; "Activate and redeem" stays available during the window, matching the contract's own exemption
+  - Enable per environment only once its `ProtocolParams` exposes `peginActivationDelay()` — verify with `cast call <protocolParams> "peginActivationDelay()(uint256)"`. The gate fails closed, so enabling it where the getter is absent disables Activate for everyone
+
+- `NEXT_PUBLIC_NOTICE_BANNER_MESSAGE` - The single operator message shown to depositors, placed by context (non-boolean config)
+  - Default: empty (the default per-context copy is shown; standalone notice hidden)
+  - When set: fills the frozen/paused status-card body if a status is active, else fills the deposit-disabled banner text if deposits are off, else shows as a standalone top-of-app notice
 
 ## Available Scripts
 

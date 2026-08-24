@@ -7,30 +7,54 @@
  */
 
 import type { BitcoinWallet } from "@babylonlabs-io/ts-sdk/shared";
-import { stripHexPrefix } from "@babylonlabs-io/ts-sdk/tbv/core";
+import {
+  forwardDepositApproval,
+  isDepositTermsRejectedError,
+  stripHexPrefix,
+  supportsDepositApproval,
+  type DepositTerms,
+  type DepositTermsApprover,
+} from "@babylonlabs-io/ts-sdk/tbv/core";
 import { useChainConnector } from "@babylonlabs-io/wallet-connector";
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { Hex } from "viem";
 
 import { COPY } from "@/copy";
+import {
+  captureFunnelFailure,
+  shortId,
+  TELEMETRY_STAGE,
+} from "@/infrastructure/telemetryEvents";
 import type { PayoutSigningProgress } from "@/services/vault/vaultPayoutSignatureService";
 
+import { getVaultFromChain } from "../../../clients/eth-contract/btc-vault-registry/query";
 import { usePeginPolling } from "../../../context/deposit/PeginPollingContext";
 import { signAndSubmitPayouts } from "../../../hooks/deposit/depositFlowSteps/payoutSigning";
 import { useVaultProviders } from "../../../hooks/deposit/useVaultProviders";
 import { LocalStorageStatus } from "../../../models/peginStateMachine";
+import { fetchVaultPayoutScriptPubKey } from "../../../services/vault/fetchVaults";
+import {
+  assertPresignTargetSignable,
+  rebuildDepositTerms,
+} from "../../../services/vault/rebuildDepositTerms";
+import { resolveFundedTxFeeAndUtxos } from "../../../services/vault/resolveFundedTxFee";
 import type { VaultActivity } from "../../../types/activity";
 import {
-  BtcWalletLivenessError,
   btcAddressToScriptPubKeyHex,
+  BtcWalletLivenessError,
   shouldProbeWalletLiveness,
   verifyBtcWalletLiveness,
 } from "../../../utils/btc";
+import { supportsCancelSigning } from "../../../utils/cancelSigning";
 import { formatPayoutSignatureError } from "../../../utils/errors/formatting";
+import { isUserCancellation } from "../../../utils/errors/userCancellation";
+import { isVaultLifecycleStateError } from "../../../utils/errors/vaultLifecycleStateError";
 
 export interface SigningError {
   title: string;
   message: string;
+  /** Raw error for the "copy details" action; only the generic fallback sets it. */
+  diagnostics?: string;
 }
 
 export interface UsePayoutSigningStateProps {
@@ -47,10 +71,32 @@ export interface UsePayoutSigningStateResult {
   progress: PayoutSigningProgress;
   /** Error state if signing failed */
   error: SigningError | null;
+  /**
+   * True when `error` is a refusal retrying cannot change (presign lifecycle
+   * refusal, device rejected the deposit terms) — callers hide the retry CTA.
+   */
+  errorTerminal: boolean;
   /** Whether signing completed successfully */
   isComplete: boolean;
   /** Handler to initiate signing */
   handleSign: () => Promise<void>;
+  /**
+   * True while the in-flight sign sits in a cancellable device window
+   * (signPsbt/signPsbts/signMessage — the only calls `cancelSigning` can
+   * abort) AND the provider that started the sign exposes `cancelSigning`
+   * (only the Ledger provider does — always capability-probed, never
+   * assumed). False during the terms rebuild, VP auth, and submission, where
+   * no cancellable device prompt exists.
+   */
+  canCancel: boolean;
+  /** True from {@link handleCancel} until the in-flight sign settles. */
+  cancelRequested: boolean;
+  /**
+   * Requests cancellation of the in-flight sign. This does NOT settle it:
+   * the provider aborts at its next device exchange boundary, which may be
+   * only after the user finishes or rejects on the physical device.
+   */
+  handleCancel: () => void;
 }
 
 function normalizeScriptPubKeyHex(scriptPubKey: string): string {
@@ -71,6 +117,15 @@ export function usePayoutSigningState({
     total: 0,
   });
   const [error, setError] = useState<SigningError | null>(null);
+  const [errorTerminal, setErrorTerminal] = useState(false);
+  const [cancelRequested, setCancelRequested] = useState(false);
+  // True only while a cancellable device call (signPsbt/signPsbts/
+  // signMessage) is in flight — `cancelSigning` is a no-op everywhere else,
+  // including the deriveContextHash/approveDepositTerms device screens.
+  const [deviceWindowActive, setDeviceWindowActive] = useState(false);
+  // Ref mirror so the settle paths inside handleSign read the live value —
+  // the state itself is stale inside the long-lived async closure.
+  const cancelRequestedRef = useRef(false);
 
   const { findProvider } = useVaultProviders(activity.applicationEntryPoint);
   const btcConnector = useChainConnector("BTC");
@@ -106,11 +161,18 @@ export function usePayoutSigningState({
   // `finally`, and always check this before the state.
   const inFlightRef = useRef(false);
 
+  // Provider that STARTED the in-flight sign. Cancellation binds to it so a
+  // wallet swapped in mid-prompt cannot orphan the original ceremony.
+  const signingProviderRef = useRef<unknown>(null);
+
   const claimersDoneRef = useRef(false);
 
   const handleSign = useCallback(async () => {
     if (inFlightRef.current || signing) return;
     inFlightRef.current = true;
+    // A new attempt starts non-terminal: a guard error after a terminal
+    // refusal is a fresh, recoverable error and must get its Retry back.
+    setErrorTerminal(false);
 
     // Single outer try/finally so the reentrancy lock is always cleared —
     // including on synchronous throws from the guards (e.g.
@@ -119,7 +181,20 @@ export function usePayoutSigningState({
     // stuck at true and lock out every subsequent `handleSign()` until the
     // component remounts.
     try {
-      if (!activity.depositorPayoutBtcAddress) {
+      // The merged activity falls back to its localStorage-only shape when
+      // the indexer's paginated vault list misses this vault; that shape
+      // never carries the payout address (an indexer-only field). Backfill
+      // with a direct by-id lookup before refusing to sign. The lookup
+      // projects only the payout field so an unrelated null on the row
+      // cannot fail the fetch while the address itself is available.
+      let registeredPayoutScriptPubKey = activity.depositorPayoutBtcAddress;
+      if (!registeredPayoutScriptPubKey) {
+        const backfilled = await fetchVaultPayoutScriptPubKey(
+          activity.id,
+        ).catch(() => null);
+        registeredPayoutScriptPubKey = backfilled ?? undefined;
+      }
+      if (!registeredPayoutScriptPubKey) {
         setError(COPY.deposit.payoutSigningGuards.missingPayoutAddress);
         return;
       }
@@ -144,7 +219,7 @@ export function usePayoutSigningState({
       }
       if (
         normalizeScriptPubKeyHex(walletScriptPubKey) !==
-        normalizeScriptPubKeyHex(activity.depositorPayoutBtcAddress)
+        normalizeScriptPubKeyHex(registeredPayoutScriptPubKey)
       ) {
         setError(COPY.deposit.payoutSigningGuards.payoutAddressMismatch);
         return;
@@ -178,6 +253,17 @@ export function usePayoutSigningState({
         return;
       }
 
+      // Every wallet needs the funded Pre-PegIn hex on this path: the cold VP
+      // auth path hashes it and parses funding outpoints from it, and approval
+      // wallets also rebuild deposit terms from it. A localStorage-only merged
+      // activity shape can lack it — guard once, for all wallets, like the
+      // WOTS and activation resume paths do.
+      if (!activity.unsignedPrePeginTx) {
+        setError(COPY.deposit.payoutSigningGuards.missingPrePeginTransaction);
+        return;
+      }
+      const wallet = btcWalletProvider as BitcoinWallet;
+
       // The wallet may have locked/disconnected since the modal opened. Probe
       // it before signing so a locked wallet surfaces an actionable error
       // instead of a silent no-op (modal opens, no signing popup appears).
@@ -198,6 +284,7 @@ export function usePayoutSigningState({
         return;
       }
 
+      signingProviderRef.current = btcWalletProvider;
       setSigning(true);
       setError(null);
       // Start on the auth-anchor step — the first thing the flow does is
@@ -209,65 +296,113 @@ export function usePayoutSigningState({
       abortRef.current?.abort();
       abortRef.current = new AbortController();
 
-      const wallet = btcWalletProvider as BitcoinWallet;
-      const graphProgressWallet: BitcoinWallet = {
-        ...wallet,
-        deriveContextHash: async (appName, context) => {
-          setProgress({ phase: "auth", completed: 0, total: 0 });
-          try {
-            return await wallet.deriveContextHash(appName, context);
-          } finally {
-            setProgress({ phase: "claimers", completed: 0, total: 0 });
-          }
-        },
-        signPsbt: async (hex, opts) => {
-          if (claimersDoneRef.current) {
-            setProgress({ phase: "graph", completed: 0, total: 1 });
-          }
-          try {
-            return await wallet.signPsbt(hex, opts);
-          } finally {
-            if (claimersDoneRef.current) {
-              setProgress({ phase: "graph", completed: 1, total: 1 });
+      // Flags the cancellable device window around exactly the calls the
+      // provider's cancelSigning can abort — canCancel gates on it.
+      const withDeviceWindow = async <T>(run: () => Promise<T>): Promise<T> => {
+        setDeviceWindowActive(true);
+        try {
+          return await run();
+        } finally {
+          setDeviceWindowActive(false);
+        }
+      };
+
+      const graphProgressWallet: BitcoinWallet & Partial<DepositTermsApprover> =
+        {
+          ...wallet,
+          deriveContextHash: async (appName, context) => {
+            setProgress({ phase: "auth", completed: 0, total: 0 });
+            try {
+              return await wallet.deriveContextHash(appName, context);
+            } finally {
+              setProgress({ phase: "claimers", completed: 0, total: 0 });
             }
-          }
-        },
-        ...(wallet.signPsbts
-          ? {
-              signPsbts: async (hexes, opts) => {
-                if (claimersDoneRef.current) {
-                  setProgress({
-                    phase: "graph",
-                    completed: 0,
-                    total: hexes.length,
-                  });
-                }
-                try {
-                  return await wallet.signPsbts!(hexes, opts);
-                } finally {
+          },
+          signPsbt: async (hex, opts) => {
+            if (claimersDoneRef.current) {
+              setProgress({ phase: "graph", completed: 0, total: 1 });
+            }
+            try {
+              return await withDeviceWindow(() => wallet.signPsbt(hex, opts));
+            } finally {
+              if (claimersDoneRef.current) {
+                setProgress({ phase: "graph", completed: 1, total: 1 });
+              }
+            }
+          },
+          ...(wallet.signPsbts
+            ? {
+                signPsbts: async (hexes, opts) => {
                   if (claimersDoneRef.current) {
                     setProgress({
                       phase: "graph",
-                      completed: hexes.length,
+                      completed: 0,
                       total: hexes.length,
                     });
                   }
-                }
-              },
-            }
-          : {}),
-      };
+                  try {
+                    return await withDeviceWindow(() =>
+                      wallet.signPsbts!(hexes, opts),
+                    );
+                  } finally {
+                    if (claimersDoneRef.current) {
+                      setProgress({
+                        phase: "graph",
+                        completed: hexes.length,
+                        total: hexes.length,
+                      });
+                    }
+                  }
+                },
+              }
+            : {}),
+          signMessage: (message, type) =>
+            withDeviceWindow(() => wallet.signMessage(message, type)),
+          // Object spread drops prototype methods — see forwardDepositApproval.
+          ...forwardDepositApproval(wallet),
+        };
 
       try {
+        // Approval (intent) wallets have nothing in memory to approve on
+        // resume — rebuild the terms from chain + WASM, never browser storage.
+        let depositTerms: DepositTerms | undefined;
+        if (supportsDepositApproval(wallet)) {
+          const onChainVault = await getVaultFromChain(activity.id);
+          // Cheap, decisive gates first: a stalled/ack-expired deposit must
+          // surface its refund copy even if a mempool prevout read fails.
+          await assertPresignTargetSignable(activity.id, onChainVault);
+          const { fundedTxFee } = await resolveFundedTxFeeAndUtxos(
+            activity.unsignedPrePeginTx,
+          );
+          depositTerms = await rebuildDepositTerms({
+            vaultId: activity.id,
+            target: onChainVault,
+            fundedPrePeginTxHex: activity.unsignedPrePeginTx,
+            connectedDepositorAddress: depositorEthAddress,
+            depositorBtcPubkey: btcPublicKey,
+            fundedTxFee,
+            lifecycle: "presign",
+          });
+          // Last cancellation point before wallet/device interaction — the
+          // rebuild's chain reads leave a window where the modal may close.
+          if (abortRef.current.signal.aborted) {
+            setSigning(false);
+            return;
+          }
+        }
+
         await signAndSubmitPayouts({
           vaultId: activity.id,
           peginTxHash: activity.peginTxHash,
           depositorBtcPubkey: btcPublicKey,
           providerBtcPubKey: provider.btcPubKey,
-          registeredPayoutScriptPubKey: activity.depositorPayoutBtcAddress,
+          registeredPayoutScriptPubKey,
           btcWallet: graphProgressWallet,
           depositorEthAddress,
           unsignedPrePeginTxHex: activity.unsignedPrePeginTx,
+          // Spread keeps the software-wallet params identical to before —
+          // no `depositTerms` key at all rather than an explicit undefined.
+          ...(depositTerms ? { depositTerms } : {}),
           signal: abortRef.current.signal,
           onProgress: (next) => {
             if (next === null) return;
@@ -286,15 +421,51 @@ export function usePayoutSigningState({
         setIsComplete(true);
         onSuccess();
       } catch (err) {
+        // Read before the finally consumes it: was this settle preceded by
+        // the user's own cancel request?
+        const selfCancelRequested = cancelRequestedRef.current;
         if (err instanceof Error && err.name === "AbortError") {
           setSigning(false);
           return;
         }
+        // A self-requested cancel settling as the wallet's user-cancel
+        // rejection is not an error — return to the pre-sign idle state.
+        if (selfCancelRequested && isUserCancellation(err)) {
+          setSigning(false);
+          return;
+        }
+        // A presign lifecycle refusal (ack window elapsed, target already
+        // past PENDING) is the routine outcome for a stalled deposit — and
+        // the resume modal auto-fires this handler on mount — so it is not a
+        // payout-signing failure and must not inflate the funnel-stage alert.
+        const presignRefusal =
+          isVaultLifecycleStateError(err) && err.stage === "presign";
+        if (!presignRefusal) {
+          // Critical-path #3 presign failure on the resume path — previously
+          // only surfaced to UI state, invisible to Sentry.
+          captureFunnelFailure(
+            TELEMETRY_STAGE.ACTIVATION_PAYOUTS,
+            err,
+            activity.id,
+            {
+              tags: { providerId: shortId(vaultProviderAddress) },
+            },
+          );
+        }
+        // Decide terminality from the typed error BEFORE formatting flattens
+        // it to copy: a lifecycle refusal or a device envelope rejection can
+        // never succeed on retry.
+        setErrorTerminal(presignRefusal || isDepositTermsRejectedError(err));
         setError(formatPayoutSignatureError(err));
         setSigning(false);
       }
     } finally {
       inFlightRef.current = false;
+      signingProviderRef.current = null;
+      // Every settle path (success, any error, guard return) consumes a
+      // pending cancel request so the modal can't wedge on a disabled button.
+      cancelRequestedRef.current = false;
+      setCancelRequested(false);
     }
   }, [
     signing,
@@ -313,5 +484,42 @@ export function usePayoutSigningState({
     onSuccess,
   ]);
 
-  return { signing, progress, error, isComplete, handleSign };
+  // Capability probe: only the Ledger vault provider exposes cancelSigning.
+  // Reads the provider that started the sign, not the live connector — a
+  // wallet swapped in mid-prompt must not retarget the affordance. The ref is
+  // only ever set/cleared together with the `signing` state, so this render
+  // read stays in sync. Gated on the device window: `signing` alone spans
+  // the terms rebuild, VP auth, and submission, where cancelSigning is a
+  // no-op and no device prompt exists.
+  const canCancel =
+    signing &&
+    deviceWindowActive &&
+    supportsCancelSigning(signingProviderRef.current);
+
+  const handleCancel = useCallback(() => {
+    // Cancel the ceremony on the provider that started it — never the
+    // connector's current provider.
+    const provider = signingProviderRef.current;
+    if (!inFlightRef.current || cancelRequestedRef.current) return;
+    if (!supportsCancelSigning(provider)) return;
+    cancelRequestedRef.current = true;
+    setCancelRequested(true);
+    // A REQUEST, not a settle: the provider aborts at its next device
+    // exchange boundary, so the sign promise stays pending until the user
+    // acts on the device. Abort our own signal too so VP polling stops now.
+    provider.cancelSigning();
+    abortRef.current?.abort();
+  }, []);
+
+  return {
+    signing,
+    progress,
+    error,
+    errorTerminal,
+    isComplete,
+    handleSign,
+    canCancel,
+    cancelRequested,
+    handleCancel,
+  };
 }

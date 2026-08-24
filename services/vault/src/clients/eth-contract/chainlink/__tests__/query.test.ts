@@ -36,7 +36,11 @@ vi.mock("@/config/network", () => ({
 }));
 
 import type { ChainlinkRoundData } from "../query";
-import { getTokenPrices, isPriceFresh } from "../query";
+import {
+  getTokenPrices,
+  isPriceFresh,
+  resetStaleFeedReporting,
+} from "../query";
 
 /** Simulated Chainlink round ID for test fixtures */
 const ROUND_ID = 100n;
@@ -65,8 +69,21 @@ const FRESH_AGE_SECONDS = 10n;
 /** answeredInRound value representing an incomplete oracle round */
 const INCOMPLETE_ANSWERED_IN_ROUND = 99n;
 
-/** Two hours in seconds — exceeds the 1-hour staleness threshold */
+/** Two hours in seconds — exceeds the heartbeat-plus-grace staleness threshold */
 const TWO_HOURS_SECONDS = 7200n;
+
+/**
+ * Past the 3600s heartbeat but inside the 600s grace window. This is the tail
+ * of every normal heartbeat cycle and must NOT be reported as stale — reporting
+ * it was what made staleness the highest-volume event in the project.
+ */
+const JUST_PAST_HEARTBEAT_SECONDS = 3900n;
+
+/** Client clock behind chain time by more than the tolerated skew (300s). */
+const LARGE_CLOCK_SKEW_SECONDS = 600n;
+
+/** Client clock behind chain time by less than the tolerated skew. */
+const SMALL_CLOCK_SKEW_SECONDS = 30n;
 
 function makeRoundData(
   overrides: Partial<ChainlinkRoundData> = {},
@@ -117,20 +134,38 @@ describe("isPriceFresh", () => {
 describe("getTokenPrices", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    // The stale-feed dedup store is module-scoped and outlives a single test.
+    resetStaleFeedReporting();
   });
 
-  function mockFeedResponse(answer: bigint, decimals: number) {
+  /**
+   * Multicall returns one entry per contract call when `allowFailure: true`,
+   * shaped as `{ status: "success" | "failure", result?, error? }`.
+   * `getTokenPrices` issues [latestRoundData, decimals] per feed in a single
+   * batched multicall — these helpers build that array.
+   */
+  function makeFeedResult(
+    answer: bigint,
+    decimals: number,
+    options: {
+      updatedAt?: bigint;
+      answeredInRound?: bigint;
+    } = {},
+  ) {
     const nowSeconds = BigInt(Math.floor(Date.now() / 1000));
-    mockMulticall.mockResolvedValueOnce([
-      [
-        ROUND_ID,
-        answer,
-        nowSeconds - FRESH_AGE_SECONDS,
-        nowSeconds - FRESH_AGE_SECONDS,
-        ROUND_ID,
-      ],
-      decimals,
-    ]);
+    const updatedAt = options.updatedAt ?? nowSeconds - FRESH_AGE_SECONDS;
+    const answeredInRound = options.answeredInRound ?? ROUND_ID;
+    return [
+      {
+        status: "success" as const,
+        result: [ROUND_ID, answer, updatedAt, updatedAt, answeredInRound],
+      },
+      { status: "success" as const, result: decimals },
+    ];
+  }
+
+  function mockFeedResponse(answer: bigint, decimals: number) {
+    mockMulticall.mockResolvedValueOnce(makeFeedResult(answer, decimals));
   }
 
   it("returns correct price using dynamic decimals for 8-decimal feed", async () => {
@@ -177,17 +212,11 @@ describe("getTokenPrices", () => {
   });
 
   it("marks metadata as stale when answeredInRound < roundId", async () => {
-    const nowSeconds = BigInt(Math.floor(Date.now() / 1000));
-    mockMulticall.mockResolvedValueOnce([
-      [
-        ROUND_ID,
-        BTC_ANSWER_8_DECIMALS,
-        nowSeconds - FRESH_AGE_SECONDS,
-        nowSeconds - FRESH_AGE_SECONDS,
-        INCOMPLETE_ANSWERED_IN_ROUND,
-      ],
-      STANDARD_DECIMALS,
-    ]);
+    mockMulticall.mockResolvedValueOnce(
+      makeFeedResult(BTC_ANSWER_8_DECIMALS, STANDARD_DECIMALS, {
+        answeredInRound: INCOMPLETE_ANSWERED_IN_ROUND,
+      }),
+    );
 
     const result = await getTokenPrices(["BTC"]);
 
@@ -197,62 +226,162 @@ describe("getTokenPrices", () => {
 
   it("logs incomplete round message when answeredInRound < roundId", async () => {
     const { logger } = await import("@/infrastructure");
-    const nowSeconds = BigInt(Math.floor(Date.now() / 1000));
-    mockMulticall.mockResolvedValueOnce([
-      [
-        ROUND_ID,
-        BTC_ANSWER_8_DECIMALS,
-        nowSeconds - FRESH_AGE_SECONDS,
-        nowSeconds - FRESH_AGE_SECONDS,
-        INCOMPLETE_ANSWERED_IN_ROUND,
-      ],
-      STANDARD_DECIMALS,
-    ]);
+    mockMulticall.mockResolvedValueOnce(
+      makeFeedResult(BTC_ANSWER_8_DECIMALS, STANDARD_DECIMALS, {
+        answeredInRound: INCOMPLETE_ANSWERED_IN_ROUND,
+      }),
+    );
 
     await getTokenPrices(["BTC"]);
 
     expect(logger.event).toHaveBeenCalledWith(
       expect.stringContaining("incomplete round"),
+      expect.objectContaining({
+        tags: expect.objectContaining({ staleReason: "incomplete-round" }),
+      }),
     );
   });
 
   it("logs age-based message when data exceeds max age", async () => {
     const { logger } = await import("@/infrastructure");
     const nowSeconds = BigInt(Math.floor(Date.now() / 1000));
-    mockMulticall.mockResolvedValueOnce([
-      [
-        ROUND_ID,
-        BTC_ANSWER_8_DECIMALS,
-        nowSeconds - TWO_HOURS_SECONDS,
-        nowSeconds - TWO_HOURS_SECONDS,
-        ROUND_ID,
-      ],
-      STANDARD_DECIMALS,
-    ]);
+    mockMulticall.mockResolvedValueOnce(
+      makeFeedResult(BTC_ANSWER_8_DECIMALS, STANDARD_DECIMALS, {
+        updatedAt: nowSeconds - TWO_HOURS_SECONDS,
+      }),
+    );
 
     await getTokenPrices(["BTC"]);
 
+    // The age lives in structured data, not the message: interpolating it made
+    // every distinct value its own Sentry issue.
     expect(logger.event).toHaveBeenCalledWith(
-      expect.stringContaining("hours old"),
+      "Chainlink price data is stale. Using last known price.",
+      expect.objectContaining({
+        tags: expect.objectContaining({ staleReason: "age" }),
+        ageHours: "2.0",
+      }),
     );
+  });
+
+  it("does not report a feed that is past its heartbeat but inside the grace window", async () => {
+    const { logger } = await import("@/infrastructure");
+    const nowSeconds = BigInt(Math.floor(Date.now() / 1000));
+    mockMulticall.mockResolvedValueOnce(
+      makeFeedResult(BTC_ANSWER_8_DECIMALS, STANDARD_DECIMALS, {
+        updatedAt: nowSeconds - JUST_PAST_HEARTBEAT_SECONDS,
+      }),
+    );
+
+    const { metadata } = await getTokenPrices(["BTC"]);
+
+    expect(metadata["BTC"].isStale).toBe(false);
+    expect(logger.event).not.toHaveBeenCalled();
+  });
+
+  it("reports clock skew separately when the client clock is far behind chain time", async () => {
+    const { logger } = await import("@/infrastructure");
+    const nowSeconds = BigInt(Math.floor(Date.now() / 1000));
+    mockMulticall.mockResolvedValueOnce(
+      makeFeedResult(BTC_ANSWER_8_DECIMALS, STANDARD_DECIMALS, {
+        updatedAt: nowSeconds + LARGE_CLOCK_SKEW_SECONDS,
+      }),
+    );
+
+    const { metadata } = await getTokenPrices(["BTC"]);
+
+    expect(metadata["BTC"].isStale).toBe(true);
+    expect(logger.event).toHaveBeenCalledWith(
+      expect.stringContaining("clock is behind chain time"),
+      expect.objectContaining({
+        tags: expect.objectContaining({ staleReason: "clock-skew" }),
+      }),
+    );
+  });
+
+  it("treats a small clock skew as fresh rather than failing the feed", async () => {
+    const nowSeconds = BigInt(Math.floor(Date.now() / 1000));
+    mockMulticall.mockResolvedValueOnce(
+      makeFeedResult(BTC_ANSWER_8_DECIMALS, STANDARD_DECIMALS, {
+        updatedAt: nowSeconds + SMALL_CLOCK_SKEW_SECONDS,
+      }),
+    );
+
+    const { metadata } = await getTokenPrices(["BTC"]);
+
+    expect(metadata["BTC"].isStale).toBe(false);
   });
 
   it("marks metadata as stale when data exceeds max age", async () => {
     const nowSeconds = BigInt(Math.floor(Date.now() / 1000));
-    mockMulticall.mockResolvedValueOnce([
-      [
-        ROUND_ID,
-        BTC_ANSWER_8_DECIMALS,
-        nowSeconds - TWO_HOURS_SECONDS,
-        nowSeconds - TWO_HOURS_SECONDS,
-        ROUND_ID,
-      ],
-      STANDARD_DECIMALS,
-    ]);
+    mockMulticall.mockResolvedValueOnce(
+      makeFeedResult(BTC_ANSWER_8_DECIMALS, STANDARD_DECIMALS, {
+        updatedAt: nowSeconds - TWO_HOURS_SECONDS,
+      }),
+    );
 
     const result = await getTokenPrices(["BTC"]);
 
     expect(result.metadata["BTC"].isStale).toBe(true);
+  });
+
+  it("emits the stale event once per stale episode, not on every read", async () => {
+    const { logger } = await import("@/infrastructure");
+    const nowSeconds = BigInt(Math.floor(Date.now() / 1000));
+    const staleFeed = () =>
+      makeFeedResult(BTC_ANSWER_8_DECIMALS, STANDARD_DECIMALS, {
+        updatedAt: nowSeconds - TWO_HOURS_SECONDS,
+      });
+
+    mockMulticall.mockResolvedValueOnce(staleFeed());
+    await getTokenPrices(["BTC"]);
+    mockMulticall.mockResolvedValueOnce(staleFeed());
+    await getTokenPrices(["BTC"]);
+
+    const staleEvents = vi
+      .mocked(logger.event)
+      .mock.calls.filter(([m]) => typeof m === "string" && m.includes("stale"));
+    expect(staleEvents).toHaveLength(1);
+  });
+
+  it("still marks metadata stale on a deduped read (only the event is suppressed)", async () => {
+    const nowSeconds = BigInt(Math.floor(Date.now() / 1000));
+    const staleFeed = () =>
+      makeFeedResult(BTC_ANSWER_8_DECIMALS, STANDARD_DECIMALS, {
+        updatedAt: nowSeconds - TWO_HOURS_SECONDS,
+      });
+
+    mockMulticall.mockResolvedValueOnce(staleFeed());
+    await getTokenPrices(["BTC"]);
+    mockMulticall.mockResolvedValueOnce(staleFeed());
+    const second = await getTokenPrices(["BTC"]);
+
+    // The UI's stale badge reads metadata, which must still report stale even
+    // though the second read emitted no event.
+    expect(second.metadata["BTC"].isStale).toBe(true);
+  });
+
+  it("re-emits the stale event after the feed recovers then goes stale again", async () => {
+    const { logger } = await import("@/infrastructure");
+    const nowSeconds = BigInt(Math.floor(Date.now() / 1000));
+    const staleFeed = () =>
+      makeFeedResult(BTC_ANSWER_8_DECIMALS, STANDARD_DECIMALS, {
+        updatedAt: nowSeconds - TWO_HOURS_SECONDS,
+      });
+
+    mockMulticall.mockResolvedValueOnce(staleFeed());
+    await getTokenPrices(["BTC"]); // stale → emit
+    mockMulticall.mockResolvedValueOnce(
+      makeFeedResult(BTC_ANSWER_8_DECIMALS, STANDARD_DECIMALS),
+    );
+    await getTokenPrices(["BTC"]); // fresh → clears the dedup flag
+    mockMulticall.mockResolvedValueOnce(staleFeed());
+    await getTokenPrices(["BTC"]); // stale again → emit
+
+    const staleEvents = vi
+      .mocked(logger.event)
+      .mock.calls.filter(([m]) => typeof m === "string" && m.includes("stale"));
+    expect(staleEvents).toHaveLength(2);
   });
 
   it("stores error metadata when multicall fails", async () => {
@@ -275,17 +404,7 @@ describe("getTokenPrices", () => {
   });
 
   it("throws on non-positive price via getTokenPrices error handling", async () => {
-    const nowSeconds = BigInt(Math.floor(Date.now() / 1000));
-    mockMulticall.mockResolvedValueOnce([
-      [
-        ROUND_ID,
-        0n,
-        nowSeconds - FRESH_AGE_SECONDS,
-        nowSeconds - FRESH_AGE_SECONDS,
-        ROUND_ID,
-      ],
-      STANDARD_DECIMALS,
-    ]);
+    mockMulticall.mockResolvedValueOnce(makeFeedResult(0n, STANDARD_DECIMALS));
 
     const result = await getTokenPrices(["BTC"]);
 
@@ -333,5 +452,74 @@ describe("getTokenPrices", () => {
     expect(result.prices["UNKNOWN_TOKEN"]).toBeUndefined();
     expect(result.metadata["UNKNOWN_TOKEN"]).toBeUndefined();
     expect(mockMulticall).not.toHaveBeenCalled();
+  });
+
+  it("batches multiple symbols into a single multicall round-trip", async () => {
+    // BTC and ETH map to different feeds. getTokenPrices must issue ONE
+    // multicall covering both feeds (4 calls total: latestRoundData +
+    // decimals × 2 feeds) rather than two separate round-trips.
+    mockMulticall.mockResolvedValueOnce([
+      ...makeFeedResult(BTC_ANSWER_8_DECIMALS, STANDARD_DECIMALS),
+      ...makeFeedResult(ETH_ANSWER_8_DECIMALS, STANDARD_DECIMALS),
+    ]);
+
+    const result = await getTokenPrices(["BTC", "ETH"]);
+
+    expect(mockMulticall).toHaveBeenCalledTimes(1);
+    expect(result.prices["BTC"]).toBe(BTC_PRICE_USD);
+    expect(result.prices["ETH"]).toBe(ETH_PRICE_USD);
+  });
+
+  it("isolates per-feed failures inside a batched multicall", async () => {
+    // BTC feed reverts; ETH feed succeeds. Per-feed allowFailure must keep
+    // the rest of the batch usable instead of poisoning every result.
+    mockMulticall.mockResolvedValueOnce([
+      { status: "failure", error: new Error("InvalidSource(BTC)") },
+      { status: "failure", error: new Error("InvalidSource(BTC)") },
+      ...makeFeedResult(ETH_ANSWER_8_DECIMALS, STANDARD_DECIMALS),
+    ]);
+
+    const result = await getTokenPrices(["BTC", "ETH"]);
+
+    expect(result.metadata["BTC"].fetchFailed).toBe(true);
+    expect(result.prices["BTC"]).toBeUndefined();
+    expect(result.prices["ETH"]).toBe(ETH_PRICE_USD);
+    expect(result.metadata["ETH"].fetchFailed).toBe(false);
+  });
+
+  it("marks every requested symbol failed (including aliases) when the batched multicall rejects", async () => {
+    mockMulticall.mockRejectedValueOnce(new Error("RPC timeout"));
+
+    const result = await getTokenPrices(["BTC", "ETH"]);
+
+    for (const symbol of ["BTC", "vBTC", "sBTC", "ETH", "WETH"]) {
+      expect(result.prices[symbol]).toBeUndefined();
+      expect(result.metadata[symbol].fetchFailed).toBe(true);
+      expect(result.metadata[symbol].error).toBe("RPC timeout");
+    }
+  });
+
+  it("deduplicates shared BTC aliases into one feed entry in a mixed-symbol batch", async () => {
+    // vBTC and BTC both resolve to the BTC feed via getChainlinkFeedAddress.
+    // The batch must collapse them to a single multicall entry pair
+    // (latestRoundData + decimals) rather than re-fetching the same feed.
+    mockMulticall.mockResolvedValueOnce([
+      ...makeFeedResult(BTC_ANSWER_8_DECIMALS, STANDARD_DECIMALS),
+      ...makeFeedResult(ETH_ANSWER_8_DECIMALS, STANDARD_DECIMALS),
+    ]);
+
+    const result = await getTokenPrices(["BTC", "vBTC", "ETH"]);
+
+    expect(mockMulticall).toHaveBeenCalledTimes(1);
+    // 2 unique feeds × 2 calls each = 4 entries in the multicall contracts list.
+    const callArgs = mockMulticall.mock.calls[0][0] as {
+      contracts: unknown[];
+    };
+    expect(callArgs.contracts).toHaveLength(4);
+    expect(result.prices["BTC"]).toBe(BTC_PRICE_USD);
+    expect(result.prices["vBTC"]).toBe(BTC_PRICE_USD);
+    expect(result.prices["sBTC"]).toBe(BTC_PRICE_USD);
+    expect(result.prices["ETH"]).toBe(ETH_PRICE_USD);
+    expect(result.prices["WETH"]).toBe(ETH_PRICE_USD);
   });
 });

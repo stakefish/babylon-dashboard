@@ -1,4 +1,4 @@
-import { Button, Heading, Loader, Text } from "@babylonlabs-io/core-ui";
+import { Button, Callout, Heading, Loader } from "@babylonlabs-io/core-ui";
 import {
   estimateRefundFeeSats,
   REFUND_MAX_FEE_FRACTION_DENOMINATOR,
@@ -7,8 +7,9 @@ import {
 } from "@babylonlabs-io/ts-sdk/tbv/core/services";
 import { useEffect, useState } from "react";
 
-import { StatusBanner } from "@/components/deposit/DepositSignModal/StatusBanner";
+import { ReviewDetailRow } from "@/components/shared/DetailRow";
 import { FALLBACK_FEE_RATE_SATS_VB } from "@/constants";
+import { useBTCWallet } from "@/context/wallet";
 import { COPY } from "@/copy";
 import { usePrice } from "@/hooks/usePrices";
 import { satoshiToBtcNumber } from "@/utils/btcConversion";
@@ -21,7 +22,14 @@ import { FeeRateField } from "./FeeRateField";
 const DUST_LIMIT_SATS = 546n;
 
 interface RefundReviewContentProps {
+  /** Amount reclaimed by the refund (funded HTLC value); drives the display. */
   amountSats: bigint | null;
+  /**
+   * Deposit amount the SDK's fee-fraction cap is computed against. Mirror it
+   * here (not {@link amountSats}) so the UI cap matches the SDK and never lets
+   * the user confirm a fee the SDK is about to reject.
+   */
+  feeCapBasisSats: bigint | null;
   defaultFeeRateSatsVb: number | null;
   previewError: string | null;
   refunding: boolean;
@@ -31,6 +39,7 @@ interface RefundReviewContentProps {
 
 export function RefundReviewContent({
   amountSats,
+  feeCapBasisSats,
   defaultFeeRateSatsVb,
   previewError,
   refunding,
@@ -39,6 +48,10 @@ export function RefundReviewContent({
 }: RefundReviewContentProps) {
   const btcPriceUSD = usePrice("BTC");
   const symbol = getBtcSymbol();
+  // The refund signs+broadcasts a BTC transaction, so a silently locked wallet
+  // must block confirmation. This full-screen modal covers the navbar unlock
+  // affordance, so surface the lock here and gate the CTA until it clears.
+  const { locked: walletLocked } = useBTCWallet();
 
   const [feeRate, setFeeRate] = useState<number | null>(null);
   // True when the seeded feeRate came from the hard-coded floor because the
@@ -90,8 +103,8 @@ export function RefundReviewContent({
   const exceedsRateCap =
     feeRate !== null && feeRate > REFUND_MAX_FEE_RATE_SATS_VB;
   const maxFeeByFractionSats =
-    amountSats !== null
-      ? (amountSats * REFUND_MAX_FEE_FRACTION_NUMERATOR) /
+    feeCapBasisSats !== null
+      ? (feeCapBasisSats * REFUND_MAX_FEE_FRACTION_NUMERATOR) /
         REFUND_MAX_FEE_FRACTION_DENOMINATOR
       : null;
   const exceedsFractionCap =
@@ -101,6 +114,7 @@ export function RefundReviewContent({
 
   const canConfirm =
     !refunding &&
+    !walletLocked &&
     feeRate !== null &&
     feeRate > 0 &&
     youReceiveSats !== null &&
@@ -110,9 +124,14 @@ export function RefundReviewContent({
     !usingFallback;
 
   const feeCapMessage = exceedsRateCap
-    ? `Network fee rate exceeds the safety cap of ${REFUND_MAX_FEE_RATE_SATS_VB} sat/vB. Lower the fee rate to continue.`
+    ? COPY.deposit.refundReview.feeRateCapError(REFUND_MAX_FEE_RATE_SATS_VB)
     : exceedsFractionCap
-      ? `Network fee exceeds ${(REFUND_MAX_FEE_FRACTION_NUMERATOR * 100n) / REFUND_MAX_FEE_FRACTION_DENOMINATOR}% of the refund amount. Lower the fee rate to continue.`
+      ? COPY.deposit.refundReview.feeFractionCapError(
+          Number(
+            (REFUND_MAX_FEE_FRACTION_NUMERATOR * 100n) /
+              REFUND_MAX_FEE_FRACTION_DENOMINATOR,
+          ),
+        )
       : null;
 
   const handleConfirmClick = () => {
@@ -129,24 +148,24 @@ export function RefundReviewContent({
       </div>
 
       <div className="rounded-b-2xl border border-secondary-strokeLight bg-surface p-6">
-        <div className="flex flex-col gap-4">
-          <DetailRow
+        <div className="flex flex-col gap-6">
+          <ReviewDetailRow
             label={COPY.deposit.refundReview.refundAmount}
-            primary={
+            value={
               amountBtc !== null
                 ? `${formatBtcValue(amountBtc)} ${symbol}`
                 : "—"
             }
-            secondary={
+            secondaryValue={
               amountBtc !== null && btcPriceUSD > 0
                 ? `${formatUsd(amountBtc * btcPriceUSD)} USD`
                 : undefined
             }
           />
 
-          <DetailRow
+          <ReviewDetailRow
             label={COPY.deposit.refundReview.networkFeeRate}
-            primaryNode={
+            value={
               feeRate !== null ? (
                 <FeeRateField
                   value={feeRate}
@@ -159,14 +178,14 @@ export function RefundReviewContent({
             }
           />
 
-          <DetailRow
+          <ReviewDetailRow
             label={COPY.deposit.refundReview.btcNetworkFee}
-            primary={
+            value={
               networkFeeBtc !== null
                 ? `${formatBtcValue(networkFeeBtc)} ${symbol}`
                 : "—"
             }
-            secondary={
+            secondaryValue={
               networkFeeBtc !== null && btcPriceUSD > 0
                 ? `${formatUsd(networkFeeBtc * btcPriceUSD)} USD`
                 : undefined
@@ -175,38 +194,40 @@ export function RefundReviewContent({
 
           <div className="my-1 border-t border-secondary-strokeLight" />
 
-          <DetailRow
+          <ReviewDetailRow
             label={COPY.deposit.refundReview.youReceive}
-            primary={
+            value={
               youReceiveBtc !== null
                 ? `${formatBtcValue(youReceiveBtc)} ${symbol}`
                 : "—"
             }
-            secondary={
+            secondaryValue={
               youReceiveBtc !== null && btcPriceUSD > 0
                 ? `${formatUsd(youReceiveBtc * btcPriceUSD)} USD`
                 : undefined
             }
-            emphasis
           />
 
-          {previewError && (
-            <StatusBanner variant="error">{previewError}</StatusBanner>
+          {walletLocked && (
+            <Callout variant="error" title={COPY.wallet.locked.title}>
+              {COPY.wallet.locked.description}
+            </Callout>
           )}
+          {previewError && <Callout variant="error">{previewError}</Callout>}
           {!error && !isDust && usingFallback && (
-            <StatusBanner variant="warning">
+            <Callout variant="warning">
               {COPY.deposit.refundReview.fallbackFeeWarning}
-            </StatusBanner>
+            </Callout>
           )}
           {!error && isDust && (
-            <StatusBanner variant="error">
+            <Callout variant="error">
               {COPY.deposit.refundReview.dustError}
-            </StatusBanner>
+            </Callout>
           )}
           {!error && !isDust && feeCapMessage && (
-            <StatusBanner variant="error">{feeCapMessage}</StatusBanner>
+            <Callout variant="error">{feeCapMessage}</Callout>
           )}
-          {error && <StatusBanner variant="error">{error}</StatusBanner>}
+          {error && <Callout variant="error">{error}</Callout>}
 
           <Button
             variant="contained"
@@ -227,45 +248,6 @@ export function RefundReviewContent({
             )}
           </Button>
         </div>
-      </div>
-    </div>
-  );
-}
-
-interface DetailRowProps {
-  label: string;
-  primary?: string;
-  primaryNode?: React.ReactNode;
-  secondary?: string;
-  emphasis?: boolean;
-}
-
-function DetailRow({
-  label,
-  primary,
-  primaryNode,
-  secondary,
-  emphasis = false,
-}: DetailRowProps) {
-  return (
-    <div className="flex items-start justify-between gap-6">
-      <Text
-        variant="body1"
-        className={emphasis ? "text-accent-primary" : "text-accent-secondary"}
-      >
-        {label}
-      </Text>
-      <div className="flex flex-col items-end">
-        {primaryNode ?? (
-          <Text variant="body1" className="text-right text-accent-primary">
-            {primary}
-          </Text>
-        )}
-        {secondary && (
-          <Text variant="body2" className="text-right text-accent-disabled">
-            {secondary}
-          </Text>
-        )}
       </div>
     </div>
   );

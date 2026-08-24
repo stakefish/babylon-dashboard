@@ -8,7 +8,9 @@
 import { BTCVaultRegistryABI } from "@babylonlabs-io/ts-sdk/tbv/core";
 import { waitForTransactionReceiptSmartAware } from "@babylonlabs-io/ts-sdk/tbv/core/utils";
 import {
+  AaveAdapterPositionProxyABI,
   AaveIntegrationAdapterABI,
+  AaveSpokeABI,
   buildBorrowTx,
   buildReorderVaultsTx,
   buildRepayTx,
@@ -23,7 +25,26 @@ import {
   throwRevertError,
   type TransactionResult,
 } from "../../../clients/eth-contract/transactionFactory";
-import { mapViemErrorToContractError } from "../../../utils/errors";
+import {
+  mapViemErrorToContractError,
+  tagSimulationPhase,
+} from "../../../utils/errors";
+
+/**
+ * ABIs consulted when decoding a revert on the Aave paths.
+ *
+ * The adapter alone is not enough: a withdraw or borrow reverts inside the Aave
+ * Core Spoke (health-factor floor, dust rule, frozen/paused reserve) or in the
+ * per-position proxy, and a selector outside the supplied ABIs decodes to
+ * nothing — which is how ordinary, explainable conditions reached the user as
+ * "Execution reverted for an unknown reason."
+ */
+const AAVE_REVERT_DECODING_ABIS = [
+  AaveIntegrationAdapterABI,
+  AaveSpokeABI,
+  AaveAdapterPositionProxyABI,
+  BTCVaultRegistryABI,
+];
 
 /**
  * Read the Core Spoke address from the controller contract.
@@ -45,6 +66,30 @@ export async function getCoreSpokeAddress(
     functionName: "BTC_VAULT_CORE_SPOKE",
     args: [],
   }) as Promise<Address>;
+}
+
+/**
+ * Read the vBTC reserve ID from the controller contract.
+ *
+ * VAULT_BTC_RESERVE_ID is an immutable property on the AaveIntegrationAdapter.
+ * Reading it on-chain from the trusted adapter guarantees the reserve ID is not
+ * influenced by untrusted external sources (e.g. GraphQL indexer), which would
+ * otherwise be able to point collateral and liquidation math at the wrong
+ * reserve.
+ *
+ * @param controllerAddress - Trusted AaveIntegrationAdapter address
+ * @returns vBTC reserve ID on the Core Spoke
+ */
+export async function getVaultBtcReserveId(
+  controllerAddress: Address,
+): Promise<bigint> {
+  const publicClient = ethClient.getPublicClient();
+  return publicClient.readContract({
+    address: controllerAddress,
+    abi: AaveIntegrationAdapterABI,
+    functionName: "VAULT_BTC_RESERVE_ID",
+    args: [],
+  }) as Promise<bigint>;
 }
 
 /**
@@ -103,7 +148,19 @@ async function executeTx(
   try {
     // Pre-flight simulation - catches errors before user signs
     await simulateTx(to, data, account);
+  } catch (error) {
+    // Tagged so callers can safely auto-retry: nothing was signed or sent,
+    // and the failure may be a lagging RPC backend, not the chain.
+    throw tagSimulationPhase(
+      mapViemErrorToContractError(
+        error,
+        errorContext,
+        AAVE_REVERT_DECODING_ABIS,
+      ),
+    );
+  }
 
+  try {
     // Simulation passed, now send the actual transaction
     const hash = await walletClient.sendTransaction({
       to,
@@ -139,12 +196,11 @@ async function executeTx(
       receipt,
     };
   } catch (error) {
-    // Include both ABIs for comprehensive error decoding
-    // AaveIntegrationAdapter may call into BTCVaultRegistry
-    throw mapViemErrorToContractError(error, errorContext, [
-      AaveIntegrationAdapterABI,
-      BTCVaultRegistryABI,
-    ]);
+    throw mapViemErrorToContractError(
+      error,
+      errorContext,
+      AAVE_REVERT_DECODING_ABIS,
+    );
   }
 }
 

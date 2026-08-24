@@ -6,7 +6,7 @@ export interface BaseIconProps {
 
 // Extended icon props with variant support
 export interface IconProps extends BaseIconProps {
-  variant?: "default" | "primary" | "secondary" | "error" | "success" | "accent-primary" | "accent-secondary";
+  variant?: "default" | "primary" | "secondary" | "error" | "success" | "accent-primary" | "accent-secondary" | "danger";
   color?: string; // For custom colors via className
 }
 
@@ -19,6 +19,7 @@ export const iconColorVariants = {
   success: "text-success-main",
   "accent-primary": "text-accent-primary",
   "accent-secondary": "text-accent-secondary",
+  danger: "text-error-main",
 } as const;
 
 export { ThemedIcon } from "./ThemedIcon";
@@ -40,5 +41,18 @@ export { BugReportIcon } from "./common/BugReportIcon";
 export { ThemeIcon } from "./common/ThemeIcon";
 export { ThreeDotsMenuIcon } from "./common/ThreeDotsMenuIcon";
 export { InfoIcon } from "./common/InfoIcon";
+export { PauseIcon } from "./common/PauseIcon";
 export { CheckIcon } from "./common/CheckIcon";
 export { FilterIcon } from "./common/FilterIcon";
+export { OverviewIcon } from "./common/OverviewIcon";
+export { VaultsIcon } from "./common/VaultsIcon";
+export { LoansIcon } from "./common/LoansIcon";
+export { ActivityIcon } from "./common/ActivityIcon";
+export { LiquidationsIcon } from "./common/LiquidationsIcon";
+export { ExploreIcon } from "./common/ExploreIcon";
+export { GithubIcon } from "./common/GithubIcon";
+export { TelegramIcon } from "./common/TelegramIcon";
+export { LinkedinIcon } from "./common/LinkedinIcon";
+export { MailIcon } from "./common/MailIcon";
+export { DiscordIcon } from "./common/DiscordIcon";
+export { XIcon } from "./common/XIcon";

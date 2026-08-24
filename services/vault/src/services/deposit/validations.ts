@@ -14,6 +14,7 @@ import {
   type ValidationResult,
 } from "@babylonlabs-io/ts-sdk/tbv/core/services";
 
+import { COPY } from "@/copy";
 import { getBtcSymbol } from "@/utils/formatting";
 
 export {
@@ -95,11 +96,35 @@ export function validateMultiVaultDepositInputs(
 // ---------------------------------------------------------------------------
 
 export interface DepositCtaParams extends DepositFormValidityParams {
+  /** DISABLE_DEPOSIT kill-switch — blocks the CTA at every deposit entry point. */
   isDepositDisabled: boolean;
+  /**
+   * True when the contract's activeVaultCoreVersion is NOT buildable by this
+   * build's WASM (`supportedTxGraphVersions()`). Terminal for the whole
+   * deposit page: every fresh deposit would fail at construction, so the CTA
+   * fails closed with an "update the app" message instead of a mid-flow
+   * WASM error after wallet popups.
+   */
+  appVersionUnsupported: boolean;
+  /**
+   * Per-vault P2A anchor value (0n for versions without an anchor). Null
+   * while the WASM query loads — the CTA must treat that like the
+   * minPeginFee loading window: a Max click before it resolves would
+   * overstate the depositable amount by the anchor reserve.
+   */
+  p2aAnchorValueSats: bigint | null;
   isGeoBlocked: boolean;
   isAddressBlocked: boolean;
   isWalletConnected: boolean;
   hasProvider: boolean;
+  /**
+   * True when a provider is selected but its on-chain commission hasn't loaded
+   * (still fetching or the read failed). The deposit binds this commission as
+   * the quote that bounds `maxAcceptableCommissionBps` on-chain, so submitting
+   * without a known value risks the silent-overcharge path: block until it is
+   * available rather than letting the flow bind to an unquoted fresh read.
+   */
+  commissionUnavailable: boolean;
   isFeeError: boolean;
   feeError: string | null;
   feeDisabled: boolean;
@@ -150,6 +175,13 @@ export interface DepositCtaParams extends DepositFormValidityParams {
    * indefinitely on "Calculating fees...".
    */
   minPeginFeeError: Error | null;
+  /**
+   * Terminal failure from the `computeMinClaimValue` WASM query. Same purpose
+   * as {@link minPeginFeeError}: without it a query rejection would leave the
+   * CTA stuck on "Calculating fees..." (the depositorClaimValue == null gate)
+   * with no error or retry signal.
+   */
+  depositorClaimValueError: Error | null;
 }
 
 export interface DepositCtaState {
@@ -216,11 +248,8 @@ export function maxBelowMinimum(
   );
 }
 
-export function maxBelowMinimumLabel(
-  maxDepositSats: bigint,
-  minDeposit: bigint,
-): string {
-  return `Available balance (${formatSatoshisToBtc(maxDepositSats)} ${getBtcSymbol()}) is below the minimum deposit (${formatSatoshisToBtc(minDeposit)} ${getBtcSymbol()})`;
+export function maxBelowMinimumLabel(minDeposit: bigint): string {
+  return `Minimum deposit is ${formatSatoshisToBtc(minDeposit)} ${getBtcSymbol()}`;
 }
 
 export function getDepositButtonLabel(
@@ -253,7 +282,14 @@ export function getDepositButtonLabel(
 
 export function getDepositCtaState(params: DepositCtaParams): DepositCtaState {
   if (params.isDepositDisabled) {
-    return { disabled: true, label: "Depositing Unavailable" };
+    return { disabled: true, label: "Deposits unavailable" };
+  }
+
+  if (params.appVersionUnsupported) {
+    return {
+      disabled: true,
+      label: COPY.deposit.errors.appVersionUnsupported.title,
+    };
   }
 
   if (params.isGeoBlocked) {
@@ -315,14 +351,18 @@ export function getDepositCtaState(params: DepositCtaParams): DepositCtaState {
   }
   // Symmetric to capBelowMinimum, on the balance/fee dimension: the fee-adjusted
   // max is positive but below the minimum, so no amount clears both bounds.
-  // Terminal — surface regardless of the entered amount instead of the dead-end
-  // "Minimum X" guidance. `maxDepositSats` is clamped to `effectiveRemaining`,
+  // Only surface once the user has entered an amount — at the empty initial
+  // state the CTA should read "Enter an amount", not a balance error the user
+  // hasn't triggered yet. `maxDepositSats` is clamped to `effectiveRemaining`,
   // so when the supply cap is the binding cause the capBelowMinimum branch above
   // wins (more specific). Mirrored in useDepositValidation.validateAmount.
-  if (maxBelowMinimum(params.maxDepositSats, params.minDeposit)) {
+  if (
+    params.amountSats > 0n &&
+    maxBelowMinimum(params.maxDepositSats, params.minDeposit)
+  ) {
     return {
       disabled: true,
-      label: maxBelowMinimumLabel(params.maxDepositSats, params.minDeposit),
+      label: maxBelowMinimumLabel(params.minDeposit),
     };
   }
   if (
@@ -331,7 +371,7 @@ export function getDepositCtaState(params: DepositCtaParams): DepositCtaState {
   ) {
     return {
       disabled: true,
-      label: `Vault size exceeds remaining capacity (${formatSatoshisToBtc(params.effectiveRemaining)} BTC)`,
+      label: `BTC Vault size exceeds remaining capacity (${formatSatoshisToBtc(params.effectiveRemaining)} BTC)`,
     };
   }
 
@@ -342,6 +382,13 @@ export function getDepositCtaState(params: DepositCtaParams): DepositCtaState {
     return { disabled: true, label: "Insufficient balance" };
   }
 
+  // Prompt for an amount before nudging provider selection — on an empty form
+  // entering an amount is the first action the user needs to take.
+  // `getDepositButtonLabel` returns "Enter an amount" for a zero amount.
+  if (params.amountSats <= 0n) {
+    return { disabled: true, label: getDepositButtonLabel(params) };
+  }
+
   if (!params.hasProvider) {
     return { disabled: true, label: "Select a vault provider" };
   }
@@ -350,7 +397,11 @@ export function getDepositCtaState(params: DepositCtaParams): DepositCtaState {
   // loading" gate below. Without this branch a query rejection (WASM init
   // failure, unsupported signer count) would leave the CTA stuck on
   // "Calculating fees..." with no error or retry signal.
-  if (params.amountSats > 0n && params.minPeginFeeError !== null) {
+  if (
+    params.amountSats > 0n &&
+    (params.minPeginFeeError !== null ||
+      params.depositorClaimValueError !== null)
+  ) {
     return { disabled: true, label: "Fee estimate unavailable" };
   }
 
@@ -359,8 +410,23 @@ export function getDepositCtaState(params: DepositCtaParams): DepositCtaState {
   // treated as 0n) until this query resolves; submitting in that window
   // would let an amount that won't actually fund the real HTLC sizing pass
   // validateForm and fail later inside the signing path.
-  if (params.amountSats > 0n && params.minPeginFee === null) {
+  if (
+    params.amountSats > 0n &&
+    (params.minPeginFee === null || params.p2aAnchorValueSats === null)
+  ) {
     return { disabled: true, label: "Calculating fees..." };
+  }
+
+  // Surface a terminal network-fee failure before `getDepositButtonLabel`:
+  // a failed estimate also has `estimatedFeeSats` absent, so the null-fee
+  // "Calculating fees..." label would otherwise shadow the error forever.
+  // Skip when there's no balance — "No available balance" is more actionable
+  // than a fee error the user can't act on anyway.
+  if (params.btcBalance > 0n && params.isFeeError) {
+    return {
+      disabled: true,
+      label: params.feeError ?? "Fee estimate unavailable",
+    };
   }
 
   const amountLabel = getDepositButtonLabel(params);
@@ -368,15 +434,16 @@ export function getDepositCtaState(params: DepositCtaParams): DepositCtaState {
     return { disabled: true, label: amountLabel };
   }
 
-  if (params.ordinalsCheckPending) {
-    return { disabled: true, label: "Checking for inscriptions..." };
+  // The amount is valid and a provider is selected, but its commission hasn't
+  // loaded. The deposit binds this commission as the quote, so block until it
+  // is known — checked after the amount guidance so "Enter an amount" /
+  // "Minimum" isn't preempted by a transient commission load.
+  if (params.commissionUnavailable) {
+    return { disabled: true, label: "Loading commission..." };
   }
 
-  if (params.isFeeError) {
-    return {
-      disabled: true,
-      label: params.feeError ?? "Fee estimate unavailable",
-    };
+  if (params.ordinalsCheckPending) {
+    return { disabled: true, label: "Checking for inscriptions..." };
   }
 
   if (params.feeDisabled) {

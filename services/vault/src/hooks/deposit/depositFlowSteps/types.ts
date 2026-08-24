@@ -59,16 +59,14 @@ export enum DepositFlowStep {
   SIGN_DEPOSITOR_GRAPH = 11,
   /** Step 12: Wait for VP verification and ACK submission. */
   AWAIT_VP_VERIFICATION = 12,
-  /** Step 13: Download vault artifacts */
-  ARTIFACT_DOWNLOAD = 13,
-  /** Step 14: Derive the HTLC secret from the BTC wallet, ahead of activation. */
-  RETRIEVE_SECRET = 14,
-  /** Step 15: Reveal HTLC secret on Ethereum to activate the vault */
-  ACTIVATE_VAULT = 15,
-  /** Step 16: Wait for activation confirmation / indexer catch-up. */
-  AWAIT_ACTIVATION_CONFIRMATION = 16,
-  /** Step 17: Deposit completed */
-  COMPLETED = 17,
+  /** Step 13: Derive the HTLC secret from the BTC wallet, ahead of activation. */
+  RETRIEVE_SECRET = 13,
+  /** Step 14: Reveal HTLC secret on Ethereum to activate the vault */
+  ACTIVATE_VAULT = 14,
+  /** Step 15: Wait for activation confirmation / indexer catch-up. */
+  AWAIT_ACTIVATION_CONFIRMATION = 15,
+  /** Step 16: Deposit completed */
+  COMPLETED = 16,
 }
 
 // ============================================================================
@@ -112,6 +110,12 @@ export interface PeginBatchRegisterParams {
   }>;
   /** Proof of possession from signProofOfPossession. */
   popSignature: PopSignature;
+  /**
+   * VP commission (bps) the depositor was shown at provider selection. Bounds
+   * `maxAcceptableCommissionBps` so registration is rejected if the on-chain
+   * commission drifted upward beyond the SDK's headroom since the quote.
+   */
+  quotedCommissionBps: number;
 }
 
 export interface PeginBatchRegisterResult {

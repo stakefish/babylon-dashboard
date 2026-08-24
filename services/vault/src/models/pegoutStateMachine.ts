@@ -15,6 +15,10 @@ import {
   isPegoutTerminalStatus,
 } from "@babylonlabs-io/ts-sdk/tbv/core/services";
 
+import { COPY } from "@/copy";
+
+const STATUS_COPY = COPY.pegout.status;
+
 // ---------------------------------------------------------------------------
 // Polling thresholds — vault-specific polling policy, not protocol logic.
 // ---------------------------------------------------------------------------
@@ -53,48 +57,157 @@ export interface PegoutDisplayState {
 
 const PEGOUT_STATUS_MAP: Record<string, PegoutDisplayState> = {
   [ClaimerPegoutStatusValue.CLAIM_EVENT_RECEIVED]: {
-    label: "Processing",
+    label: STATUS_COPY.claimEventReceived.label,
     variant: "pending",
-    message:
-      "Your withdrawal request has been received and is being processed.",
+    message: STATUS_COPY.claimEventReceived.message,
   },
   [ClaimerPegoutStatusValue.CLAIM_BROADCAST]: {
-    label: "Processing",
+    label: STATUS_COPY.claimBroadcast.label,
     variant: "pending",
-    message:
-      "Your withdrawal is in progress. A transaction has been submitted to Bitcoin.",
+    message: STATUS_COPY.claimBroadcast.message,
   },
   [ClaimerPegoutStatusValue.ASSERT_BROADCAST]: {
-    label: "Confirming",
+    label: STATUS_COPY.assertBroadcast.label,
     variant: "pending",
-    message:
-      "Waiting for Bitcoin network confirmations. This may take a few hours.",
+    message: STATUS_COPY.assertBroadcast.message,
   },
   [ClaimerPegoutStatusValue.PAYOUT_BROADCAST]: {
-    label: "BTC Sent",
+    label: STATUS_COPY.payoutBroadcast.label,
     variant: "active",
-    message: "Your BTC has been sent to your nominated address.",
+    message: STATUS_COPY.payoutBroadcast.message,
   },
   [ClaimerPegoutStatusValue.PAYOUT_BLOCKED]: {
-    label: "Blocked",
+    label: STATUS_COPY.payoutBlocked.label,
     variant: "warning",
-    message:
-      "Withdrawal was blocked on-chain (challenger or council override). Please contact support.",
+    message: STATUS_COPY.payoutBlocked.message,
   },
 };
 
 const INITIATING_STATE: PegoutDisplayState = {
-  label: "Initiating",
+  label: STATUS_COPY.initiating.label,
   variant: "pending",
-  message: "Your withdrawal is being prepared by the vault provider.",
+  message: STATUS_COPY.initiating.message,
 };
 
 export const TIMED_OUT_STATE: PegoutDisplayState = {
-  label: "Status Unavailable",
+  label: STATUS_COPY.unavailable.label,
   variant: "warning",
-  message:
-    "Unable to determine withdrawal status. The vault provider may be unreachable. Please try again later or contact support.",
+  message: STATUS_COPY.unavailable.message,
 };
+
+// Gate explorer links on status: the txids are pre-computed at pegin time, so
+// they exist before the txs are actually on-chain.
+const CLAIM_ON_CHAIN_STATUSES = new Set<string>([
+  ClaimerPegoutStatusValue.CLAIM_BROADCAST,
+  ClaimerPegoutStatusValue.ASSERT_BROADCAST,
+  ClaimerPegoutStatusValue.PAYOUT_BROADCAST,
+  ClaimerPegoutStatusValue.PAYOUT_BLOCKED,
+]);
+const ASSERT_ON_CHAIN_STATUSES = new Set<string>([
+  ClaimerPegoutStatusValue.ASSERT_BROADCAST,
+  ClaimerPegoutStatusValue.PAYOUT_BROADCAST,
+  ClaimerPegoutStatusValue.PAYOUT_BLOCKED,
+]);
+
+/**
+ * Whether the claim/assert txids should link to the BTC explorer for a given
+ * claimer status. False until the corresponding tx has actually been broadcast.
+ */
+export function getPegoutTxLinkFlags(claimerStatus: string | undefined): {
+  linkClaim: boolean;
+  linkAssert: boolean;
+} {
+  return {
+    linkClaim:
+      claimerStatus !== undefined && CLAIM_ON_CHAIN_STATUSES.has(claimerStatus),
+    linkAssert:
+      claimerStatus !== undefined &&
+      ASSERT_ON_CHAIN_STATUSES.has(claimerStatus),
+  };
+}
+
+/**
+ * Whether a polling result represents a withdrawal that is still actively
+ * progressing — drives the "Pending Withdrawals" header spinner.
+ *
+ * False once the vault is protocol-terminal (`PAYOUT_BROADCAST` /
+ * `PAYOUT_BLOCKED`) **or** polling has given up at `TIMED_OUT_STATE` (≥failure /
+ * unknown-poll thresholds). The timed-out case is detected by reference to the
+ * `TIMED_OUT_STATE` singleton because its claimer status is `undefined` or an
+ * unrecognized string, not a terminal protocol status.
+ */
+export function isPegoutInProgress(
+  claimerStatus: string | undefined,
+  displayState: PegoutDisplayState | undefined,
+): boolean {
+  if (displayState === TIMED_OUT_STATE) return false;
+  return (
+    claimerStatus !== ClaimerPegoutStatusValue.PAYOUT_BROADCAST &&
+    claimerStatus !== ClaimerPegoutStatusValue.PAYOUT_BLOCKED
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Stage progress — drives the progress-bar fill on the pending-withdraw card.
+// Every stage is a fixed fraction except the challenge period, which grows from
+// its base toward its ceiling as the assert tx accrues confirmations.
+// ---------------------------------------------------------------------------
+
+const STAGE_PROGRESS = {
+  submitted: 0.12,
+  inProgress: 0.25,
+  challengeBase: 0.35,
+  challengeCeiling: 0.85,
+  payoutSent: 0.95,
+} as const;
+
+/**
+ * Progress-bar fill fraction (0–1) for a withdrawal's current stage.
+ *
+ * During the challenge period the fraction interpolates between
+ * `challengeBase` and `challengeCeiling` by `confirmations / timelockAssert`;
+ * when confirmations or the timelock are not yet known it stays at the base so
+ * the bar doesn't jump. Blocked is treated as a late stage (keeps the bar near
+ * full); the card recolors it via the status variant.
+ */
+export function getPegoutStageProgress(
+  claimerStatus: string | undefined,
+  found: boolean,
+  confirmations?: number,
+  timelockAssertBlocks?: number,
+): number {
+  if (!found || !claimerStatus) return STAGE_PROGRESS.submitted;
+
+  switch (claimerStatus) {
+    case ClaimerPegoutStatusValue.CLAIM_EVENT_RECEIVED:
+      return STAGE_PROGRESS.submitted;
+    case ClaimerPegoutStatusValue.CLAIM_BROADCAST:
+      return STAGE_PROGRESS.inProgress;
+    case ClaimerPegoutStatusValue.ASSERT_BROADCAST: {
+      if (
+        confirmations === undefined ||
+        timelockAssertBlocks === undefined ||
+        timelockAssertBlocks <= 0
+      ) {
+        return STAGE_PROGRESS.challengeBase;
+      }
+      const fraction = Math.max(
+        0,
+        Math.min(1, confirmations / timelockAssertBlocks),
+      );
+      return (
+        STAGE_PROGRESS.challengeBase +
+        fraction *
+          (STAGE_PROGRESS.challengeCeiling - STAGE_PROGRESS.challengeBase)
+      );
+    }
+    case ClaimerPegoutStatusValue.PAYOUT_BROADCAST:
+    case ClaimerPegoutStatusValue.PAYOUT_BLOCKED:
+      return STAGE_PROGRESS.payoutSent;
+    default:
+      return STAGE_PROGRESS.submitted;
+  }
+}
 
 export function getPegoutDisplayState(
   claimerStatus: string | undefined,
@@ -110,8 +223,8 @@ export function getPegoutDisplayState(
   }
 
   return {
-    label: "Unknown",
+    label: STATUS_COPY.unknownLabel,
     variant: "warning",
-    message: `Unknown status: ${claimerStatus}. Please contact support.`,
+    message: STATUS_COPY.unknownMessage(claimerStatus),
   };
 }

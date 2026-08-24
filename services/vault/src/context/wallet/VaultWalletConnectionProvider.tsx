@@ -1,3 +1,4 @@
+import { StandardSettingsMenu } from "@babylonlabs-io/core-ui";
 import {
   APPKIT_BTC_CONNECTOR_ID,
   BTCWalletProvider,
@@ -5,6 +6,7 @@ import {
   WalletProvider,
   createWalletConfig,
   useWalletConnect,
+  useWidgetState,
 } from "@babylonlabs-io/wallet-connector";
 import { useTheme } from "next-themes";
 import {
@@ -19,26 +21,44 @@ import { getNetworkConfigBTC } from "@/config";
 import featureFlags from "@/config/featureFlags";
 import { getNetworkConfigETH } from "@/config/network";
 import { logger } from "@/infrastructure";
+import { isUserCancellation } from "@/utils/errors/userCancellation";
 
-// Vault deposits require the connected BTC wallet to implement the
-// `deriveContextHash` API (see docs/specs/derive-context-hash.md). Only
-// UniSat exposes a conformant implementation today, so every other BTC
-// adapter is gated off here. Re-enable an entry as soon as its wallet
-// vendor ships `deriveContextHash`. Each non-conforming adapter still
-// throws `WALLET_METHOD_NOT_SUPPORTED` at the connector layer; this
-// list just keeps them out of the connection UI in the first place so
-// users don't pick something that can't complete a deposit.
-const DISABLED_WALLETS: string[] = [
+// Vault deposits need the BTC wallet's `deriveContextHash` (docs/specs/derive-context-hash.md).
+// ALWAYS_DISABLED_WALLETS keeps non-conforming adapters (appkit/injectable/ledger) permanently out
+// of the connect UI. Every other wallet is on by default; which ones are hidden per environment —
+// experimental wallets not yet ready for production (onekey, utila) and any wallet we need to pull
+// during an incident — is controlled entirely by NEXT_PUBLIC_TBV_DISABLED_BTC_WALLETS, so no code
+// change or redeploy is needed to toggle one.
+const ALWAYS_DISABLED_WALLETS: string[] = [
   APPKIT_BTC_CONNECTOR_ID,
   "injectable",
-  "keystone",
   "ledger_btc",
   "ledger_btc_v2",
-  "okx",
-  "onekey",
+];
+
+// `ledger_btc_vault` is the DMK-based vault provider (#2109), built ahead of
+// Ledger's firmware being final. Opt-in rather than opt-out: the env disable
+// list defaults to empty, so a new provider would otherwise be visible in any
+// environment that has not listed it.
+const LEDGER_VAULT_WALLET_ID = "ledger_btc_vault";
+
+const DISABLED_WALLETS: string[] = [
+  ...ALWAYS_DISABLED_WALLETS,
+  ...(featureFlags.isLedgerVaultWalletEnabled ? [] : [LEDGER_VAULT_WALLET_ID]),
+  ...featureFlags.disabledBtcWallets,
 ];
 
 const context = typeof window !== "undefined" ? window : {};
+
+// The wallet dialog is a full-viewport overlay, so its close/settings buttons
+// position with `fixed left`/`right`, not inside the page's 1080px content
+// box. These match that box's edge (per Figma: both inset 236px on the 1512px
+// reference frame — (1512-1080)/2 + 20px) so the buttons line up with the
+// rest of the page on desktop.
+const WALLET_DIALOG_LEFT_INSET_CLASS =
+  "md:!left-[max(20px,calc((100vw-1080px)/2+20px))]";
+const WALLET_DIALOG_RIGHT_INSET_CLASS =
+  "md:!right-[max(20px,calc((100vw-1080px)/2+20px))]";
 
 // A late-injecting BTC extension (e.g. UniSat) can emit a transient `disconnect`
 // while its service worker wakes right after a page (re)load, then immediately
@@ -63,6 +83,14 @@ const BTC_DISCONNECT_DEBOUNCE_MS = 3000;
  */
 function WalletProviders({ children }: PropsWithChildren) {
   const { disconnect: disconnectAll } = useWalletConnect();
+  // Whether the connect modal is open. While it is, the user is actively
+  // managing wallets, so a single-wallet disconnect must NOT cascade into the
+  // full both-wallets teardown (which also closes the modal).
+  const { visible: connectModalVisible } = useWidgetState();
+  const connectModalVisibleRef = useRef(connectModalVisible);
+  useEffect(() => {
+    connectModalVisibleRef.current = connectModalVisible;
+  }, [connectModalVisible]);
   // Guard against re-entrancy when disconnectAll triggers disconnect events
   const isDisconnectingRef = useRef(false);
   // Whether BTC has successfully connected at least once this session. A
@@ -150,14 +178,26 @@ function WalletProviders({ children }: PropsWithChildren) {
     [cancelBtcReset, scheduleBtcReset, runWalletReset],
   );
 
+  // ETH disconnect. When the connect modal is open the user is intentionally
+  // managing wallets: the connector's own disconnect handler (already invoked by
+  // ETHWalletProvider before this callback) clears ETH from the widget and keeps
+  // the modal on the chain list, so we only need to SUPPRESS the full
+  // both-wallets reset here. We must not call connector.disconnect() ourselves —
+  // that re-enters the in-flight disconnect path and emits duplicate events.
+  // Outside the modal, an ETH disconnect is a real session drop → full reset.
+  const handleEthDisconnect = useCallback(() => {
+    if (connectModalVisibleRef.current) return;
+    void runWalletReset();
+  }, [runWalletReset]);
+
   // ETH has no late-injection blip; react immediately. Keeping the cancel
   // per-chain also avoids a BTC reconnect wrongly cancelling an ETH disconnect.
   const ethCallbacks = useMemo(
     () => ({
-      onDisconnect: runWalletReset,
+      onDisconnect: handleEthDisconnect,
       onAddressChange: runWalletReset,
     }),
-    [runWalletReset],
+    [handleEthDisconnect, runWalletReset],
   );
 
   return (
@@ -174,7 +214,7 @@ function WalletProviders({ children }: PropsWithChildren) {
  * to ensure wagmi config is created before the app renders.
  */
 export const WalletConnectionProvider = ({ children }: PropsWithChildren) => {
-  const { theme } = useTheme();
+  const { theme, setTheme } = useTheme();
 
   const config = useMemo(
     () =>
@@ -190,8 +230,8 @@ export const WalletConnectionProvider = ({ children }: PropsWithChildren) => {
   );
 
   const onError = useCallback((error: Error) => {
-    // User rejections are expected, don't log them
-    if (error?.message?.includes("rejected")) {
+    // Declining or dismissing a wallet prompt is routine drop-off, not a fault.
+    if (isUserCancellation(error)) {
       return;
     }
     logger.error(error, { data: { context: "Wallet connection error" } });
@@ -206,8 +246,10 @@ export const WalletConnectionProvider = ({ children }: PropsWithChildren) => {
       onError={onError}
       disabledWallets={DISABLED_WALLETS}
       requiredChains={["BTC", "ETH"]}
-      simplifiedTerms={featureFlags.isSimplifiedTermsEnabled}
       disableTomo
+      dialogActions={<StandardSettingsMenu theme={theme} setTheme={setTheme} />}
+      dialogCloseButtonClassName={WALLET_DIALOG_LEFT_INSET_CLASS}
+      dialogActionsClassName={WALLET_DIALOG_RIGHT_INSET_CLASS}
     >
       <WalletProviders>{children}</WalletProviders>
     </WalletProvider>

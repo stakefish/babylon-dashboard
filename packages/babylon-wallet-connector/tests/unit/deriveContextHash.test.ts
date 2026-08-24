@@ -2,9 +2,10 @@
  * Unit tests for `deriveContextHash` adapter behavior.
  *
  * Tests the shared `unsupportedDeriveContextHash` helper used by every
- * non-supporting BTC adapter (OKX, OneKey, Ledger v1/v2, Keystone,
- * AppKit, Tomo, Injectable fallback) and the injectable wrapper that
- * stubs the method when the underlying wallet doesn't implement it.
+ * non-supporting BTC adapter (Ledger v1/v2, AppKit, Injectable fallback)
+ * and the injectable wrapper that stubs the method when the underlying
+ * wallet doesn't implement it. UniSat, OneKey, and OKX forward to the
+ * wallet's native method instead of using this helper.
  *
  * The provider classes themselves are not imported here — their
  * modules transitively pull in SVG asset imports that the unit-test
@@ -41,14 +42,14 @@ test.describe("unsupportedDeriveContextHash helper", () => {
   });
 
   test("error includes the wallet name for debugging", async () => {
-    const stub = unsupportedDeriveContextHash("OKX Wallet");
+    const stub = unsupportedDeriveContextHash("Ledger BTC");
     let caught: WalletError | undefined;
     try {
       await stub("vault-app", "ab".repeat(36));
     } catch (e) {
       caught = e as WalletError;
     }
-    expect(caught?.message).toContain("OKX Wallet");
+    expect(caught?.message).toContain("Ledger BTC");
     expect(caught?.message).toContain("deriveContextHash");
   });
 
