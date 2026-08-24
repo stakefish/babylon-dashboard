@@ -1,5 +1,5 @@
 import React from "react";
-import { Avatar } from "../../../../components/Avatar";
+import { WalletIcon } from "../../../../components/Avatar";
 import { Text } from "../../../../components/Text";
 import { DisplayHash } from "../../../../components/DisplayHash";
 import { CopyIcon } from "../../../../components/Icons";
@@ -26,10 +26,16 @@ export interface WalletMenuCardProps {
   walletType: "Bitcoin" | "Babylon" | "Ethereum";
   walletName?: string;
   walletIcon?: string;
+  /** Brand fill for single-colour wallet marks. See `IWallet.iconBackground`. */
+  walletIconBackground?: string;
   address: string;
   isCopied: boolean;
   onCopy: () => void;
   className?: string;
+  /** Disconnects this wallet alone. Omit to render no per-wallet control. */
+  onDisconnect?: () => void;
+  /** Accessible name for the per-wallet disconnect control. */
+  disconnectLabel?: string;
 
   // Balance-related props
   balances?: WalletBalanceData;
@@ -43,10 +49,13 @@ export const WalletMenuCard: React.FC<WalletMenuCardProps> = ({
   walletType,
   walletName,
   walletIcon,
+  walletIconBackground,
   address,
   isCopied,
   onCopy,
   className,
+  onDisconnect,
+  disconnectLabel,
   balances,
   coinSymbol,
   isBalanceLoading: loading = false,
@@ -140,10 +149,10 @@ export const WalletMenuCard: React.FC<WalletMenuCardProps> = ({
     <div className={twJoin("border-itemPrimaryMute flex-1 border-b py-3 first:pt-0 md:py-4", className)}>
       <div className="flex w-full flex-col">
         <div className="mb-2 flex items-center gap-2.5 md:mb-3">
-          <Avatar
+          <WalletIcon
             alt={walletName || walletType}
             url={walletIcon || ""}
-            size="large"
+            background={walletIconBackground}
             className="size-8 shrink-0 md:size-10"
           />
 
@@ -165,6 +174,17 @@ export const WalletMenuCard: React.FC<WalletMenuCardProps> = ({
               </button>
             </div>
           </div>
+
+          {onDisconnect && (
+            <button
+              type="button"
+              onClick={onDisconnect}
+              aria-label={disconnectLabel ?? `Disconnect ${walletType} wallet`}
+              className="flex-shrink-0 self-start text-xs font-medium text-error-main transition-opacity hover:opacity-80"
+            >
+              Disconnect
+            </button>
+          )}
         </div>
 
         {/* Balance Sections - only show if balances are provided */}

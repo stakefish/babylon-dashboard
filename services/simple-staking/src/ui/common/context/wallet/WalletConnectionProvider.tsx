@@ -61,6 +61,15 @@ export const WalletConnectionProvider = ({ children }: PropsWithChildren) => {
   const disabledWallets = useMemo(() => {
     const disabled: string[] = [];
 
+    // Utila is an MPC wallet integrated for the vault deposit flow only (it
+    // requires deriveContextHash, which staking does not use). Never surface
+    // it in the staking wallet list.
+    disabled.push("utila");
+
+    // Same reasoning for the Ledger vault provider: it drives Ledger's vault
+    // app for deposits and has no staking role.
+    disabled.push("ledger_btc_vault");
+
     // Ledger wallet version control:
     // - If ledger is disabled entirely: disable both v1 and v2
     // - If ledger is enabled and v2 flag is on: disable v1, use v2

@@ -8,6 +8,14 @@ import type { VaultActivity } from "@/types/activity";
 
 import { RefundModal } from "../index";
 
+// The shared v3 modal shell renders the app's top bar (network badge +
+// settings), whose graph reaches wallet-connector and can't be transformed
+// here. This suite is about the refund content inside it.
+vi.mock("@/components/shared/V3ModalShell", () => ({
+  V3ModalShell: ({ open, children }: { open: boolean; children: ReactNode }) =>
+    open ? <div>{children}</div> : null,
+}));
+
 vi.mock("@/services/vault/vaultRefundService", async (importOriginal) => {
   const actual =
     await importOriginal<
@@ -17,6 +25,7 @@ vi.mock("@/services/vault/vaultRefundService", async (importOriginal) => {
     ...actual,
     getRefundPreview: vi.fn(async () => ({
       amountSats: 1_000_000n,
+      feeCapBasisSats: 1_000_000n,
       halfHourFeeSatsVb: 5,
       prePeginOnChain: true,
     })),
@@ -37,6 +46,13 @@ vi.mock("@/clients/eth-contract/chainlink", () => ({
     prices: { BTC: 50_000 },
     metadata: { BTC: { isStale: false, fetchFailed: false } },
   })),
+}));
+
+// RefundReviewContent reads the BTC wallet-lock state to gate the refund; drive
+// it through a mutable mock (default unlocked).
+const mockBtcWalletState = vi.hoisted(() => ({ locked: false }));
+vi.mock("@/context/wallet", () => ({
+  useBTCWallet: () => mockBtcWalletState,
 }));
 
 const ACTIVITY: VaultActivity = {
@@ -64,6 +80,7 @@ function Wrapper({ children }: { children: ReactNode }) {
 describe("RefundModal", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    mockBtcWalletState.locked = false;
   });
 
   it("renders the review content", async () => {
@@ -79,11 +96,19 @@ describe("RefundModal", () => {
     );
 
     expect(await screen.findByText("Review Refund")).toBeInTheDocument();
+
+    // The shared review row splits each figure across an amount line and a
+    // secondary conversion line; the figures themselves are unchanged.
+    // 1,000,000 sats = 0.01 BTC at $50,000 = $500.00.
+    expect(screen.getByText("Refund Amount")).toBeInTheDocument();
+    expect(screen.getByText("0.01 sBTC")).toBeInTheDocument();
+    expect(screen.getByText("$500.00 USD")).toBeInTheDocument();
   });
 
   it("disables Confirm and shows the rate-cap banner when mempool returns a malicious fee rate", async () => {
     vi.mocked(getRefundPreview).mockResolvedValueOnce({
       amountSats: 100_000_000n,
+      feeCapBasisSats: 100_000_000n,
       halfHourFeeSatsVb: 10_000,
       prePeginOnChain: true,
     });
@@ -101,6 +126,26 @@ describe("RefundModal", () => {
 
     expect(
       await screen.findByText(/safety cap of 2000 sat\/vB/i),
+    ).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /confirm/i })).toBeDisabled();
+  });
+
+  it("disables Confirm and shows the lock notice when the BTC wallet is locked", async () => {
+    mockBtcWalletState.locked = true;
+
+    render(
+      <Wrapper>
+        <RefundModal
+          open
+          activity={ACTIVITY}
+          onClose={() => {}}
+          onSuccess={() => {}}
+        />
+      </Wrapper>,
+    );
+
+    expect(
+      await screen.findByText("Bitcoin wallet locked"),
     ).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /confirm/i })).toBeDisabled();
   });
@@ -133,6 +178,7 @@ describe("RefundModal", () => {
     // exists to spend, so the modal must not offer the refund form.
     vi.mocked(getRefundPreview).mockResolvedValueOnce({
       amountSats: 1_000_000n,
+      feeCapBasisSats: 1_000_000n,
       halfHourFeeSatsVb: 5,
       prePeginOnChain: false,
     });
@@ -161,12 +207,15 @@ describe("RefundModal", () => {
     expect(onClose).toHaveBeenCalled();
   });
 
-  it("disables Confirm and shows the fraction-cap banner for a small vault at a within-rate-cap fee", async () => {
-    // Small vault where rate is below the per-vbyte ceiling but absolute
-    // fee still consumes more than 10% of vault.amount.
-    // 100k-sat vault, halfHourFee=100 sat/vB → fee=16_000 > 10% of 100k.
+  it("caps the fee against the deposit basis, not the larger refund amount, for a small vault", async () => {
+    // The cap mirrors the SDK, which keys off the deposit amount
+    // (feeCapBasisSats), not the funded HTLC value shown as amountSats.
+    // halfHourFee=100 sat/vB → fee=16_000. That is > 10% of the 100k deposit
+    // basis (10_000) so the banner must show, yet < 10% of the 200k funded
+    // amount (20_000) — so a cap keyed off amountSats would wrongly pass.
     vi.mocked(getRefundPreview).mockResolvedValueOnce({
-      amountSats: 100_000n,
+      amountSats: 200_000n,
+      feeCapBasisSats: 100_000n,
       halfHourFeeSatsVb: 100,
       prePeginOnChain: true,
     });
@@ -183,7 +232,7 @@ describe("RefundModal", () => {
     );
 
     expect(
-      await screen.findByText(/exceeds 10% of the refund amount/i),
+      await screen.findByText(/exceeds the 10% refund safety cap/i),
     ).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /confirm/i })).toBeDisabled();
   });

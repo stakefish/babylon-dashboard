@@ -1,39 +1,30 @@
 /**
  * Deposit Flow Hook
  *
- * Orchestrates the batch-first deposit flow. A single vault is just a batch of 1.
- * Creates ONE Pre-PegIn BTC transaction with N HTLC outputs (one per vault) and
- * registers them all atomically on Ethereum via submitPeginRequestBatch().
+ * Batch-first deposit: one Pre-PegIn BTC tx with N HTLC outputs (one per vault),
+ * registered atomically on Ethereum via submitPeginRequestBatch — all vaults
+ * succeed or none, and the Pre-PegIn is broadcast only after ETH registration,
+ * so a failed batch never strands BTC in unregistered HTLCs. A single vault is
+ * a batch of 1.
  *
- * Flow:
- * 0. Validation — check wallets, UTXOs, pubkeys, array alignment
- * 1. Get shared resources (ETH wallet client)
- * 2. Prepare pegin via SDK orchestrator (sizing pass + wallet root popup +
- *    per-vault WOTS / hashlock derivation + commit pass with batch PSBT signing).
- *    Returns broadcast-ready Pre-PegIn + per-vault derived secrets.
- * 3a. Sign BIP-322 proof-of-possession (one wallet popup per deposit session)
- * 3b. Build batch request array (recompute hashlocks from returned secrets)
- * 3c. Re-check UTXO availability before committing to ETH
- * 3d. Batch ETH registration (single submitPeginRequestBatch tx for all vaults)
- * 3e. Build pegin results from batch response
- * 4a. Save pending pegins to localStorage (PENDING status; resume cache)
- * 4b. Broadcast Pre-PegIn transaction to Bitcoin, update status to CONFIRMING
- * 5. Submit WOTS keys, poll VP, sign payout transactions
- * 6. Download vault artifacts (per vault, user-driven)
- * 7. Wait for contract verification, then activate vaults (reveal HTLC secret)
- *
- * ETH registration is atomic: submitPeginRequestBatch registers all vaults in a
- * single transaction, so either all succeed or all fail. If it fails, the Pre-PegIn
- * is NOT broadcast, so no BTC gets locked in unregistered HTLC outputs.
+ * Runs through WOTS submission, signs payouts only when the VP is already
+ * ready, then hands off to the in-modal continuation view for any remaining
+ * payout signing, artifact download, and activation work.
  */
 
 import type { BitcoinWallet } from "@babylonlabs-io/ts-sdk/shared";
 import {
   ensureHexPrefix,
+  forwardDepositApproval,
+  isDepositTermsRejectedError,
   isRegisteredVaultVersionMismatchError,
+  requireChangeAddress,
   stripHexPrefix,
+  supportsDepositApproval,
   validateOnChainParticipantKeys,
+  verifyRegisteredParticipantKeys,
   verifyRegisteredVaultVersions,
+  type DepositTermsApprover,
 } from "@babylonlabs-io/ts-sdk/tbv/core";
 import {
   primeVpTokenRegistry,
@@ -48,16 +39,29 @@ import { v4 as uuidv4 } from "uuid";
 import type { Address, Hex } from "viem";
 
 import {
+  getOperationKeyReader,
   getUniversalChallengerReader,
   getVaultKeeperReader,
   getVaultRegistryReader,
 } from "@/clients/eth-contract/sdk-readers";
+import { isDepositBlocked } from "@/components/shared/protocolStatus";
 import { useProtocolParamsContext } from "@/context/ProtocolParamsContext";
+import { markWotsSubmitted } from "@/context/deposit/optimisticDepositState";
 import { COPY } from "@/copy";
+import { useProtocolGateState } from "@/hooks/useProtocolGate";
 import { UTXOS_QUERY_KEY } from "@/hooks/useUTXOs";
 import { logger } from "@/infrastructure";
+import {
+  amountBucket,
+  shortId,
+  TELEMETRY_EVENT,
+} from "@/infrastructure/telemetryEvents";
 import { LocalStorageStatus } from "@/models/peginStateMachine";
 import { validateMultiVaultDepositInputs } from "@/services/deposit/validations";
+import {
+  waitForEthRegistrationDepth,
+  type RegistrationDepthProgress,
+} from "@/services/vault/ethConfirmationGate";
 import type { PayoutSigningProgress } from "@/services/vault/vaultPayoutSignatureService";
 import {
   broadcastPrePeginTransaction,
@@ -68,6 +72,7 @@ import {
   type PeginSigningProgress,
 } from "@/services/vault/vaultTransactionService";
 import { assertUtxosAvailable } from "@/services/vault/vaultUtxoValidationService";
+import { resolveVpAuthPinnedPubkey } from "@/services/vault/vpAuthPinnedPubkey";
 import {
   addPendingPegin,
   removePendingPegin,
@@ -79,20 +84,30 @@ import {
   verifyBtcWalletLiveness,
 } from "@/utils/btc";
 import { satoshiToBtcNumber } from "@/utils/btcConversion";
-import { sanitizeErrorMessage } from "@/utils/errors/formatting";
+import { supportsCancelSigning } from "@/utils/cancelSigning";
+import {
+  COMMISSION_UNAVAILABLE_ERROR,
+  mapDepositError,
+  type DepositErrorContent,
+} from "@/utils/errors";
+import { isUserCancellation } from "@/utils/errors/userCancellation";
 import { formatBtcValue } from "@/utils/formatting";
 import { getVpProxyUrl } from "@/utils/rpc";
 
 import {
   DepositFlowStep,
   getEthWalletClient,
+  isPayoutReadinessTimeout,
   payoutSigningStep,
   registerPeginBatchAndWait,
   signAndSubmitPayouts,
   signProofOfPossession,
   submitWotsPublicKey,
+  waitForPayoutReadiness,
+  waitForWotsReadiness,
   type DepositUtxo,
 } from "./depositFlowSteps";
+import type { DepositWarning } from "./depositWarnings";
 import { useBtcWalletState } from "./useBtcWalletState";
 import { useVaultProviders } from "./useVaultProviders";
 
@@ -113,22 +128,19 @@ export interface UseDepositFlowParams {
   selectedApplication: string;
   /** Selected vault provider addresses */
   selectedProviders: string[];
+  /**
+   * VP commission (bps) shown to the depositor at provider selection, for the
+   * primary provider (`selectedProviders[0]`). `undefined` while the on-chain
+   * commission is still loading or failed to fetch — the flow refuses to submit
+   * in that state rather than binding to an unquoted value.
+   */
+  quotedCommissionBps: number | undefined;
   /** Vault provider BTC public key (x-only, 64 hex chars) */
   vaultProviderBtcPubkey: string;
   /** Vault keeper BTC public keys */
   vaultKeeperBtcPubkeys: string[];
   /** Universal challenger BTC public keys */
   universalChallengerBtcPubkeys: string[];
-}
-
-export interface ArtifactDownloadInfo {
-  providerAddress: string;
-  peginTxid: string;
-  depositorPk: string;
-  vaultId: Hex;
-  /** Funded (pre-signing) Pre-PegIn tx hex - lets the modal re-derive
-   * an auth anchor and re-prime the VP token registry on a cold cache. */
-  unsignedPrePeginTxHex: string;
 }
 
 export interface UseDepositFlowReturn {
@@ -142,37 +154,59 @@ export interface UseDepositFlowReturn {
   currentVaultIndex: number | null;
   /** Whether the flow is currently processing */
   processing: boolean;
-  /** Error message if any step failed */
-  error: string | null;
+  /** Mapped error content (title + body) if any step failed */
+  error: DepositErrorContent | null;
   /**
-   * Soft warnings accumulated by the most recent flow (e.g. "couldn't save a
-   * local copy" when the deposit registered on-chain but `addPendingPegin`
-   * failed). Empty until the flow finishes or errors out; persists for the
-   * UI to surface until the next run starts.
+   * Structured soft warnings from the most recent flow (e.g. a per-vault WOTS
+   * readiness timeout, or "couldn't save a local copy"). Empty until the flow
+   * finishes or errors out. Non-terminal per-vault warnings are dropped by the
+   * continuation view once their vault advances past the warned stage — see
+   * {@link DepositWarning}.
    */
-  lastWarnings: string[];
+  lastWarnings: DepositWarning[];
   /** Whether currently waiting for external action (e.g., wallet signature) */
   isWaiting: boolean;
   /** Payout signing progress (X of Y signings) */
   payoutSigningProgress: PayoutSigningProgress | null;
   /** Peg-in BTC signing progress (X of Y peg-in txs, split deposits only) */
   peginSigningProgress: PeginSigningProgress | null;
-  /** Artifact download info (when set, the UI should show the download modal) */
-  artifactDownloadInfo: ArtifactDownloadInfo | null;
-  /** Callback to continue the flow after artifact download */
-  continueAfterArtifactDownload: () => void;
+  /**
+   * Per-vault live render steps for split deposits. The initial modal uses
+   * these instead of positional inference because earlier vaults can fail WOTS
+   * or payout signing while later vaults continue.
+   */
+  perVaultSteps: DepositFlowStep[];
   /**
    * Data backing the "Awaiting Bitcoin confirmation" detail panel, snapshotted
-   * when the BTC wait begins: the timestamp, the Pre-PegIn broadcast txid, and
-   * the required confirmation depth of the offchain-params version this
-   * deposit registered against. `null` until the BTC broadcast completes.
+   * when the BTC wait begins: the Pre-PegIn broadcast txid and the required
+   * confirmation depth of the offchain-params version this deposit registered
+   * against. `null` until the BTC broadcast completes.
    */
   btcConfirmationDetail: {
-    startedAt: number;
     prePeginTxid: string;
     requiredDepth: number;
     depositIds: readonly string[];
   } | null;
+  /**
+   * Live depth of the Ethereum registration while the finality gate holds the
+   * flow between the ETH receipt and the Pre-PegIn broadcast. `null` outside
+   * that window — the flow is only here for ~1.6 min per deposit.
+   */
+  ethConfirmationDetail: RegistrationDepthProgress | null;
+  /**
+   * True while a cancellable device signature (signPsbt/signPsbts/signMessage)
+   * is in flight AND the provider that started it exposes `cancelSigning`
+   * (only the Ledger provider does — always capability-probed).
+   */
+  canCancelDeviceSign: boolean;
+  /** True from {@link cancelDeviceSign} until the in-flight signature settles. */
+  deviceCancelRequested: boolean;
+  /**
+   * Requests cancellation of the in-flight device signature. Does NOT settle
+   * it: the provider aborts at its next device exchange boundary, which may be
+   * only after the user finishes or rejects on the physical device.
+   */
+  cancelDeviceSign: () => void;
 }
 
 export interface PeginCreationResult {
@@ -201,8 +235,8 @@ export interface MultiVaultDepositResult {
   pegins: PeginCreationResult[];
   /** Batch ID linking the vaults */
   batchId: string;
-  /** Warning messages for background operation failures (payout signing, broadcast) */
-  warnings?: string[];
+  /** Structured warnings for recoverable/terminal per-vault failures. */
+  warnings?: DepositWarning[];
 }
 
 // ============================================================================
@@ -219,6 +253,7 @@ export function useDepositFlow(
     depositorEthAddress,
     selectedApplication,
     selectedProviders,
+    quotedCommissionBps,
     vaultProviderBtcPubkey,
     vaultKeeperBtcPubkeys,
     universalChallengerBtcPubkeys,
@@ -230,38 +265,90 @@ export function useDepositFlow(
   const [currentStep, setCurrentStep] = useState<DepositFlowStep>(
     DepositFlowStep.DERIVE_VAULT_SECRET,
   );
+  // Mirror of `currentStep` for the flow callback's outer catch: the callback
+  // closes over a `currentStep` that is stale by the time it throws, so the
+  // failure telemetry reads the ref to tag which step the flow was on. Written
+  // synchronously with the state update — a `useEffect` mirror only lands after
+  // the commit, which a throw in the first async tick after a transition would
+  // beat, tagging the step before the one that actually failed.
+  const currentStepRef = useRef(DepositFlowStep.DERIVE_VAULT_SECRET);
+  const advanceStep = useCallback((step: DepositFlowStep) => {
+    currentStepRef.current = step;
+    setCurrentStep(step);
+  }, []);
   const [currentVaultIndex, setCurrentVaultIndex] = useState<number | null>(
     null,
   );
   const [processing, setProcessing] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const [error, setError] = useState<DepositErrorContent | null>(null);
   const [isWaiting, setIsWaiting] = useState(false);
   // Soft warnings accumulated during the most recent run (per-vault payout
   // failures, localStorage write failures, etc.). Exposed so the UI can
   // surface them after completion — these are informational, the flow
   // itself doesn't abort on them.
-  const [lastWarnings, setLastWarnings] = useState<string[]>([]);
+  const [lastWarnings, setLastWarnings] = useState<DepositWarning[]>([]);
   const [payoutSigningProgress, setPayoutSigningProgress] =
     useState<PayoutSigningProgress | null>(null);
   const [peginSigningProgress, setPeginSigningProgress] =
     useState<PeginSigningProgress | null>(null);
-  const [artifactDownloadInfo, setArtifactDownloadInfo] =
-    useState<ArtifactDownloadInfo | null>(null);
+  const [perVaultSteps, setPerVaultSteps] = useState<DepositFlowStep[]>(() =>
+    vaultAmounts.map(() => DepositFlowStep.DERIVE_VAULT_SECRET),
+  );
   const [btcConfirmationDetail, setBtcConfirmationDetail] = useState<{
-    startedAt: number;
     prePeginTxid: string;
     requiredDepth: number;
     depositIds: readonly string[];
   } | null>(null);
+  const [ethConfirmationDetail, setEthConfirmationDetail] =
+    useState<RegistrationDepthProgress | null>(null);
 
-  const artifactResolverRef = useRef<(() => void) | null>(null);
   const payoutClaimersDoneRef = useRef(false);
 
-  const continueAfterArtifactDownload = useCallback(() => {
-    setArtifactDownloadInfo(null);
-    artifactResolverRef.current?.();
-    artifactResolverRef.current = null;
-  }, []);
+  // Cancellable device-sign window (#2110 T3): only signPsbt/signPsbts/
+  // signMessage run through the Ledger provider's abortable loop, so the flag
+  // tracks exactly those calls — never derive/approve ceremonies or waits.
+  const [deviceSignActive, setDeviceSignActive] = useState(false);
+  const [deviceCancelRequested, setDeviceCancelRequested] = useState(false);
+  // Ref mirrors so cancelDeviceSign and the settle path read live values
+  // synchronously inside the long-lived async closures.
+  const deviceSignActiveRef = useRef(false);
+  const deviceCancelRequestedRef = useRef(false);
+  // Sticky per-run signal: a requested cancel SETTLED as the wallet's
+  // user-cancel rejection. The multi-vault payout loop reads it to stop
+  // instead of re-running the next vault's device ceremony, and the outer
+  // catch reads it to surface cancelled (not rejected) copy. Reset only at
+  // the start of the next executeDeposit run.
+  const deviceCancelSettledRef = useRef(false);
+  // Provider that STARTED the in-flight sign. Cancellation binds to it so a
+  // wallet swapped in mid-prompt cannot orphan the original ceremony.
+  const deviceSignProviderRef = useRef<unknown>(null);
+
+  const runCancellableSign = useCallback(
+    async <T>(signingProvider: unknown, sign: () => Promise<T>): Promise<T> => {
+      deviceSignProviderRef.current = signingProvider;
+      deviceSignActiveRef.current = true;
+      setDeviceSignActive(true);
+      try {
+        return await sign();
+      } catch (error) {
+        // The requested cancel took effect (a late cancel that still signed
+        // successfully deliberately does NOT stick — the flow proceeds).
+        if (deviceCancelRequestedRef.current && isUserCancellation(error)) {
+          deviceCancelSettledRef.current = true;
+        }
+        throw error;
+      } finally {
+        deviceSignProviderRef.current = null;
+        deviceSignActiveRef.current = false;
+        setDeviceSignActive(false);
+        // Either outcome consumes a pending cancel request — the UI must
+        // never wedge on the disabled cancel button after a settle.
+        deviceCancelRequestedRef.current = false;
+        setDeviceCancelRequested(false);
+      }
+    },
+    [],
+  );
 
   // Abort controller for cancelling the flow
   const abortControllerRef = useRef<AbortController | null>(null);
@@ -269,8 +356,6 @@ export function useDepositFlow(
   const abort = useCallback(() => {
     abortControllerRef.current?.abort();
     abortControllerRef.current = null;
-    artifactResolverRef.current?.();
-    artifactResolverRef.current = null;
   }, []);
 
   // Abort on real unmount (route change, browser back) but survive StrictMode
@@ -293,6 +378,7 @@ export function useDepositFlow(
   const { btcAddress, spendableUTXOs, isUTXOsLoading, utxoError } =
     useBtcWalletState();
   const queryClient = useQueryClient();
+  const gate = useProtocolGateState();
   const { findProvider } = useVaultProviders(selectedApplication);
   const { config, timelockPegin, timelockRefund, minDeposit, maxDeposit } =
     useProtocolParamsContext();
@@ -311,16 +397,33 @@ export function useDepositFlow(
       setError(null);
       setLastWarnings([]);
       setPeginSigningProgress(null);
-      setCurrentStep(DepositFlowStep.DERIVE_VAULT_SECRET);
+      deviceCancelSettledRef.current = false;
+      advanceStep(DepositFlowStep.DERIVE_VAULT_SECRET);
+      setPerVaultSteps(
+        vaultAmounts.map(() => DepositFlowStep.DERIVE_VAULT_SECRET),
+      );
 
       // Track background operation failures
-      const warnings: string[] = [];
+      const warnings: DepositWarning[] = [];
+      const recordWarning = (warning: DepositWarning) => {
+        warnings.push(warning);
+        setLastWarnings([...warnings]);
+      };
 
       // Track registry entries we primed so we can release them on
       // user-cancel (bound `authAnchorHex` lifetime to the flow).
       const primedRegistryTxids: string[] = [];
 
       try {
+        // Deposit (pegin) is a protocol-scope ENTRY action. The dialog-open is
+        // gated and the on-chain register below is contract-enforced
+        // (`whenNotFrozen`), but guard the execution path too: abort cleanly
+        // here — before the wallet popup and the doomed on-chain register —
+        // rather than letting it revert, if the protocol is frozen/paused.
+        if (isDepositBlocked(gate)) {
+          throw new Error(COPY.deposit.errors.protocolPaused);
+        }
+
         // ========================================================================
         // Step 0: Validation
         // ========================================================================
@@ -381,8 +484,27 @@ export function useDepositFlow(
         // Extract primary provider (current implementation supports single provider only)
         const primaryProvider = selectedProviders[0] as Address;
 
+        // The VP commission the depositor was shown must be known before we
+        // bind it on-chain. If it never loaded, refuse to submit rather than
+        // letting the SDK bind `maxAcceptableCommissionBps` to an unquoted
+        // fresh read — that is the silent-overcharge path TRV-032 describes.
+        if (quotedCommissionBps === undefined) {
+          throw new Error(COMMISSION_UNAVAILABLE_ERROR);
+        }
+
         // Generate batch ID for tracking
         const batchId = uuidv4();
+
+        logger.event(TELEMETRY_EVENT.DEPOSIT_STARTED, {
+          level: "info",
+          category: "deposit",
+          tags: { providerId: shortId(primaryProvider) },
+          batchId,
+          vaultCount: vaultAmounts.length,
+          amountBucket: amountBucket(
+            satoshiToBtcNumber(vaultAmounts.reduce((sum, a) => sum + a, 0n)),
+          ),
+        });
 
         // ========================================================================
         // Step 1: Get shared resources
@@ -395,18 +517,20 @@ export function useDepositFlow(
         // Step 2: Create Batch Pre-PegIn (all vaults in one BTC tx)
         // ========================================================================
 
-        setCurrentStep(DepositFlowStep.DERIVE_VAULT_SECRET);
-        // Sign each peg-in PSBT one at a time so the (x of n) sub-counter can
-        // advance per signature. A native batch signPsbts signs every tx in a
-        // single popup and returns one result, hiding intra-batch progress
-        // from the dApp — so we override signPsbts to loop signPsbt instead,
-        // trading one popup for N popups in exchange for live progress.
+        advanceStep(DepositFlowStep.DERIVE_VAULT_SECRET);
+        // A single peg-in PSBT signs via signPsbt (the SDK's
+        // signPsbtsWithFallback routes lone PSBTs there), ticking the counter
+        // once. Multi-vault: one native batch popup when the wallet supports
+        // signPsbts — the (x of n) sub-counter jumps 0 -> N around the one
+        // call — else sequential signPsbt ticks it per signature.
         const signOnePeginPsbt: typeof confirmedBtcWallet.signPsbt = async (
           psbtHex,
           opts,
         ) => {
-          setCurrentStep(DepositFlowStep.SIGN_PEGIN_BTC);
-          const signed = await confirmedBtcWallet.signPsbt(psbtHex, opts);
+          advanceStep(DepositFlowStep.SIGN_PEGIN_BTC);
+          const signed = await runCancellableSign(confirmedBtcWallet, () =>
+            confirmedBtcWallet.signPsbt(psbtHex, opts),
+          );
           setPeginSigningProgress((prev) =>
             prev
               ? { ...prev, completed: Math.min(prev.completed + 1, prev.total) }
@@ -414,20 +538,36 @@ export function useDepositFlow(
           );
           return signed;
         };
-        const phaseTrackingBtcWallet: typeof confirmedBtcWallet = {
+        // Native batch path: one popup; the counter jumps 0 -> N around the call.
+        const signPeginBatch: typeof confirmedBtcWallet.signPsbts = async (
+          psbtHexes,
+          opts,
+        ) => {
+          advanceStep(DepositFlowStep.SIGN_PEGIN_BTC);
+          setPeginSigningProgress({ completed: 0, total: psbtHexes.length });
+          const signed = await runCancellableSign(confirmedBtcWallet, () =>
+            confirmedBtcWallet.signPsbts!(psbtHexes, opts),
+          );
+          setPeginSigningProgress({
+            completed: psbtHexes.length,
+            total: psbtHexes.length,
+          });
+          return signed;
+        };
+
+        const phaseTrackingBtcWallet: typeof confirmedBtcWallet &
+          Partial<DepositTermsApprover> = {
           ...confirmedBtcWallet,
           deriveContextHash: (appName, context) => {
-            setCurrentStep(DepositFlowStep.DERIVE_VAULT_SECRET);
+            advanceStep(DepositFlowStep.DERIVE_VAULT_SECRET);
             return confirmedBtcWallet.deriveContextHash(appName, context);
           },
           signPsbt: signOnePeginPsbt,
-          signPsbts: async (psbtHexes, opts) => {
-            const signed: string[] = [];
-            for (let i = 0; i < psbtHexes.length; i++) {
-              signed.push(await signOnePeginPsbt(psbtHexes[i], opts?.[i]));
-            }
-            return signed;
-          },
+          ...(typeof confirmedBtcWallet.signPsbts === "function"
+            ? { signPsbts: signPeginBatch }
+            : {}),
+          // Object spread drops prototype methods — see forwardDepositApproval.
+          ...forwardDepositApproval(confirmedBtcWallet),
         };
 
         // No hard pre-filter. `DuplicateHashlock` on `BTCVaultRegistry`
@@ -437,40 +577,69 @@ export function useDepositFlow(
         // — both register, only one Pre-PegIn can broadcast, the other
         // strands until expiry.
 
-        const [vaultKeeperReader, universalChallengerReader] =
-          await Promise.all([
-            getVaultKeeperReader(),
-            getUniversalChallengerReader(),
-          ]);
+        const [
+          vaultKeeperReader,
+          universalChallengerReader,
+          operationKeyReader,
+        ] = await Promise.all([
+          getVaultKeeperReader(),
+          getUniversalChallengerReader(),
+          getOperationKeyReader(),
+        ]);
         const validatedKeys = await validateOnChainParticipantKeys({
           vaultRegistryReader: getVaultRegistryReader(),
           vaultKeeperReader,
           universalChallengerReader,
+          operationKeyReader,
           vaultProviderEthAddress: selectedProviders[0] as Address,
           applicationEntryPoint: selectedApplication as Address,
           expectedVaultProviderBtcPubkey: vaultProviderBtcPubkey,
           expectedVaultKeeperBtcPubkeys: vaultKeeperBtcPubkeys,
           expectedUniversalChallengerBtcPubkeys: universalChallengerBtcPubkeys,
+          onIndexerServingOperationKeys: (message) => logger.info(message),
+          onIndexerHintsInconsistent: (message) =>
+            logger.error(new Error(message), {
+              tags: {
+                component: "useDepositFlow",
+                phase: "validate-participant-keys",
+              },
+            }),
         });
 
         // Prime the peg-in signing sub-counter (one tx per vault) before the
         // commit pass drives the wallet popup(s).
         setPeginSigningProgress({ completed: 0, total: vaultAmounts.length });
 
+        // Approval (policy) wallets dictate the change address (BIP-86 change
+        // branch); software wallets keep change on the connected address.
+        const prePeginChangeAddress = supportsDepositApproval(
+          phaseTrackingBtcWallet,
+        )
+          ? await requireChangeAddress(phaseTrackingBtcWallet)
+          : confirmedBtcAddress;
+
         const batchResult = await preparePeginTransaction(
           phaseTrackingBtcWallet,
           walletClient,
           {
+            // Read atomically with the offchain params below. The contract
+            // stamps whatever version is active at registration-tx time, so
+            // the post-registration verifyRegisteredVaultVersions call
+            // asserts the stamp matches this build-time value before the
+            // BTC broadcast.
+            vaultCoreVersion: config.activeVaultCoreVersion,
             pegInAmounts: vaultAmounts,
             protocolFeeRate: config.offchainParams.feeRate,
             minPeginFeeRate: config.offchainParams.minPeginFeeRate,
             mempoolFeeRate,
-            changeAddress: confirmedBtcAddress,
+            changeAddress: prePeginChangeAddress,
             vaultProviderBtcPubkey: validatedKeys.vaultProviderBtcPubkeyXOnly,
+            commissionBps: quotedCommissionBps,
             vaultKeeperBtcPubkeys: validatedKeys.vaultKeeperBtcPubkeysSorted,
             universalChallengerBtcPubkeys:
               validatedKeys.universalChallengerBtcPubkeysSorted,
             timelockPegin,
+            timelockAssert: Number(config.offchainParams.timelockAssert),
             timelockRefund,
             councilQuorum: config.offchainParams.councilQuorum,
             councilSize: config.offchainParams.securityCouncilKeys.length,
@@ -490,10 +659,11 @@ export function useDepositFlow(
 
         // 3b. Sign PoP during SIGN_POP so the wallet popup is associated
         // with this step, not the following SUBMIT_PEGIN.
-        setCurrentStep(DepositFlowStep.SIGN_POP);
-        const popSignature = await signProofOfPossession(
-          confirmedBtcWallet,
-          walletClient,
+        advanceStep(DepositFlowStep.SIGN_POP);
+        // Wrapped as a whole: the BIP-322 signMessage inside is the
+        // cancellable device call, and its prep reads are cached/fast.
+        const popSignature = await runCancellableSign(confirmedBtcWallet, () =>
+          signProofOfPossession(confirmedBtcWallet, walletClient),
         );
 
         // Guard: the BTC pubkey used for WOTS derivation (in preparePegin)
@@ -531,7 +701,7 @@ export function useDepositFlow(
         );
 
         // 3e. Single batch ETH transaction for all vaults.
-        setCurrentStep(DepositFlowStep.SUBMIT_PEGIN);
+        advanceStep(DepositFlowStep.SUBMIT_PEGIN);
         const batchRegistration = await registerPeginBatchAndWait({
           btcWalletProvider: confirmedBtcWallet,
           walletClient,
@@ -539,6 +709,7 @@ export function useDepositFlow(
           unsignedPrePeginTx: batchResult.fundedPrePeginTxHex,
           requests: batchRequests,
           popSignature,
+          quotedCommissionBps,
         });
 
         // 3f. Build pegin results from batch response
@@ -554,6 +725,24 @@ export function useDepositFlow(
             fee: batchResult.fee,
             depositorBtcPubkey: batchResult.depositorBtcPubkey,
           }));
+
+        // One milestone per vault (scalar vaultId) so the whole post-registration
+        // funnel — registered, broadcast, activated — joins on a single `vaultId`
+        // field. `deposit.started` stays batch-level (it fires before any vaultId
+        // exists); group the funnel by `batchId` and scale by `vaultCount`.
+        for (const peginResult of peginResults) {
+          logger.event(TELEMETRY_EVENT.DEPOSIT_REGISTERED, {
+            level: "info",
+            category: "deposit",
+            tags: {
+              vaultId: shortId(peginResult.vaultId),
+              providerId: shortId(primaryProvider),
+            },
+            batchId,
+            ethTxHash: shortId(batchRegistration.ethTxHash),
+            vaultCount: peginResults.length,
+          });
+        }
 
         // ========================================================================
         // Step 4a: Persist pending pegins BEFORE broadcast and before any
@@ -613,6 +802,15 @@ export function useDepositFlow(
               validatedKeys.expectedAppVaultKeepersVersion,
             buildUniversalChallengersVersion:
               validatedKeys.expectedUniversalChallengersVersion,
+            buildVaultCoreVersion: config.activeVaultCoreVersion,
+            // RFC-006: pin the keys the scripts were actually built with, so a
+            // rotation landing before a later resume can't be broadcast over.
+            buildParticipantOperationKeys: {
+              vaultProvider: validatedKeys.vaultProviderBtcPubkeyXOnly,
+              vaultKeepers: validatedKeys.vaultKeeperBtcPubkeysSorted,
+              universalChallengers:
+                validatedKeys.universalChallengerBtcPubkeysSorted,
+            },
           };
           // Persist the resume record. A localStorage failure (quota /
           // private browsing) must NOT abort: the vault is already
@@ -634,12 +832,38 @@ export function useDepositFlow(
                 data: { vaultId: peginResult.vaultId },
               },
             );
-            if (
-              !warnings.includes(COPY.deposit.warnings.depositRecordNotSaved)
-            ) {
-              warnings.push(COPY.deposit.warnings.depositRecordNotSaved);
+            if (!warnings.some((w) => w.stage === "persistence")) {
+              recordWarning({
+                stage: "persistence",
+                terminal: true,
+                message: COPY.deposit.warnings.depositRecordNotSaved,
+              });
             }
           }
+        }
+
+        // ========================================================================
+        // Ethereum finality gate. Committing BTC to the HTLC while the
+        // registration is still reorg-exposed can strand the deposit: the vault
+        // record vanishes from the chain while the BTC stays locked until the
+        // HTLC refund timelock (~3 days).
+        //
+        // Placed AFTER the pending records are persisted above. Those records
+        // carry the build-version and participant-key stamps, and the resume
+        // path SKIPS both of those checks when the stamp is absent — so a tab
+        // close during this ~1.6 min wait must not be able to leave a
+        // stamp-less record behind. As a bonus, the two verification reads
+        // below now run against state that is itself 8 blocks past the
+        // registration instead of racing it.
+        // ========================================================================
+        try {
+          await waitForEthRegistrationDepth({
+            vaultIds: batchRegistration.vaults.map((v) => v.vaultId as Hex),
+            onProgress: setEthConfirmationDetail,
+            signal,
+          });
+        } finally {
+          setEthConfirmationDetail(null);
         }
 
         // Verify on-chain registration locked under the same versions we built scripts against.
@@ -652,6 +876,7 @@ export function useDepositFlow(
               validatedKeys.expectedAppVaultKeepersVersion,
             expectedUniversalChallengersVersion:
               validatedKeys.expectedUniversalChallengersVersion,
+            expectedVaultCoreVersion: config.activeVaultCoreVersion,
           });
         } catch (err) {
           // Only a confirmed mismatch removes pending entries — transient RPC
@@ -664,6 +889,28 @@ export function useDepositFlow(
           throw err;
         }
 
+        // RFC-006 read-after-mine. The vault froze its key epochs when
+        // `submitPeginRequest` executed, so an operator rotating between our
+        // key read and that execution would leave the registered vault bonded
+        // to keys other than the ones baked into the Pre-PegIn we are about to
+        // broadcast. Re-resolve against the frozen epochs and fail closed.
+        //
+        // Runs after the version check on purpose: a version mismatch has the
+        // clearer message, and re-resolving against an already-drifted roster
+        // version would report a key diff caused by a version diff.
+        //
+        // Outside the cleanup above by design. Key drift must leave the pending
+        // records in place: they hold the build-time key stamp, which is the
+        // only thing that lets a later resume re-detect the drift. Dropping
+        // them would let the resume path fall back to the indexer's copy, pass
+        // the `prePeginTxHash` check, and broadcast the Pre-PegIn this refused.
+        await verifyRegisteredParticipantKeys({
+          vaultRegistryReader: getVaultRegistryReader(),
+          operationKeyReader,
+          vaultIds: batchRegistration.vaults.map((v) => v.vaultId as Hex),
+          expected: validatedKeys.participantKeys,
+        });
+
         // ========================================================================
         // Step 4b: Broadcast Pre-PegIn transaction to Bitcoin
         // Broadcast immediately after ETH registration so the VP can verify
@@ -671,7 +918,10 @@ export function useDepositFlow(
         // Ethereum event.
         // ========================================================================
 
-        setCurrentStep(DepositFlowStep.BROADCAST_PRE_PEGIN);
+        advanceStep(DepositFlowStep.BROADCAST_PRE_PEGIN);
+        setPerVaultSteps(
+          vaultAmounts.map(() => DepositFlowStep.BROADCAST_PRE_PEGIN),
+        );
 
         let prePeginBroadcastTxid: string;
         try {
@@ -679,16 +929,33 @@ export function useDepositFlow(
             unsignedTxHex: batchResult.fundedPrePeginTxHex,
             btcWalletProvider: {
               signPsbt: (psbtHex: string) =>
-                confirmedBtcWallet.signPsbt(psbtHex),
+                runCancellableSign(confirmedBtcWallet, () =>
+                  confirmedBtcWallet.signPsbt(psbtHex),
+                ),
+              deriveContextHash: (appName: string, context: string) =>
+                confirmedBtcWallet.deriveContextHash(appName, context),
+              // Object spread drops prototype methods — see forwardDepositApproval.
+              ...forwardDepositApproval(confirmedBtcWallet),
             },
             depositorBtcPubkey: batchResult.depositorBtcPubkey,
             expectedUtxos: utxosToExpectedRecord(batchResult.selectedUTXOs),
+            depositTerms: batchResult.depositTerms,
           });
         } catch (error) {
+          // Preserve a typed intent rejection so the error mapper can show the
+          // intent-rejection copy instead of a generic broadcast failure — the
+          // broadcast service already keeps it typed at its boundary.
+          if (isDepositTermsRejectedError(error)) {
+            throw error;
+          }
           const errorMsg =
             error instanceof Error ? error.message : String(error);
+          // `cause` keeps the typed inner error visible to the cause-walking
+          // classifiers (user cancellation, method-not-supported) in the
+          // mappers.
           throw new Error(
             `Failed to broadcast batch Pre-PegIn transaction: ${errorMsg}`,
+            { cause: error },
           );
         }
 
@@ -699,6 +966,20 @@ export function useDepositFlow(
             peginResult.vaultId,
             LocalStorageStatus.CONFIRMING,
           );
+        }
+
+        // Per vault (scalar vaultId) so each committed vault has a broadcast
+        // milestone that the per-vault stall alert can join against its
+        // activation.activated. All siblings share one Pre-PegIn tx/txid.
+        for (const peginResult of peginResults) {
+          logger.event(TELEMETRY_EVENT.DEPOSIT_BROADCAST_SUCCEEDED, {
+            level: "info",
+            category: "deposit",
+            tags: { vaultId: shortId(peginResult.vaultId) },
+            batchId,
+            prePeginTxid: shortId(prePeginBroadcastTxid),
+            vaultCount: peginResults.length,
+          });
         }
 
         // The mempool now knows our Pre-PegIn spent these outpoints, so the
@@ -725,10 +1006,9 @@ export function useDepositFlow(
         // the pubkey once and seed each per-vault registry entry.
         const vpBaseUrl = getVpProxyUrl(provider.id);
         try {
-          const pinnedServerPubkey =
-            await getVaultRegistryReader().getVaultProviderBtcPubKey(
-              provider.id as Address,
-            );
+          const pinnedServerPubkey = await resolveVpAuthPinnedPubkey(
+            provider.id as Address,
+          );
           for (const r of broadcastedResults) {
             const peginTxid = stripHexPrefix(r.peginTxHash);
             primeVpTokenRegistry({
@@ -736,6 +1016,7 @@ export function useDepositFlow(
               peginTxid,
               authAnchorHex,
               pinnedServerPubkey,
+              depositorBtcPubkey: batchResult.depositorBtcPubkey,
             });
             primedRegistryTxids.push(peginTxid);
           }
@@ -750,7 +1031,10 @@ export function useDepositFlow(
         // Step 5: WOTS + Payout signing
         // ========================================================================
 
-        setCurrentStep(DepositFlowStep.AWAIT_BTC_CONFIRMATION);
+        advanceStep(DepositFlowStep.AWAIT_BTC_CONFIRMATION);
+        setPerVaultSteps(
+          broadcastedResults.map(() => DepositFlowStep.AWAIT_BTC_CONFIRMATION),
+        );
         // Snapshot the BTC-wait inputs. The Pre-PegIn broadcast txid is the tx
         // that lands on Bitcoin (multi-vault siblings share one broadcast).
         // requiredDepth is pinned to the offchain-params version this deposit
@@ -759,9 +1043,8 @@ export function useDepositFlow(
         // a later governance change must not move the displayed target. The
         // panel itself renders at the AWAIT_PAYOUT_TRANSACTIONS step (that's
         // where the minPrepeginDepth wait actually happens); we capture the
-        // values here at broadcast time so startedAt anchors to broadcast.
+        // values here at broadcast time.
         setBtcConfirmationDetail({
-          startedAt: Date.now(),
           prePeginTxid: prePeginBroadcastTxid,
           requiredDepth: config.offchainParams.minPrepeginDepth,
           depositIds: broadcastedResults.map((r) => r.vaultId),
@@ -769,7 +1052,8 @@ export function useDepositFlow(
         setIsWaiting(true);
 
         let baseStep: DepositFlowStep = DepositFlowStep.AWAIT_BTC_CONFIRMATION;
-        const postBroadcastBtcWallet: typeof confirmedBtcWallet = {
+        const postBroadcastBtcWallet: typeof confirmedBtcWallet &
+          Partial<DepositTermsApprover> = {
           ...confirmedBtcWallet,
           // `isWaiting` flips to `false` while a popup is open and back
           // to `true` after it closes, so the SDK polling that follows
@@ -777,9 +1061,9 @@ export function useDepositFlow(
           deriveContextHash: async (appName, context) => {
             const returnStep = baseStep;
             if (baseStep === DepositFlowStep.AWAIT_PAYOUT_TRANSACTIONS) {
-              setCurrentStep(DepositFlowStep.SIGN_AUTH_ANCHOR);
+              advanceStep(DepositFlowStep.SIGN_AUTH_ANCHOR);
             } else if (baseStep === DepositFlowStep.SUBMIT_WOTS_KEYS) {
-              setCurrentStep(DepositFlowStep.SUBMIT_WOTS_KEYS);
+              advanceStep(DepositFlowStep.SUBMIT_WOTS_KEYS);
             }
             setIsWaiting(false);
             try {
@@ -789,12 +1073,12 @@ export function useDepositFlow(
               );
             } finally {
               setIsWaiting(true);
-              setCurrentStep(returnStep);
+              advanceStep(returnStep);
             }
           },
           signPsbt: async (psbtHex, opts) => {
             if (payoutClaimersDoneRef.current) {
-              setCurrentStep(DepositFlowStep.SIGN_DEPOSITOR_GRAPH);
+              advanceStep(DepositFlowStep.SIGN_DEPOSITOR_GRAPH);
               setPayoutSigningProgress({
                 phase: "graph",
                 completed: 0,
@@ -803,7 +1087,9 @@ export function useDepositFlow(
             }
             setIsWaiting(false);
             try {
-              return await confirmedBtcWallet.signPsbt(psbtHex, opts);
+              return await runCancellableSign(confirmedBtcWallet, () =>
+                confirmedBtcWallet.signPsbt(psbtHex, opts),
+              );
             } finally {
               setIsWaiting(true);
               if (payoutClaimersDoneRef.current) {
@@ -819,7 +1105,7 @@ export function useDepositFlow(
             ? {
                 signPsbts: async (psbtHexes, opts) => {
                   if (payoutClaimersDoneRef.current) {
-                    setCurrentStep(DepositFlowStep.SIGN_DEPOSITOR_GRAPH);
+                    advanceStep(DepositFlowStep.SIGN_DEPOSITOR_GRAPH);
                     setPayoutSigningProgress({
                       phase: "graph",
                       completed: 0,
@@ -828,7 +1114,9 @@ export function useDepositFlow(
                   }
                   setIsWaiting(false);
                   try {
-                    return await confirmedBtcWallet.signPsbts!(psbtHexes, opts);
+                    return await runCancellableSign(confirmedBtcWallet, () =>
+                      confirmedBtcWallet.signPsbts!(psbtHexes, opts),
+                    );
                   } finally {
                     setIsWaiting(true);
                     if (payoutClaimersDoneRef.current) {
@@ -842,6 +1130,8 @@ export function useDepositFlow(
                 },
               }
             : {}),
+          // Object spread drops prototype methods — see forwardDepositApproval.
+          ...forwardDepositApproval(confirmedBtcWallet),
         };
 
         // Track per-vault outcomes so failed lanes don't block healthy siblings
@@ -851,8 +1141,46 @@ export function useDepositFlow(
 
         baseStep = DepositFlowStep.SUBMIT_WOTS_KEYS;
 
+        const { readyVaultIds, terminalVaultIds } = await waitForWotsReadiness({
+          vaults: broadcastedResults.map((result) => ({
+            vaultId: result.vaultId,
+            peginTxHash: result.peginTxHash,
+          })),
+          providerAddress: provider.id,
+          signal,
+        });
+
         for (const result of broadcastedResults) {
           signal.throwIfAborted();
+
+          if (!readyVaultIds.has(result.vaultId)) {
+            recordWarning({
+              vaultId: result.vaultId,
+              stage: "wots",
+              terminal: terminalVaultIds.has(result.vaultId),
+              message: terminalVaultIds.has(result.vaultId)
+                ? COPY.deposit.warnings.wotsReadinessTerminal(
+                    result.vaultIndex + 1,
+                  )
+                : COPY.deposit.warnings.wotsReadinessTimeout(
+                    result.vaultIndex + 1,
+                  ),
+            });
+            wotsFailedVaultIds.add(result.vaultId);
+            continue;
+          }
+
+          // Mark the current vault being processed so the split-deposit UI
+          // can show per-vault progression for the WOTS phase.
+          setCurrentVaultIndex(result.vaultIndex);
+          advanceStep(DepositFlowStep.SUBMIT_WOTS_KEYS);
+          setPerVaultSteps((prev) =>
+            prev.map((step, index) =>
+              index === result.vaultIndex
+                ? DepositFlowStep.SUBMIT_WOTS_KEYS
+                : step,
+            ),
+          );
 
           let wotsSuccess = false;
 
@@ -869,6 +1197,17 @@ export function useDepositFlow(
                 signal,
               });
               wotsSuccess = true;
+              // Mirrors the resume path: the dashboard row polls the VP for
+              // `needsWotsKey` and would keep offering "Submit WOTS Key" until
+              // the daemon advances. App-scoped, so it survives this modal.
+              markWotsSubmitted(result.vaultId);
+              setPerVaultSteps((prev) =>
+                prev.map((step, index) =>
+                  index === result.vaultIndex
+                    ? DepositFlowStep.AWAIT_PAYOUT_TRANSACTIONS
+                    : step,
+                ),
+              );
               break;
             } catch (error) {
               // Re-throw abort errors so they're suppressed by the outer catch
@@ -886,11 +1225,24 @@ export function useDepositFlow(
 
               const errorMsg =
                 error instanceof Error ? error.message : String(error);
-              const warning = `Vault ${result.vaultIndex + 1}: WOTS key submission failed - ${errorMsg}`;
-              warnings.push(warning);
+              recordWarning({
+                vaultId: result.vaultId,
+                stage: "wots",
+                terminal: false,
+                message: COPY.deposit.warnings.wotsSubmissionFailed(
+                  result.vaultIndex + 1,
+                  errorMsg,
+                ),
+              });
               logger.error(
                 error instanceof Error ? error : new Error(String(error)),
                 {
+                  // Tagged so the Sentry-side cancellation drop keeps it: the
+                  // loop continues to the next vault, so a rejected prompt here
+                  // leaves THIS vault without its WOTS key while the deposit
+                  // proceeds. That partial state is the reportable event even
+                  // though the cause is a user cancellation.
+                  tags: { partialFailure: "multi-vault" },
                   data: {
                     context:
                       "[Multi-Vault] Failed to submit WOTS key for vault",
@@ -911,21 +1263,75 @@ export function useDepositFlow(
         // ========================================================================
 
         baseStep = DepositFlowStep.AWAIT_PAYOUT_TRANSACTIONS;
+        advanceStep(DepositFlowStep.AWAIT_PAYOUT_TRANSACTIONS);
+        setCurrentVaultIndex(null);
 
-        const payoutSignedVaultIds = new Set<string>();
+        const payoutCandidateResults = broadcastedResults.filter(
+          (result) => !wotsFailedVaultIds.has(result.vaultId),
+        );
+
+        setPerVaultSteps((prev) =>
+          prev.map((step, index) =>
+            payoutCandidateResults.some((result) => result.vaultIndex === index)
+              ? DepositFlowStep.AWAIT_PAYOUT_TRANSACTIONS
+              : step,
+          ),
+        );
+
+        const {
+          readyVaultIds: payoutReadyVaultIds,
+          terminalVaultIds: payoutTerminalVaultIds,
+        } = await waitForPayoutReadiness({
+          vaults: payoutCandidateResults.map((result) => ({
+            vaultId: result.vaultId,
+            peginTxHash: result.peginTxHash,
+          })),
+          providerAddress: provider.id,
+          signal,
+        });
 
         for (let vi = 0; vi < broadcastedResults.length; vi++) {
           const result = broadcastedResults[vi];
 
           signal.throwIfAborted();
 
+          // A settled user cancel stops the loop: the next iteration would
+          // re-run the full device ceremony (requireFreshDeviceCeremony)
+          // seconds after the user asked to stop. Remaining vaults are left
+          // unattempted (no warning), not failed.
+          if (deviceCancelSettledRef.current) break;
+
           // Skip vaults whose WOTS key submission failed — the VP won't have
           // the keys needed, so payout signing would timeout.
           if (wotsFailedVaultIds.has(result.vaultId)) continue;
 
+          if (!payoutReadyVaultIds.has(result.vaultId)) {
+            if (payoutTerminalVaultIds.has(result.vaultId)) {
+              recordWarning({
+                vaultId: result.vaultId,
+                stage: "payout",
+                terminal: true,
+                message: COPY.deposit.warnings.payoutReadinessTerminal(
+                  result.vaultIndex + 1,
+                ),
+              });
+            }
+            setPerVaultSteps((prev) =>
+              prev.map((step, index) =>
+                index === vi ? DepositFlowStep.AWAIT_PAYOUT_TRANSACTIONS : step,
+              ),
+            );
+            continue;
+          }
+
           try {
             setCurrentVaultIndex(vi);
-            setCurrentStep(DepositFlowStep.AWAIT_PAYOUT_TRANSACTIONS);
+            advanceStep(DepositFlowStep.AWAIT_PAYOUT_TRANSACTIONS);
+            setPerVaultSteps((prev) =>
+              prev.map((step, index) =>
+                index === vi ? DepositFlowStep.AWAIT_PAYOUT_TRANSACTIONS : step,
+              ),
+            );
             setIsWaiting(true);
             payoutClaimersDoneRef.current = false;
 
@@ -939,29 +1345,75 @@ export function useDepositFlow(
               btcWallet: postBroadcastBtcWallet,
               depositorEthAddress: confirmedEthAddress,
               unsignedPrePeginTxHex: batchResult.fundedPrePeginTxHex,
+              depositTerms: batchResult.depositTerms,
               signal,
               onProgress: (p) => {
                 if (!p) return;
                 setPayoutSigningProgress(p);
-                setCurrentStep(payoutSigningStep(p.phase));
+                const nextStep = payoutSigningStep(p.phase);
+                advanceStep(nextStep);
+                setPerVaultSteps((prev) =>
+                  prev.map((step, index) => (index === vi ? nextStep : step)),
+                );
                 payoutClaimersDoneRef.current =
                   p.total > 0 && p.completed >= p.total;
               },
             });
 
-            payoutSignedVaultIds.add(result.vaultId);
-            setCurrentStep(DepositFlowStep.AWAIT_VP_VERIFICATION);
+            advanceStep(DepositFlowStep.AWAIT_VP_VERIFICATION);
+            setPerVaultSteps((prev) =>
+              prev.map((step, index) =>
+                index === vi ? DepositFlowStep.AWAIT_VP_VERIFICATION : step,
+              ),
+            );
           } catch (error) {
             // If the user cancelled, stop immediately — don't continue with other vaults
             if (signal.aborted) throw error;
 
+            // A settled self-cancel is a stop, not a per-vault failure: mark
+            // THIS vault cancelled and end the loop. Routine drop-off — no
+            // partial-failure telemetry.
+            if (deviceCancelSettledRef.current) {
+              recordWarning({
+                vaultId: result.vaultId,
+                stage: "payout",
+                terminal: false,
+                message: COPY.deposit.warnings.payoutSigningCancelled(
+                  result.vaultIndex + 1,
+                ),
+              });
+              break;
+            }
+
+            if (isPayoutReadinessTimeout(error)) {
+              setPerVaultSteps((prev) =>
+                prev.map((step, index) =>
+                  index === vi
+                    ? DepositFlowStep.AWAIT_PAYOUT_TRANSACTIONS
+                    : step,
+                ),
+              );
+              continue;
+            }
+
             const errorMsg =
               error instanceof Error ? error.message : String(error);
-            const warning = `Vault ${result.vaultIndex + 1}: Payout signing failed - ${errorMsg}`;
-            warnings.push(warning);
+            recordWarning({
+              vaultId: result.vaultId,
+              stage: "payout",
+              terminal: false,
+              message: COPY.deposit.warnings.payoutSigningFailed(
+                result.vaultIndex + 1,
+                errorMsg,
+              ),
+            });
             logger.error(
               error instanceof Error ? error : new Error(String(error)),
               {
+                // See the WOTS site above: the loop continues, so a rejected
+                // prompt leaves this vault under-signed while the deposit
+                // proceeds. Exempt from the cancellation drop.
+                tags: { partialFailure: "multi-vault" },
                 data: {
                   context:
                     "[Multi-Vault] Failed to sign or submit payouts for vault",
@@ -977,39 +1429,10 @@ export function useDepositFlow(
         setPayoutSigningProgress(null);
         setCurrentVaultIndex(null);
 
-        // ========================================================================
-        // Step 6: Download Vault Artifacts (per vault, sequential)
-        // ========================================================================
-
-        const readyResults = broadcastedResults.filter((r) =>
-          payoutSignedVaultIds.has(r.vaultId),
-        );
-
-        setCurrentStep(DepositFlowStep.ARTIFACT_DOWNLOAD);
-        setIsWaiting(false);
-
-        for (const result of readyResults) {
-          if (signal.aborted) break;
-
-          setArtifactDownloadInfo({
-            providerAddress: provider.id,
-            peginTxid: result.peginTxHash,
-            depositorPk: result.depositorBtcPubkey,
-            vaultId: result.vaultId,
-            unsignedPrePeginTxHex: result.fundedPrePeginTxHex,
-          });
-
-          await new Promise<void>((resolve) => {
-            artifactResolverRef.current = resolve;
-          });
-
-          // The X button on ArtifactDownloadModal calls abort(), which
-          // resolves the resolver above. Re-check here so a dismissal
-          // exits the loop (and triggers the abort branch below)
-          // instead of advancing as if the artifact were downloaded.
-          signal.throwIfAborted();
-        }
-
+        // Inline payout signing is best-effort. Signed vaults are left at
+        // AWAIT_VP_VERIFICATION, while vaults still waiting on payout prep stay
+        // at AWAIT_PAYOUT_TRANSACTIONS. The in-modal continuation view polls
+        // each vault and drives any remaining payout signing + activation.
         setIsWaiting(true);
 
         // Snapshot the warnings into hook state so the UI can show them
@@ -1039,8 +1462,20 @@ export function useDepositFlow(
 
         // Don't show error if flow was aborted (user intentionally closed modal)
         if (!signal.aborted) {
-          setError(sanitizeErrorMessage(err));
+          // A settled self-cancel gets its own copy: the generic mapper reads
+          // the wallet's CONNECTION_REJECTED as "You rejected the request in
+          // your wallet. Click Retry" — misattributed, and naming a button
+          // this surface doesn't render.
+          setError(
+            deviceCancelSettledRef.current && isUserCancellation(err)
+              ? {
+                  title: COPY.deposit.errors.signingCancelled.title,
+                  body: COPY.deposit.errors.signingCancelled.body,
+                }
+              : mapDepositError(err),
+          );
           logger.error(err instanceof Error ? err : new Error(String(err)), {
+            tags: { depositStep: DepositFlowStep[currentStepRef.current] },
             data: {
               context: "Multi-vault deposit flow error",
               ...(err instanceof VpResponseValidationError && {
@@ -1064,6 +1499,9 @@ export function useDepositFlow(
         abortControllerRef.current = null;
       }
     }, [
+      advanceStep,
+      runCancellableSign,
+      gate,
       vaultAmounts,
       mempoolFeeRate,
       btcWalletProvider,
@@ -1071,6 +1509,7 @@ export function useDepositFlow(
       depositorEthAddress,
       selectedApplication,
       selectedProviders,
+      quotedCommissionBps,
       vaultProviderBtcPubkey,
       vaultKeeperBtcPubkeys,
       universalChallengerBtcPubkeys,
@@ -1087,6 +1526,26 @@ export function useDepositFlow(
       queryClient,
     ]);
 
+  const cancelDeviceSign = useCallback(() => {
+    // Cancel the ceremony on the provider that started it — never the live
+    // prop, which a mid-prompt wallet swap can replace.
+    const provider = deviceSignProviderRef.current;
+    if (!deviceSignActiveRef.current) return;
+    if (!supportsCancelSigning(provider)) return;
+    deviceCancelRequestedRef.current = true;
+    setDeviceCancelRequested(true);
+    // Device-only cancel (aborting the flow controller reads as a closed
+    // modal). Settles at the next device exchange boundary: pre-broadcast =
+    // "Signing cancelled" callout; post-broadcast payout stage = cancelled
+    // warning and the loop stops.
+    provider.cancelSigning();
+  }, []);
+
+  // The ref is only ever set/cleared together with the `deviceSignActive`
+  // state, so this render read stays in sync.
+  const canCancelDeviceSign =
+    deviceSignActive && supportsCancelSigning(deviceSignProviderRef.current);
+
   return {
     executeDeposit,
     abort,
@@ -1099,8 +1558,11 @@ export function useDepositFlow(
     isWaiting,
     payoutSigningProgress,
     peginSigningProgress,
-    artifactDownloadInfo,
-    continueAfterArtifactDownload,
+    perVaultSteps,
     btcConfirmationDetail,
+    ethConfirmationDetail,
+    canCancelDeviceSign,
+    deviceCancelRequested,
+    cancelDeviceSign,
   };
 }

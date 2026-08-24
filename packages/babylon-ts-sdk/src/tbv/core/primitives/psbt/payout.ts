@@ -11,11 +11,13 @@
  */
 
 import {
-  type Network,
+  getAssertPayoutScriptInfo,
   tapInternalPubkey,
+  type Network,
 } from "@babylonlabs-io/babylon-tbv-rust-wasm";
+import { Psbt, Transaction, type TxInput, type TxOutput } from "bitcoinjs-lib";
 import { Buffer } from "buffer";
-import { Psbt, Transaction } from "bitcoinjs-lib";
+import { deriveLocalChallengers } from "../challengers";
 import { createPayoutScript } from "../scripts/payout";
 import {
   TAPSCRIPT_LEAF_VERSION,
@@ -25,14 +27,25 @@ import {
   stripHexPrefix,
   uint8ArrayToHex,
 } from "../utils/bitcoin";
+import { computeTaprootScriptPubKey } from "../utils/taproot";
+import {
+  assertPayoutFeeBandDomain,
+  assertPayoutFeeInBand,
+} from "./assertPayoutFeeBand";
 import {
   ASSERT_PAYOUT_OUTPUT_INDEX,
+  BPS_DENOMINATOR,
+  DEPOSITOR_PAYOUT_INPUT_COUNT,
+  MAX_PAYOUT_SCRIPT_LEN,
   MAX_VP_COMMISSION_BPS_EXCLUSIVE,
   NON_VP_CLAIMER_PAYOUT_OUTPUT_COUNT,
   PAYOUT_ANCHOR_DUST_SATS,
+  PAYOUT_TX_LOCKTIME,
+  PAYOUT_TX_VERSION,
   PEGIN_VAULT_OUTPUT_INDEX,
   VP_CLAIMER_PAYOUT_OUTPUT_COUNT,
 } from "./constants";
+import { assertStandardPayoutScript } from "./standardPayoutScript";
 
 /**
  * Number of items in a Taproot script-path spend witness stack for a
@@ -46,21 +59,19 @@ import {
 const TAPROOT_SINGLE_SIG_WITNESS_STACK_SIZE = 3;
 
 /**
- * Coarse cap on a payout tx's implicit fee (inputs − outputs), as a fraction
- * of input value — blocks a VP deflating outputs and burning the remainder
- * as miner fee. A backstop only; the per-role structural checks in
- * {@link assertPayoutOutputLayout} are the primary value-diversion guard.
- */
-const MAX_PAYOUT_FEE_FRACTION_NUMERATOR = 10;
-const MAX_PAYOUT_FEE_FRACTION_DENOMINATOR = 100;
-
-/**
  * Parameters for building an unsigned Payout PSBT
  *
  * Payout is used in the challenge path after Assert, when the claimer proves validity.
  * Input 1 references the Assert transaction.
  */
 export interface PayoutParams {
+  /**
+   * Vault core (tx-graph) version the vault was registered under — the
+   * vault's stamped on-chain `vaultCoreVersion`. Selects which graph's
+   * payout connector scripts are derived.
+   */
+  vaultCoreVersion: number;
+
   /**
    * Payout transaction hex (unsigned)
    * This is the transaction that needs to be signed by the depositor
@@ -100,9 +111,16 @@ export interface PayoutParams {
   universalChallengerBtcPubkeys: string[];
 
   /**
-   * CSV timelock in blocks for the PegIn output.
+   * CSV timelock in blocks for the PegIn output (btc-vault `timelock_pegin`);
+   * payout input 0's sequence.
    */
   timelockPegin: number;
+
+  /**
+   * CSV timelock in blocks on the Assert:0 payout leaf (btc-vault
+   * `timelock_assert`); payout input 1's sequence.
+   */
+  timelockAssert: number;
 
   /**
    * Bitcoin network
@@ -128,6 +146,55 @@ export interface PayoutParams {
    * upstream; here only `0 <= bps < 10_000` is checked, for safe cap math.
    */
   commissionBps: number;
+
+  /**
+   * Tx-graph fee rate (sat/vB) the graph was built with — the version-locked
+   * `offchainParams.feeRate` at the vault's stamped `offchainParamsVersion`,
+   * NOT a live read. Anchors both ends of the fee band.
+   */
+  protocolFeeRate: bigint;
+
+  /**
+   * Security council member x-only public keys (hex) from the locked offchain
+   * params version — `getOffchainParamsByVersion(...).securityCouncilKeys`.
+   * The council occupies the last leaf of the Assert:0 taptree
+   * (btc-vault `crates/vault/src/connectors/assert_payout_nopayout_council.rs`),
+   * so the keys are needed to rebuild input 1's payout leaf, and the count
+   * feeds the fee-band domain.
+   */
+  councilMembers: string[];
+
+  /**
+   * M-of-N council quorum from the locked offchain params version —
+   * `getOffchainParamsByVersion(...).councilQuorum`. Shapes the council leaf's
+   * multisig script, and with it the Assert:0 taptree root.
+   */
+  councilQuorum: number;
+
+  /**
+   * RFC-006. Expected `outs[0].script` per vault-keeper claimer, keyed by
+   * lowercased x-only **operation** pubkey (no `0x`), resolved from
+   * `ApplicationRegistry.getPayoutScriptAtEpoch` at the vault's frozen
+   * `appKeeperKeyEpoch`.
+   *
+   * Every VK claimer must be present: a claimer missing from the map is an
+   * error rather than a cue to derive BIP-86, because a gap means resolution
+   * was incomplete and we do not know what that keeper registered.
+   *
+   * Each entry accepts either that registered script or the BIP-86 default of
+   * the same bonded key, so graphs built before btc-vault#2440 remain signable
+   * — see {@link acceptedPayoutScriptHexes} for why that is required and when
+   * it can be dropped.
+   */
+  vkClaimerPayoutScriptPubKeys: Readonly<Record<string, string>>;
+
+  /**
+   * RFC-006. Expected `outs[1].script` for the VP-claimer commission output,
+   * from `BTCVaultRegistry.getPayoutScriptAtEpoch` at the vault's frozen
+   * `vpKeyEpoch`. The BIP-86 default of the bonded VP key is accepted alongside
+   * it — see {@link acceptedPayoutScriptHexes}.
+   */
+  vpCommissionScriptPubKey: string;
 }
 
 /**
@@ -153,6 +220,9 @@ export interface PayoutPsbtResult {
  * - Input 0: from PeginTx output0 (signed by depositor)
  * - Input 1: from Assert output0 (NOT signed by depositor)
  *
+ * Both inputs carry their taproot script-path leaf. Input 1's is not signed
+ * here — it is what a hardware signer reads to display the payout terms.
+ *
  * @param params - Payout parameters
  * @returns Unsigned PSBT ready for depositor to sign
  *
@@ -161,121 +231,100 @@ export interface PayoutPsbtResult {
  * @throws If input 1 does not spend Assert:0 (proof output)
  * @throws If previous output is not found for either input
  * @throws If sum of output values exceeds sum of input values (invalid tx)
- * @throws If implicit fee (inputs − outputs) exceeds the configured fraction
- *   of total input value — see {@link MAX_PAYOUT_FEE_FRACTION_NUMERATOR}
+ * @throws If the implicit fee (inputs − outputs) is outside the fee band —
+ *   below the floor or above the fee-band ceiling (see
+ *   {@link assertPayoutFeeInBand})
+ * @throws If `protocolFeeRate`, a participant count, or the council size is
+ *   outside the accepted input domain (see {@link assertPayoutFeeBandDomain})
+ * @throws If a non-anchor scriptPubKey length is outside `[1,
+ *   {@link MAX_PAYOUT_SCRIPT_LEN}]`
  * @throws If `claimerBtcPubkey` is not VP, depositor, or a registered VK
  * @throws If payout output count, outs[0] script, outs[last] anchor value, or
  *   (VP-claimer) outs[1] commission cap do not match the protocol layout
  * @throws If `commissionBps` is not a non-negative integer below 10_000
+ * @throws If the locally rebuilt Assert:0 payout leaf does not bind to the
+ *   Assert output input 1 spends
  */
 export async function buildPayoutPsbt(
   params: PayoutParams,
 ): Promise<PayoutPsbtResult> {
-  // Normalize hex inputs (strip 0x prefix if present)
-  const payoutTxHex = stripHexPrefix(params.payoutTxHex);
-  const peginTxHex = stripHexPrefix(params.peginTxHex);
-  const assertTxHex = stripHexPrefix(params.assertTxHex);
+  const feeBandParams = {
+    vaultCoreVersion: params.vaultCoreVersion,
+    numVaultKeepers: params.vaultKeeperBtcPubkeys.length,
+    numUniversalChallengers: params.universalChallengerBtcPubkeys.length,
+    councilSize: params.councilMembers.length,
+    protocolFeeRate: params.protocolFeeRate,
+  };
+  assertPayoutFeeBandDomain(feeBandParams);
 
-  // Get payout script from WASM
-  const payoutConnector = await createPayoutScript({
-    depositor: params.depositorBtcPubkey,
-    vaultProvider: params.vaultProviderBtcPubkey,
-    vaultKeepers: params.vaultKeeperBtcPubkeys,
-    universalChallengers: params.universalChallengerBtcPubkeys,
-    timelockPegin: params.timelockPegin,
-    network: params.network,
-  });
+  const payoutTx = Transaction.fromHex(stripHexPrefix(params.payoutTxHex));
+  const peginTx = Transaction.fromHex(stripHexPrefix(params.peginTxHex));
+  const assertTx = Transaction.fromHex(stripHexPrefix(params.assertTxHex));
 
-  const payoutScriptBytes = hexToUint8Array(payoutConnector.payoutScript);
-  const controlBlock = hexToUint8Array(payoutConnector.payoutControlBlock);
-
-  // Parse transactions
-  const payoutTx = Transaction.fromHex(payoutTxHex);
-  const peginTx = Transaction.fromHex(peginTxHex);
-  const assertTx = Transaction.fromHex(assertTxHex);
-
-  // Create PSBT
-  const psbt = new Psbt();
-  psbt.setVersion(payoutTx.version);
-  psbt.setLocktime(payoutTx.locktime);
-
-  // PayoutTx has exactly 2 inputs:
-  // - Input 0: from PeginTx output0 (signed by depositor using taproot script path)
-  // - Input 1: from Assert output0 (signed by claimer/challengers, not depositor)
-  //
-  // IMPORTANT: For Taproot SIGHASH_DEFAULT (0x00), the sighash commits to ALL inputs'
-  // prevouts, not just the one being signed. Therefore, we must include BOTH inputs
-  // in the PSBT so the wallet computes the correct sighash that the VP expects.
-
-  // Verify payout transaction has expected structure
-  if (payoutTx.ins.length !== 2) {
+  if (payoutTx.ins.length !== DEPOSITOR_PAYOUT_INPUT_COUNT) {
     throw new Error(
-      `Payout transaction must have exactly 2 inputs, got ${payoutTx.ins.length}`,
+      `Payout transaction must have exactly ${DEPOSITOR_PAYOUT_INPUT_COUNT} ` +
+        `inputs, got ${payoutTx.ins.length}`,
     );
   }
-
-  const input0 = payoutTx.ins[0];
-  const input1 = payoutTx.ins[1];
-
-  // Verify input 0 spends PegIn:0 (the vault UTXO).
-  // Both txid AND vout must match the protocol contract — the vout is the
-  // input-side anchor that prevents a malicious VP from binding the
-  // depositor's signature to a different output of the same parent.
-  const input0Txid = uint8ArrayToHex(
-    new Uint8Array(input0.hash).slice().reverse(),
+  // btc-vault builds every payout with these literals (payout.rs:154-155);
+  // the sighash commits to them, so refuse rather than sign a foreign shape.
+  if (payoutTx.version !== PAYOUT_TX_VERSION) {
+    throw new Error(
+      `Payout transaction version ${payoutTx.version} must be ` +
+        `${PAYOUT_TX_VERSION}; refusing to sign payout.`,
+    );
+  }
+  if (payoutTx.locktime !== PAYOUT_TX_LOCKTIME) {
+    throw new Error(
+      `Payout transaction locktime ${payoutTx.locktime} must be ` +
+        `${PAYOUT_TX_LOCKTIME}; refusing to sign payout.`,
+    );
+  }
+  // Input sequences carry the CSV timelocks (payout.rs:108,119). Each is
+  // checked after its own outpoint resolves so a wrong prevout reports itself.
+  const peginPrevOut = requirePrevOut(
+    payoutTx.ins[0],
+    0,
+    peginTx,
+    "PegIn",
+    PEGIN_VAULT_OUTPUT_INDEX,
   );
-  const peginTxid = peginTx.getId();
-
-  if (input0Txid !== peginTxid || input0.index !== PEGIN_VAULT_OUTPUT_INDEX) {
+  if (payoutTx.ins[0].sequence !== params.timelockPegin) {
     throw new Error(
-      `Input 0 must spend PegIn:${PEGIN_VAULT_OUTPUT_INDEX}. ` +
-        `Expected ${peginTxid}:${PEGIN_VAULT_OUTPUT_INDEX}, got ${input0Txid}:${input0.index}`,
+      `Payout input 0 sequence ${payoutTx.ins[0].sequence} must equal the ` +
+        `PegIn CSV timelock ${params.timelockPegin}; refusing to sign payout.`,
     );
   }
 
-  // Verify input 1 spends Assert:0 (the proof output).
-  const input1Txid = uint8ArrayToHex(
-    new Uint8Array(input1.hash).slice().reverse(),
+  const assertPrevOut = requirePrevOut(
+    payoutTx.ins[1],
+    1,
+    assertTx,
+    "Assert",
+    ASSERT_PAYOUT_OUTPUT_INDEX,
   );
-  const assertTxid = assertTx.getId();
-
-  if (input1Txid !== assertTxid || input1.index !== ASSERT_PAYOUT_OUTPUT_INDEX) {
+  if (payoutTx.ins[1].sequence !== params.timelockAssert) {
     throw new Error(
-      `Input 1 must spend Assert:${ASSERT_PAYOUT_OUTPUT_INDEX}. ` +
-        `Expected ${assertTxid}:${ASSERT_PAYOUT_OUTPUT_INDEX}, got ${input1Txid}:${input1.index}`,
+      `Payout input 1 sequence ${payoutTx.ins[1].sequence} must equal the ` +
+        `Assert CSV timelock ${params.timelockAssert}; refusing to sign payout.`,
     );
   }
-
-  const peginPrevOut = peginTx.outs[input0.index];
-  if (!peginPrevOut) {
-    throw new Error(
-      `Previous output not found for input 0 (txid: ${input0Txid}, index: ${input0.index})`,
-    );
-  }
-
-  const input1PrevOut = assertTx.outs[input1.index];
-  if (!input1PrevOut) {
-    throw new Error(
-      `Previous output not found for input 1 (txid: ${input1Txid}, index: ${input1.index})`,
-    );
-  }
+  // Assert:0's value is deliberately NOT validated: the taproot sighash
+  // commits to input 1's amount and outpoint, so a misstated value yields a
+  // signature invalid against the real Assert tx — nothing to protect. (The
+  // device pins the band [546, 546 + base_fee_rate*500] here, Q15.)
 
   // Per-role output validation — blocks an extra attacker output or value
-  // routed into a non-payout slot.
-  assertPayoutOutputLayout({
+  // routed into a non-payout slot. Returns the layout-trusted script lengths
+  // the fee band consumes.
+  const { out0Len, out1Len } = assertPayoutOutputLayout(
     payoutTx,
-    peginValueSats: peginPrevOut.value,
-    claimerBtcPubkey: params.claimerBtcPubkey,
-    vaultProviderBtcPubkey: params.vaultProviderBtcPubkey,
-    depositorBtcPubkey: params.depositorBtcPubkey,
-    vaultKeeperBtcPubkeys: params.vaultKeeperBtcPubkeys,
-    registeredPayoutScriptPubKey: params.registeredPayoutScriptPubKey,
-    commissionBps: params.commissionBps,
-  });
+    peginPrevOut.value,
+    params,
+  );
 
-  // Bound the implicit fee — blocks a VP deflating output values and burning
-  // the difference as miner fee.
-  const inputValueSats = peginPrevOut.value + input1PrevOut.value;
+  const inputValueSats = peginPrevOut.value + assertPrevOut.value;
   let outputValueSats = 0;
   for (const out of payoutTx.outs) outputValueSats += out.value;
   if (outputValueSats > inputValueSats) {
@@ -285,21 +334,156 @@ export async function buildPayoutPsbt(
     );
   }
   const implicitFeeSats = inputValueSats - outputValueSats;
-  const maxFeeSats = Math.floor(
-    (inputValueSats * MAX_PAYOUT_FEE_FRACTION_NUMERATOR) /
-      MAX_PAYOUT_FEE_FRACTION_DENOMINATOR,
-  );
-  if (implicitFeeSats > maxFeeSats) {
+  await assertPayoutFeeInBand(feeBandParams, {
+    implicitFeeSats,
+    out0Len,
+    out1Len,
+  });
+
+  // Only assembly needs the WASM-derived scripts — derive them after the
+  // transaction has passed every validation gate.
+  const payoutConnector = await createPayoutScript({
+    vaultCoreVersion: params.vaultCoreVersion,
+    depositor: params.depositorBtcPubkey,
+    vaultProvider: params.vaultProviderBtcPubkey,
+    vaultKeepers: params.vaultKeeperBtcPubkeys,
+    universalChallengers: params.universalChallengerBtcPubkeys,
+    timelockPegin: params.timelockPegin,
+    network: params.network,
+  });
+
+  const assertPayoutLeaf = await resolveAssertPayoutLeaf(params, assertPrevOut);
+
+  return {
+    psbtHex: assemblePayoutPsbt(
+      payoutTx,
+      peginPrevOut,
+      assertPrevOut,
+      payoutConnector,
+      assertPayoutLeaf,
+    ),
+  };
+}
+
+/** The Assert:0 payout tapscript leaf, as attached to payout input 1. */
+interface AssertPayoutLeaf {
+  script: Uint8Array;
+  controlBlock: Uint8Array;
+}
+
+/**
+ * Rebuild the Assert:0 payout leaf from the vault's on-chain participant set
+ * and assert it spends `assertPrevOut`.
+ *
+ * The depositor does not sign input 1, but the Ledger vault app reads this leaf
+ * off the PSBT to display the payout terms
+ * (`sign_psbt_validate.c::vault_read_payout_leaf_script`), so a leaf that
+ * belonged to a different taptree would show the depositor terms the
+ * transaction cannot actually enforce. Critical Path #3: derive, then bind to
+ * the real previous output — never forward VP-supplied bytes.
+ *
+ * @internal Helper invoked by {@link buildPayoutPsbt}.
+ */
+async function resolveAssertPayoutLeaf(
+  params: PayoutParams,
+  assertPrevOut: TxOutput,
+): Promise<AssertPayoutLeaf> {
+  const { payoutScript, payoutControlBlock } = await getAssertPayoutScriptInfo({
+    txGraphVersion: params.vaultCoreVersion,
+    claimer: stripHexPrefix(params.claimerBtcPubkey).toLowerCase(),
+    localChallengers: deriveLocalChallengers({
+      claimerBtcPubkey: params.claimerBtcPubkey,
+      depositorBtcPubkey: params.depositorBtcPubkey,
+      vaultProviderBtcPubkey: params.vaultProviderBtcPubkey,
+      vaultKeeperBtcPubkeys: params.vaultKeeperBtcPubkeys,
+    }),
+    universalChallengers: params.universalChallengerBtcPubkeys.map((k) =>
+      stripHexPrefix(k).toLowerCase(),
+    ),
+    timelockAssert: params.timelockAssert,
+    councilMembers: params.councilMembers.map((k) =>
+      stripHexPrefix(k).toLowerCase(),
+    ),
+    councilQuorum: params.councilQuorum,
+  });
+
+  const script = hexToUint8Array(payoutScript);
+  const controlBlock = hexToUint8Array(payoutControlBlock);
+  const boundScriptPubKey = computeTaprootScriptPubKey({
+    leafVersion: TAPSCRIPT_LEAF_VERSION,
+    script,
+    controlBlock,
+  });
+  if (!assertPrevOut.script.equals(boundScriptPubKey)) {
     throw new Error(
-      `Payout implicit fee ${implicitFeeSats} sats exceeds the safety cap ` +
-        `of ${maxFeeSats} sats ` +
-        `(${MAX_PAYOUT_FEE_FRACTION_NUMERATOR}/${MAX_PAYOUT_FEE_FRACTION_DENOMINATOR} ` +
-        `of inputs=${inputValueSats}); refusing to sign payout.`,
+      `Rebuilt Assert:0 payout leaf does not spend the Assert output being ` +
+        `referenced: leaf binds to ${boundScriptPubKey.toString("hex")}, ` +
+        `Assert:${ASSERT_PAYOUT_OUTPUT_INDEX} pays ` +
+        `${assertPrevOut.script.toString("hex")}; refusing to sign payout.`,
     );
   }
 
-  // Input 0: Depositor signs using Taproot script path spend
-  // This input includes tapLeafScript for signing
+  return { script, controlBlock };
+}
+
+/**
+ * Verify `payoutTx.ins[inputIndex]` spends `parentTx:expectedVout` (both txid
+ * AND vout — the vout is the input-side anchor that prevents a malicious VP
+ * from binding the depositor's signature to a different output of the same
+ * parent) and return the referenced previous output.
+ *
+ * @internal Helper invoked by {@link buildPayoutPsbt}.
+ */
+function requirePrevOut(
+  input: TxInput,
+  inputIndex: number,
+  parentTx: Transaction,
+  parentLabel: string,
+  expectedVout: number,
+): TxOutput {
+  const inputTxid = uint8ArrayToHex(
+    new Uint8Array(input.hash).slice().reverse(),
+  );
+  const parentTxid = parentTx.getId();
+  if (inputTxid !== parentTxid || input.index !== expectedVout) {
+    throw new Error(
+      `Input ${inputIndex} must spend ${parentLabel}:${expectedVout}. ` +
+        `Expected ${parentTxid}:${expectedVout}, got ${inputTxid}:${input.index}`,
+    );
+  }
+  const prevOut = parentTx.outs[input.index];
+  if (!prevOut) {
+    throw new Error(
+      `Previous output not found for input ${inputIndex} ` +
+        `(txid: ${inputTxid}, index: ${input.index})`,
+    );
+  }
+  return prevOut;
+}
+
+/**
+ * Assemble the unsigned PSBT from the validated payout transaction.
+ *
+ * IMPORTANT: For Taproot SIGHASH_DEFAULT (0x00), the sighash commits to ALL
+ * inputs' prevouts, not just the one being signed — both inputs must be in
+ * the PSBT so the wallet computes the sighash the VP expects.
+ *
+ * @internal Helper invoked by {@link buildPayoutPsbt}.
+ */
+function assemblePayoutPsbt(
+  payoutTx: Transaction,
+  peginPrevOut: TxOutput,
+  assertPrevOut: TxOutput,
+  payoutConnector: { payoutScript: string; payoutControlBlock: string },
+  assertPayoutLeaf: AssertPayoutLeaf,
+): string {
+  const psbt = new Psbt();
+  psbt.setVersion(payoutTx.version);
+  psbt.setLocktime(payoutTx.locktime);
+
+  const [input0, input1] = payoutTx.ins;
+
+  // Input 0: depositor signs via Taproot script path — carries tapLeafScript.
   psbt.addInput({
     hash: input0.hash,
     index: input0.index,
@@ -311,29 +495,36 @@ export async function buildPayoutPsbt(
     tapLeafScript: [
       {
         leafVersion: TAPSCRIPT_LEAF_VERSION,
-        script: Buffer.from(payoutScriptBytes),
-        controlBlock: Buffer.from(controlBlock),
+        script: Buffer.from(hexToUint8Array(payoutConnector.payoutScript)),
+        controlBlock: Buffer.from(
+          hexToUint8Array(payoutConnector.payoutControlBlock),
+        ),
       },
     ],
     tapInternalKey: Buffer.from(tapInternalPubkey),
     // sighashType omitted - defaults to SIGHASH_DEFAULT (0x00) for Taproot
   });
 
-  // Input 1: From Assert transaction (NOT signed by depositor)
-  // We include this with witnessUtxo so the sighash is computed correctly,
-  // but we do NOT include tapLeafScript since the depositor doesn't sign it.
+  // Input 1: from Assert — not signed by the depositor, but the Ledger vault
+  // app reads the payout leaf here to display the terms, so it must be present.
   psbt.addInput({
     hash: input1.hash,
     index: input1.index,
     sequence: input1.sequence,
     witnessUtxo: {
-      script: input1PrevOut.script,
-      value: input1PrevOut.value,
+      script: assertPrevOut.script,
+      value: assertPrevOut.value,
     },
-    // No tapLeafScript - depositor doesn't sign this input
+    tapLeafScript: [
+      {
+        leafVersion: TAPSCRIPT_LEAF_VERSION,
+        script: Buffer.from(assertPayoutLeaf.script),
+        controlBlock: Buffer.from(assertPayoutLeaf.controlBlock),
+      },
+    ],
+    tapInternalKey: Buffer.from(tapInternalPubkey),
   });
 
-  // Add outputs
   for (const output of payoutTx.outs) {
     psbt.addOutput({
       script: output.script,
@@ -341,44 +532,133 @@ export async function buildPayoutPsbt(
     });
   }
 
-  return {
-    psbtHex: psbt.toHex(),
-  };
+  return psbt.toHex();
+}
+
+/**
+ * The scriptPubKeys a payout output may legitimately pay for `bondedPubkey`.
+ *
+ * ## What this is
+ *
+ * A deliberate dual-accept: both the operator's RFC-006 **registered** payout
+ * script and the **BIP-86 default** of its bonded operation key are treated as
+ * valid destinations for the same output.
+ *
+ * ## Why both forms exist
+ *
+ * A vault provider running a daemon that predates btc-vault#2440 computes
+ * operator payout destinations itself, via BIP-86 over the bonded operation
+ * key. From #2440 onward it reads them from the registry instead
+ * (`getPayoutScriptAtEpoch`), so an operator can point payouts at cold custody.
+ *
+ * The two forms are not a transition state that resolves on its own. A payout
+ * graph is built once, at BaBe Setup, and is **never rebuilt** — so a vault
+ * whose graph was built before its network's #2440 upgrade pays BIP-86 for the
+ * rest of its life. Accepting only the registered form makes every such vault
+ * permanently unsignable: the depositor can never complete the deposit, and
+ * the BTC is already committed by then. Confirmed on devnet 2026-08-04, where
+ * a pre-upgrade vault failed exactly this way.
+ *
+ * ## Why this is not a weakening
+ *
+ * Both candidates are derived here from on-chain state — the registry read and
+ * a local BIP-86 derivation over the bonded key. Neither is taken from the VP's
+ * response, so a substituted or attacker-chosen script still fails.
+ *
+ * The only substitution this permits is between two destinations the *same
+ * operator* already controls, which moves that operator's own funds between its
+ * own addresses. It cannot redirect value to a third party, and it cannot touch
+ * the depositor's output. For the VP commission the value cap
+ * (`floor(peginValue × commissionBps / 10_000)`) still bounds depositor
+ * exposure independently of where the commission goes. The BIP-86 branch is
+ * also precisely what every pre-RFC-006 client pinned, so this is the older
+ * rule retained alongside the newer one, not a laxer rule invented for it.
+ *
+ * ## When this can be removed
+ *
+ * This validation runs at one point in the lifecycle: depositor payout signing
+ * (`PENDING` → `VERIFIED`). It is not re-run on refund or withdrawal. So the
+ * BIP-86 branch stops being reachable for a network once every vault
+ * registered before that network's #2440 upgrade has left
+ * `PendingDepositorSignatures` — signed and activated, or expired past its
+ * activation deadline. That is bounded by the vault lifetime, not indefinite.
+ *
+ * Removal is therefore gated by the **last** network to upgrade, since this
+ * code is shared. Concretely: drop the BIP-86 branch only once devnet, testnet
+ * and mainnet have all been on #2440 for longer than the activation deadline,
+ * and no vault registered before those upgrades is still awaiting signatures.
+ * Deleting it earlier strands deposits with BTC already locked; there is no
+ * recovery path short of the refund timelock.
+ *
+ * @internal Helper invoked by {@link assertPayoutOutputLayout}.
+ */
+function acceptedPayoutScriptHexes(
+  registeredScriptPubKey: string,
+  bondedPubkey: string,
+): string[] {
+  const registered = stripHexPrefix(registeredScriptPubKey).toLowerCase();
+  const legacyBip86 = stripHexPrefix(
+    deriveBip86ScriptPubKeyHex(bondedPubkey),
+  ).toLowerCase();
+  return registered === legacyBip86 ? [registered] : [registered, legacyBip86];
+}
+
+/** Whether `script` matches any of `acceptedHexes`. */
+function matchesAnyScript(script: Buffer, acceptedHexes: string[]): boolean {
+  return acceptedHexes.some((hex) => script.equals(Buffer.from(hex, "hex")));
 }
 
 /**
  * Validate a payout transaction's output structure for the claimer's role,
  * keyed on `claimerBtcPubkey`. Pins per role: `outs.length`, `outs[0].script`,
- * `outs[last].value` (anchor dust), and (VP-claimer) `outs[1].value` capped at
+ * `outs[last].value` (anchor dust), and — for the VP-claimer —
+ * `outs[1].script` plus `outs[1].value`, capped at
  * `floor(peginValue × commissionBps / 10_000)`. Canonical layouts: VP-claimer
  * = [payout, commission, anchor]; depositor/VK-claimer = [payout, anchor].
  *
- * `outs[1].script` and `outs[last].script` are intentionally not pinned: the
- * value pins above bound depositor exposure regardless of where those outputs
- * are sent, so the value pins — not script pins — are load-bearing.
+ * `outs[last].script` (the CPFP anchor) is intentionally not pinned: the value
+ * pin above bounds depositor exposure regardless of where that dust goes.
+ *
+ * `outs[1].script` (the VP commission) was unpinned for the same reason.
+ * RFC-006 supersedes that rationale: the commission destination is now an
+ * operator-registered scriptPubKey we resolve independently at the vault's
+ * frozen `vpKeyEpoch`, so it is pinned too — `vpCommissionScriptPubKey` is a
+ * required parameter, so there is no unpinned case. The value cap stays — it is
+ * still what bounds exposure — and the script pin is added precision, not a
+ * replacement for it.
+ *
+ * What counts as a match differs by output.
+ * {@link acceptedPayoutScriptHexes} accepts two candidates — the registered
+ * scriptPubKey and the BIP-86 derivation over the bonded key, the latter as a
+ * transitional allowance — and backs the VK-claimer's `outs[0]` and the VP
+ * commission `outs[1]`. The VP-claimer and depositor-as-claimer `outs[0]` is
+ * pinned to the registered payout script alone.
+ *
+ * Returns the layout-trusted non-anchor script lengths for the fee band:
+ * `out0Len` from the pinned `outs[0]` script, and `out1Len` from the pinned
+ * VP-claimer commission output, `undefined` for the other roles. Only
+ * `out0Len` is range-checked, against the contract's registration cap
+ * `[1, MAX_PAYOUT_SCRIPT_LEN]`; `outs[1]` carries no length cap of its own
+ * because `assertStandardPayoutScript` already bounds it to a standard output
+ * type, which makes the cap unreachable.
  *
  * @internal Helper invoked by {@link buildPayoutPsbt}.
  */
-function assertPayoutOutputLayout(args: {
-  payoutTx: Transaction;
-  peginValueSats: number;
-  claimerBtcPubkey: string;
-  vaultProviderBtcPubkey: string;
-  depositorBtcPubkey: string;
-  vaultKeeperBtcPubkeys: string[];
-  registeredPayoutScriptPubKey: string;
-  commissionBps: number;
-}): void {
+function assertPayoutOutputLayout(
+  payoutTx: Transaction,
+  peginValueSats: number,
+  params: PayoutParams,
+): { out0Len: number; out1Len: number | undefined } {
   const {
-    payoutTx,
-    peginValueSats,
     claimerBtcPubkey,
     vaultProviderBtcPubkey,
     depositorBtcPubkey,
     vaultKeeperBtcPubkeys,
     registeredPayoutScriptPubKey,
     commissionBps,
-  } = args;
+    vkClaimerPayoutScriptPubKeys,
+    vpCommissionScriptPubKey,
+  } = params;
 
   if (!isValidHex(registeredPayoutScriptPubKey)) {
     throw new Error("Invalid registeredPayoutScriptPubKey: not valid hex");
@@ -394,20 +674,39 @@ function assertPayoutOutputLayout(args: {
   type Role = "vp-claimer" | "depositor-as-claimer" | "vk-claimer";
   let role: Role;
   let expectedOutCount: number;
-  let expectedOut0ScriptHex: string;
+  let acceptedOut0ScriptHexes: string[];
 
   if (claimer === vp) {
     role = "vp-claimer";
     expectedOutCount = VP_CLAIMER_PAYOUT_OUTPUT_COUNT;
-    expectedOut0ScriptHex = stripHexPrefix(registeredPayoutScriptPubKey);
+    acceptedOut0ScriptHexes = [stripHexPrefix(registeredPayoutScriptPubKey)];
   } else if (claimer === dep) {
     role = "depositor-as-claimer";
     expectedOutCount = NON_VP_CLAIMER_PAYOUT_OUTPUT_COUNT;
-    expectedOut0ScriptHex = stripHexPrefix(registeredPayoutScriptPubKey);
+    acceptedOut0ScriptHexes = [stripHexPrefix(registeredPayoutScriptPubKey)];
   } else if (keepers.includes(claimer)) {
     role = "vk-claimer";
     expectedOutCount = NON_VP_CLAIMER_PAYOUT_OUTPUT_COUNT;
-    expectedOut0ScriptHex = stripHexPrefix(deriveBip86ScriptPubKeyHex(claimer));
+    // RFC-006: a keeper's payout goes to the scriptPubKey it registered
+    // on-chain, resolved at the vault's frozen keeper epoch. Deriving BIP-86
+    // locally as the sole expectation would reject a valid payout the moment a
+    // keeper points its payouts at cold custody.
+    //
+    // A missing entry is an error, never a BIP-86 fallback: the registry
+    // backfills BIP-86 itself for keepers that never registered a script, so a
+    // gap here means the resolution was incomplete, not that this keeper is on
+    // the default.
+    const registered = vkClaimerPayoutScriptPubKeys[claimer];
+    if (registered === undefined) {
+      throw new Error(
+        `No registered payout script resolved for vault keeper claimer ${claimer}`,
+      );
+    }
+    assertStandardPayoutScript(
+      registered,
+      `Vault keeper payout script for claimer ${claimer}`,
+    );
+    acceptedOut0ScriptHexes = acceptedPayoutScriptHexes(registered, claimer);
   } else {
     throw new Error(
       `Unknown claimer pubkey ${claimer}: not VP, depositor, or a registered vault keeper`,
@@ -421,10 +720,11 @@ function assertPayoutOutputLayout(args: {
     );
   }
 
-  const expectedOut0Script = Buffer.from(expectedOut0ScriptHex, "hex");
-  if (!payoutTx.outs[0].script.equals(expectedOut0Script)) {
+  if (!matchesAnyScript(payoutTx.outs[0].script, acceptedOut0ScriptHexes)) {
     throw new Error(
-      `Payout transaction output 0 does not pay the expected scriptPubKey for role ${role}`,
+      `Payout transaction output 0 does not pay the expected scriptPubKey for role ${role}. ` +
+        `Accepted: ${acceptedOut0ScriptHexes.join(" or ")}; ` +
+        `got ${payoutTx.outs[0].script.toString("hex")}`,
     );
   }
 
@@ -437,6 +737,27 @@ function assertPayoutOutputLayout(args: {
   }
 
   if (role === "vp-claimer") {
+    // RFC-006 commission destination. Checked before the value cap so a
+    // substituted destination reports as such rather than surfacing later as a
+    // confusing amount error.
+    assertStandardPayoutScript(
+      vpCommissionScriptPubKey,
+      "Vault provider commission payout script",
+    );
+    const acceptedCommissionScriptHexes = acceptedPayoutScriptHexes(
+      vpCommissionScriptPubKey,
+      vp,
+    );
+    if (
+      !matchesAnyScript(payoutTx.outs[1].script, acceptedCommissionScriptHexes)
+    ) {
+      throw new Error(
+        `Payout transaction output 1 does not pay the vault provider's commission scriptPubKey. ` +
+          `Accepted: ${acceptedCommissionScriptHexes.join(" or ")}; ` +
+          `got ${payoutTx.outs[1].script.toString("hex")}`,
+      );
+    }
+
     // Structural guard only — a non-negative integer below the bps
     // denominator, so the cap math `floor(peginValue * bps / 10_000)` is
     // meaningful. The protocol minimum is enforced at the trust boundary
@@ -452,7 +773,7 @@ function assertPayoutOutputLayout(args: {
       );
     }
     const maxCommissionSats = Math.floor(
-      (peginValueSats * commissionBps) / MAX_VP_COMMISSION_BPS_EXCLUSIVE,
+      (peginValueSats * commissionBps) / BPS_DENOMINATOR,
     );
     if (payoutTx.outs[1].value > maxCommissionSats) {
       throw new Error(
@@ -462,6 +783,28 @@ function assertPayoutOutputLayout(args: {
       );
     }
   }
+
+  // The accepted-script set can hold more than one candidate (dual-accept), so
+  // the length the fee band consumes is that of the output actually present —
+  // which the check above has already pinned to one of the accepted values.
+  const out0Len = payoutTx.outs[0].script.length;
+  if (out0Len === 0 || out0Len > MAX_PAYOUT_SCRIPT_LEN) {
+    throw new Error(
+      `Payout receiver scriptPubKey length ${out0Len} is outside the ` +
+        `contract's registration cap [1, ${MAX_PAYOUT_SCRIPT_LEN}]; ` +
+        `refusing to sign payout.`,
+    );
+  }
+  // No length cap on outs[1]: under RFC-006 the commission output is pinned to
+  // the operator's registered script, and `assertStandardPayoutScript` above
+  // already bounds that to a standard type (34 bytes at most). A separate
+  // 128-byte cap here would be unreachable. Still measured, because the fee
+  // floor consumes it — and now from a pinned source rather than a
+  // VP-controlled one.
+  const out1Len =
+    role === "vp-claimer" ? payoutTx.outs[1].script.length : undefined;
+
+  return { out0Len, out1Len };
 }
 
 /**
@@ -623,4 +966,3 @@ function parseWitnessStack(witness: Buffer): Buffer[] {
 
   return items;
 }
-

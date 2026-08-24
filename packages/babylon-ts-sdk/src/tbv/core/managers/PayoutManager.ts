@@ -14,18 +14,19 @@
  * @module managers/PayoutManager
  */
 
-import type {
-  BitcoinWallet,
-  SignPsbtOptions,
-} from "../../../shared/wallets";
-import { createTaprootScriptPathSignOptions } from "../utils/signing";
+import type { BitcoinWallet, SignPsbtOptions } from "../../../shared/wallets";
 import {
   assertPsbtUnsignedTxMatches,
+  assertScriptPathSchnorrSignature,
   buildPayoutPsbt,
   extractPayoutSignature,
   validateWalletPubkey,
   type Network,
 } from "../primitives";
+import { createTaprootScriptPathSignOptions } from "../utils/signing";
+
+/** Payout PSBTs are signed by the depositor on input 0 (Taproot script-path). */
+const PAYOUT_SIGNED_INPUT_INDEX = 0;
 
 /**
  * Configuration for the PayoutManager.
@@ -46,6 +47,13 @@ export interface PayoutManagerConfig {
  * Base parameters shared by both payout transaction types.
  */
 interface SignPayoutBaseParams {
+  /**
+   * Vault core (tx-graph) version the vault was registered under — the
+   * vault's stamped on-chain `vaultCoreVersion`. Forwarded to
+   * {@link buildPayoutPsbt} to derive the matching graph's payout scripts.
+   */
+  vaultCoreVersion: number;
+
   /**
    * Peg-in transaction hex.
    * The original transaction that created the vault output being spent.
@@ -71,6 +79,8 @@ interface SignPayoutBaseParams {
    * CSV timelock in blocks for the PegIn output.
    */
   timelockPegin: number;
+  /** btc-vault `timelock_assert`; payout input 1's sequence. */
+  timelockAssert: number;
 
   /**
    * Depositor's BTC public key (x-only, 64-char hex). This MUST be the
@@ -100,6 +110,31 @@ interface SignPayoutBaseParams {
    * VP commission in basis points (`1..=9999`). Forwarded to {@link buildPayoutPsbt}.
    */
   commissionBps: number;
+
+  /**
+   * Version-locked tx-graph fee rate (sat/vB) the graph was built with.
+   * Forwarded to {@link buildPayoutPsbt} for the fee band.
+   */
+  protocolFeeRate: bigint;
+
+  /**
+   * Security council member x-only pubkeys (hex); forwarded to
+   * {@link buildPayoutPsbt} to rebuild the Assert:0 payout leaf and to size the
+   * fee floor (see PayoutParams).
+   */
+  councilMembers: string[];
+
+  /** M-of-N council quorum; shapes the Assert:0 council leaf (see PayoutParams). */
+  councilQuorum: number;
+
+  /**
+   * RFC-006 resolved payout destinations, keyed by lowercased x-only operation
+   * pubkey. Forwarded verbatim to {@link buildPayoutPsbt}; every VK claimer
+   * must be present.
+   */
+  vkClaimerPayoutScriptPubKeys: Readonly<Record<string, string>>;
+  /** RFC-006 VP commission destination. Forwarded to {@link buildPayoutPsbt}. */
+  vpCommissionScriptPubKey: string;
 }
 
 /**
@@ -206,6 +241,7 @@ export class PayoutManager {
     // validation happens inside buildPayoutPsbt against the resolved input
     // values.
     const payoutPsbt = await buildPayoutPsbt({
+      vaultCoreVersion: params.vaultCoreVersion,
       payoutTxHex: params.payoutTxHex,
       peginTxHex: params.peginTxHex,
       assertTxHex: params.assertTxHex,
@@ -214,10 +250,16 @@ export class PayoutManager {
       vaultKeeperBtcPubkeys: params.vaultKeeperBtcPubkeys,
       universalChallengerBtcPubkeys: params.universalChallengerBtcPubkeys,
       timelockPegin: params.timelockPegin,
+      timelockAssert: params.timelockAssert,
       network: this.config.network,
       claimerBtcPubkey: params.claimerBtcPubkey,
       registeredPayoutScriptPubKey: params.registeredPayoutScriptPubKey,
       commissionBps: params.commissionBps,
+      protocolFeeRate: params.protocolFeeRate,
+      councilMembers: params.councilMembers,
+      councilQuorum: params.councilQuorum,
+      vkClaimerPayoutScriptPubKeys: params.vkClaimerPayoutScriptPubKeys,
+      vpCommissionScriptPubKey: params.vpCommissionScriptPubKey,
     });
 
     // Sign PSBT via wallet (Taproot script-path spend, input 0 only)
@@ -233,6 +275,14 @@ export class PayoutManager {
 
     // Extract Schnorr signature
     const signature = extractPayoutSignature(signedPsbtHex, depositorPubkey);
+    // Critical Path #7: verify the signature against a sighash recomputed from
+    // the PSBT we built, not the wallet-returned one.
+    assertScriptPathSchnorrSignature({
+      requestedPsbtHex: payoutPsbt.psbtHex,
+      signatureHex: signature,
+      signerXOnlyPubkeyHex: depositorPubkey,
+      inputIndex: PAYOUT_SIGNED_INPUT_INDEX,
+    });
 
     return {
       signature,
@@ -267,9 +317,7 @@ export class PayoutManager {
    * @throws Error if wallet doesn't support batch signing
    * @throws Error if any signing operation fails
    */
-  async signPayoutTransactionsBatch(
-    transactions: SignPayoutParams[],
-  ): Promise<
+  async signPayoutTransactionsBatch(transactions: SignPayoutParams[]): Promise<
     Array<{
       payoutSignature: string;
       depositorBtcPubkey: string;
@@ -300,6 +348,7 @@ export class PayoutManager {
       // Build Payout PSBT (output validation runs inside buildPayoutPsbt
       // against resolved input values).
       const payoutPsbt = await buildPayoutPsbt({
+        vaultCoreVersion: tx.vaultCoreVersion,
         payoutTxHex: tx.payoutTxHex,
         peginTxHex: tx.peginTxHex,
         assertTxHex: tx.assertTxHex,
@@ -308,10 +357,16 @@ export class PayoutManager {
         vaultKeeperBtcPubkeys: tx.vaultKeeperBtcPubkeys,
         universalChallengerBtcPubkeys: tx.universalChallengerBtcPubkeys,
         timelockPegin: tx.timelockPegin,
+        timelockAssert: tx.timelockAssert,
         network: this.config.network,
         claimerBtcPubkey: tx.claimerBtcPubkey,
         registeredPayoutScriptPubKey: tx.registeredPayoutScriptPubKey,
         commissionBps: tx.commissionBps,
+        protocolFeeRate: tx.protocolFeeRate,
+        councilMembers: tx.councilMembers,
+        councilQuorum: tx.councilQuorum,
+        vkClaimerPayoutScriptPubKeys: tx.vkClaimerPayoutScriptPubKeys,
+        vpCommissionScriptPubKey: tx.vpCommissionScriptPubKey,
       });
       psbtsToSign.push(payoutPsbt.psbtHex);
       signOptions.push(createTaprootScriptPathSignOptions(walletPubkeyRaw, 1));
@@ -346,6 +401,12 @@ export class PayoutManager {
         signedPsbts[i],
         depositorPubkey,
       );
+      assertScriptPathSchnorrSignature({
+        requestedPsbtHex: psbtsToSign[i],
+        signatureHex: payoutSignature,
+        signerXOnlyPubkeyHex: depositorPubkey,
+        inputIndex: PAYOUT_SIGNED_INPUT_INDEX,
+      });
 
       results.push({
         payoutSignature,
@@ -355,5 +416,4 @@ export class PayoutManager {
 
     return results;
   }
-
 }

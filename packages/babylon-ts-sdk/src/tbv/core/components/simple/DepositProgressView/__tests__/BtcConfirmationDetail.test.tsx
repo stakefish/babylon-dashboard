@@ -6,22 +6,10 @@ import { BtcConfirmationDetail } from "../BtcConfirmationDetail";
 const TXID = "a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2";
 
 const baseProps = {
-  startedAt: new Date("2026-01-01T13:44:00Z").getTime(),
   prePeginTxid: TXID,
 };
 
 describe("BtcConfirmationDetail", () => {
-  it("shows when the confirmation wait started", () => {
-    render(
-      <BtcConfirmationDetail
-        {...baseProps}
-        confirmations={0}
-        requiredDepth={6}
-      />,
-    );
-    expect(screen.getByText(/Started at/)).toBeInTheDocument();
-  });
-
   it("links the Pre-PegIn txid to the Bitcoin explorer", () => {
     render(
       <BtcConfirmationDetail
@@ -69,7 +57,7 @@ describe("BtcConfirmationDetail", () => {
     expect(screen.getByText("~10 min (1 BTC block)")).toBeInTheDocument();
   });
 
-  it("shows a finalizing state once the required depth is reached", () => {
+  it("shows provider payout-prep status once the required depth is reached", () => {
     render(
       <BtcConfirmationDetail
         {...baseProps}
@@ -77,11 +65,16 @@ describe("BtcConfirmationDetail", () => {
         requiredDepth={6}
       />,
     );
-    expect(screen.getByText("Finalizing...")).toBeInTheDocument();
+    expect(
+      screen.getByText(
+        "Waiting for vault provider to prepare claim and payout transactions...",
+      ),
+    ).toBeInTheDocument();
+    expect(screen.getByText(/Status/)).toBeInTheDocument();
     expect(screen.queryByText(/block/)).not.toBeInTheDocument();
   });
 
-  it("shows a finalizing state when confirmations overshoot the depth", () => {
+  it("shows provider payout-prep status when confirmations overshoot the depth", () => {
     render(
       <BtcConfirmationDetail
         {...baseProps}
@@ -89,7 +82,11 @@ describe("BtcConfirmationDetail", () => {
         requiredDepth={6}
       />,
     );
-    expect(screen.getByText("Finalizing...")).toBeInTheDocument();
+    expect(
+      screen.getByText(
+        "Waiting for vault provider to prepare claim and payout transactions...",
+      ),
+    ).toBeInTheDocument();
   });
 
   it("shows no estimate until the first confirmation reading arrives", () => {

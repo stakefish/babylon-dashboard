@@ -4,6 +4,7 @@
 dist
 tmp
 out-tsc
+__pycache__/
 
 # dependencies
 node_modules
@@ -56,3 +57,4 @@ packages/*/.cursor
 
 /todo
 .vercel
+.nx/polygraph

@@ -17,7 +17,10 @@ import type { Address, Hex } from "viem";
 import type { SignPsbtOptions } from "../../../../shared/wallets/interfaces/BitcoinWallet";
 import { findAuthAnchorOpReturn } from "../../managers/pegin";
 import { assertPsbtUnsignedTxMatches } from "../../primitives/psbt/assertPsbtUnsignedTxMatches";
+import { extractPayoutSignature } from "../../primitives/psbt/payout";
 import { buildRefundPsbt } from "../../primitives/psbt/refund";
+import { assertScriptPathSchnorrSignature } from "../../primitives/psbt/verifyScriptPathSchnorrSignature";
+import { assertValidVaultCoreVersion } from "../../primitives/vaultCoreVersion";
 import {
   processPublicKeyToXOnly,
   stripHexPrefix,
@@ -110,7 +113,13 @@ function assertBytes32(value: string, label: string): void {
 export interface VaultBatchEntry {
   /** SHA-256 hashlock commitment for this vault (bytes32, 0x-prefixed). */
   hashlock: Hex;
-  /** HTLC output value in satoshis for this vault. */
+  /**
+   * Vault deposit (peg-in) amount in satoshis — the on-chain contract's
+   * `amount` field. This is the peg-in amount WASM expects in `pegInAmounts`,
+   * NOT the funded HTLC output value (which is `amount + depositorClaimValue +
+   * minPeginFee`). WASM re-adds that reserve internally when it sizes the HTLC
+   * output, so this value is passed straight through.
+   */
   amount: bigint;
   /** Index of this vault's HTLC output in the funded Pre-PegIn tx. */
   htlcVout: number;
@@ -130,6 +139,12 @@ export interface VaultBatchEntry {
  * so the WASM template matches the funded tx's shape.
  */
 export interface VaultRefundData {
+  /**
+   * Vault core (tx-graph) version stamped on-chain at registration
+   * (`BTCVaultProtocolInfo.vaultCoreVersion`). The refund template must be
+   * reconstructed under the same graph version the Pre-PegIn was built with.
+   */
+  vaultCoreVersion: number;
   hashlock: Hex;
   htlcVout: number;
   offchainParamsVersion: number;
@@ -137,7 +152,7 @@ export interface VaultRefundData {
   universalChallengersVersion: number;
   vaultProvider: Address;
   applicationEntryPoint: Address;
-  /** Pre-PegIn HTLC output value in satoshis. */
+  /** Vault deposit (peg-in) amount in satoshis — the on-chain `amount` field. */
   amount: bigint;
   /**
    * Funded, pre-witness Pre-PegIn transaction hex. 0x prefix optional.
@@ -186,9 +201,8 @@ export interface BtcBroadcastResult {
   txId: string;
 }
 
-export type BtcBroadcaster<
-  R extends BtcBroadcastResult = BtcBroadcastResult,
-> = (signedTxHex: string) => Promise<R>;
+export type BtcBroadcaster<R extends BtcBroadcastResult = BtcBroadcastResult> =
+  (signedTxHex: string) => Promise<R>;
 
 export type RefundPsbtSigner = (
   psbtHex: string,
@@ -290,7 +304,14 @@ function validateVaultRefundData(v: VaultRefundData): void {
     v.universalChallengersVersion,
     "universalChallengersVersion",
   );
-  if (typeof v.unsignedPrePeginTxHex !== "string" || v.unsignedPrePeginTxHex.length === 0) {
+  assertValidVaultCoreVersion(
+    v.vaultCoreVersion,
+    "VaultRefundData.vaultCoreVersion",
+  );
+  if (
+    typeof v.unsignedPrePeginTxHex !== "string" ||
+    v.unsignedPrePeginTxHex.length === 0
+  ) {
     throw new Error("unsignedPrePeginTxHex must be a non-empty hex string");
   }
   if (!BTC_HEX_BYTES_RE.test(v.unsignedPrePeginTxHex)) {
@@ -333,10 +354,7 @@ function validateRefundPrePeginContext(c: RefundPrePeginContext): void {
       `minPeginFeeRate must be a positive bigint, got ${c.minPeginFeeRate}`,
     );
   }
-  if (
-    !Number.isInteger(c.numLocalChallengers) ||
-    c.numLocalChallengers < 0
-  ) {
+  if (!Number.isInteger(c.numLocalChallengers) || c.numLocalChallengers < 0) {
     throw new Error("numLocalChallengers must be a non-negative integer");
   }
   if (
@@ -491,6 +509,7 @@ export async function buildAndBroadcastRefund<
 
   const { psbtHex } = await buildRefundPsbt({
     prePeginParams: {
+      vaultCoreVersion: vault.vaultCoreVersion,
       depositorPubkey: xOnlyDepositorPubkey,
       vaultProviderPubkey: stripHexPrefix(ctx.vaultProviderPubkey),
       vaultKeeperPubkeys: ctx.vaultKeeperPubkeys.map(stripHexPrefix),
@@ -498,6 +517,12 @@ export async function buildAndBroadcastRefund<
         ctx.universalChallengerPubkeys.map(stripHexPrefix),
       hashlocks: vault.batch.map((b) => stripHexPrefix(b.hashlock)),
       timelockRefund: ctx.timelockRefund,
+      // `batch[i].amount` is the on-chain vault deposit (peg-in) amount, which
+      // is exactly what WASM's `pegInAmounts` expects — it re-adds the protocol
+      // reserve (`depositorClaimValue + minPeginFee`) internally when sizing the
+      // HTLC output. `buildRefundPsbt`'s value cross-check then binds the result
+      // to the funded tx bytes, refusing the refund if the template's HTLC value
+      // disagrees with the on-chain commitment.
       pegInAmounts: vault.batch.map((b) => b.amount),
       feeRate: ctx.feeRate,
       minPeginFeeRate: ctx.minPeginFeeRate,
@@ -527,6 +552,22 @@ export async function buildAndBroadcastRefund<
   assertPsbtUnsignedTxMatches({
     requestedPsbtHex: psbtHex,
     returnedPsbtHex: signedPsbtHex,
+  });
+
+  // Critical Path #7: verify the depositor's script-path signature against a
+  // sighash recomputed from the PSBT we built before finalizing and broadcasting.
+  // The refund spends a single input (the HTLC output) on input 0.
+  const REFUND_SIGNED_INPUT_INDEX = 0;
+  const refundSignature = extractPayoutSignature(
+    signedPsbtHex,
+    xOnlyDepositorPubkey,
+    REFUND_SIGNED_INPUT_INDEX,
+  );
+  assertScriptPathSchnorrSignature({
+    requestedPsbtHex: psbtHex,
+    signatureHex: refundSignature,
+    signerXOnlyPubkeyHex: xOnlyDepositorPubkey,
+    inputIndex: REFUND_SIGNED_INPUT_INDEX,
   });
 
   const signedTxHex = finalizeAndExtract(signedPsbtHex);

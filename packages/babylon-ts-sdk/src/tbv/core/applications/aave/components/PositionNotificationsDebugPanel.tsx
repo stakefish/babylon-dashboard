@@ -1,11 +1,23 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-
-import { useETHWallet } from "@/context/wallet";
+/**
+ * Shared liquidation-cascade simulator (dev / QA only), used by both the
+ * Position and Liquidations tabs — the two duplicated cascade UIs the old
+ * `PositionNotificationsDebugPanel` and `LiquidationAnalysisDebugPanel`
+ * hand-rolled around the same store now collapse into this one component.
+ *
+ * `CascadeSimulator` is pure UI: it reads/writes `debugPositionStore` and
+ * renders the Live/Simulated control + banner preview. It never publishes to
+ * `@/overrides/position` itself — every tab that shows it is mounted at once
+ * (see `GodModePanel`'s header comment), so two simultaneous instances would
+ * both run the publish effect and race each other's unmount-clear.
+ * `CascadeOverridePublisher` owns that effect instead, mounted exactly once
+ * by the shell, gated the same way the old standalone section was.
+ */
+import { useCallback, useEffect, useMemo, useRef } from "react";
 
 import {
   usePositionNotifications,
   type PositionNotificationsStatus,
-} from "../hooks/usePositionNotifications";
+} from "@/applications/aave/hooks/usePositionNotifications";
 import {
   calculate,
   deriveBannerState,
@@ -18,23 +30,54 @@ import {
   type Vault,
   type Warning,
   type WarningType,
-} from "../positionNotifications";
+} from "@/applications/aave/positionNotifications";
+import { useETHWallet } from "@/context/wallet";
+import { setPositionCascadeOverride } from "@/overrides/position";
 
+import {
+  DEBUG_DEFAULT_CF,
+  DEBUG_DEFAULT_EXPECTED_HF,
+  DEBUG_DEFAULT_MAX_LB,
+  DEBUG_DEFAULT_THF,
+  DEBUG_PRESETS,
+  applyDebugPreset,
+  resetDebugManualParams,
+  setDebugManualMode,
+  setDebugManualParams,
+  setDebugSimulateStalePrice,
+  useDebugManualMode,
+  useDebugManualParams,
+  useDebugSimulateStalePrice,
+} from "../debugPositionStore";
+import {
+  PANEL_BUTTON_CLASS,
+  PANEL_HINT_CLASS,
+  PANEL_INPUT_CLASS,
+  PANEL_LABEL_CLASS,
+  PANEL_SECTION_CLASS,
+  PANEL_SECTION_TITLE_CLASS,
+} from "../panelChrome";
+import { positionDebugGate } from "../registry";
+
+import { SegmentButton } from "./segmentButton";
+
+// Severity tints for the banner preview. Dark-only (no light variants): the
+// god-mode box is a fixed zinc surface regardless of the app's theme.
 const SEVERITY_COLORS: Record<BannerSeverity, string> = {
-  red: "border-red-500 bg-red-50 text-red-900 dark:bg-red-950/30 dark:text-red-200",
-  yellow:
-    "border-yellow-500 bg-yellow-50 text-yellow-900 dark:bg-yellow-950/30 dark:text-yellow-200",
-  soft: "border-gray-300 bg-gray-50 text-gray-600 dark:border-gray-700 dark:bg-gray-900/30 dark:text-gray-400",
-  green:
-    "border-green-500 bg-green-50 text-green-900 dark:bg-green-950/30 dark:text-green-200",
-  hidden:
-    "border-gray-300 bg-gray-50 text-gray-600 dark:border-gray-600 dark:bg-gray-800/30 dark:text-gray-400",
+  red: "border-red-500 bg-red-500/15 text-red-200",
+  yellow: "border-yellow-500 bg-yellow-500/15 text-yellow-200",
+  soft: "border-zinc-600 bg-zinc-800/60 text-zinc-400",
+  green: "border-green-500 bg-green-500/15 text-green-200",
+  hidden: "border-zinc-700 bg-zinc-800/40 text-zinc-500",
 };
 
 const WARNING_TYPE_COLORS: Record<WarningType, string> = {
   urgent: "bg-red-600 text-white",
-  dust: "bg-gray-500 text-white",
+  cliff: "bg-orange-600 text-white",
+  reorder: "bg-yellow-500 text-black",
+  dust: "bg-zinc-600 text-white",
   "weird-params": "bg-blue-500 text-white",
+  "too-many-vaults": "bg-teal-600 text-white",
 };
 
 const STATUS_MESSAGES: Record<
@@ -48,24 +91,11 @@ const STATUS_MESSAGES: Record<
   "stale-price": "BTC price is stale or unavailable",
 };
 
-const INPUT_CLASS =
-  "w-28 rounded border border-gray-300 px-2 py-1 text-sm font-mono dark:border-gray-600 dark:bg-gray-800 dark:text-gray-200";
-const LABEL_CLASS = "text-xs text-gray-600 dark:text-gray-400";
-
-function makeDefaultParams(): CalculatorParams {
-  return {
-    btcPrice: 61722.5,
-    totalDebtUsd: 44287.72,
-    vaults: [
-      { id: "v-1", name: "Vault 1", btc: 0.65 },
-      { id: "v-2", name: "Vault 2", btc: 0.35 },
-    ],
-    CF: 0.75,
-    THF: 1.1,
-    maxLB: 1.05,
-    expectedHF: 0.95,
-  };
-}
+// The panel lives inside the ~420px god-mode box, so every layout here is
+// container-sized: full-width inputs in a fixed 2-column grid. Viewport `md:`
+// breakpoints would fire on a wide window and overflow the narrow box.
+const FIELD_GRID_CLASS = "grid grid-cols-2 gap-x-3 gap-y-2";
+const PRESET_BUTTON_CLASS = `${PANEL_BUTTON_CLASS} text-zinc-200 hover:bg-zinc-800`;
 
 /** Initial counter for generated vault IDs (avoids collision with default vaults) */
 const INITIAL_VAULT_ID_COUNTER = 100;
@@ -82,16 +112,14 @@ function WarningBadge({ type }: { type: WarningType }) {
 
 function WarningCard({ warning }: { warning: Warning }) {
   return (
-    <div className="rounded border border-gray-200 bg-white p-3 dark:border-gray-700 dark:bg-gray-800">
+    <div className="rounded border border-zinc-700 bg-zinc-800/60 p-3">
       <div className="mb-1 flex items-center gap-2">
         <WarningBadge type={warning.type} />
         <span className="font-medium">{warning.title}</span>
       </div>
-      <p className="text-sm text-gray-700 dark:text-gray-300">
-        {warning.detail}
-      </p>
+      <p className="text-sm text-zinc-300">{warning.detail}</p>
       {warning.suggestion && (
-        <p className="mt-1 text-sm font-medium text-blue-700 dark:text-blue-400">
+        <p className="mt-1 text-sm font-medium text-sky-300">
           {warning.suggestion}
         </p>
       )}
@@ -101,9 +129,7 @@ function WarningCard({ warning }: { warning: Warning }) {
 
 function GroupRow({ group }: { group: LiquidationGroup }) {
   return (
-    <tr
-      className={group.isFullLiquidation ? "bg-red-50 dark:bg-red-950/30" : ""}
-    >
+    <tr className={group.isFullLiquidation ? "bg-red-950/40" : ""}>
       <td className="px-2 py-1 text-center">{group.index}</td>
       <td className="px-2 py-1">
         {group.vaults.map((v) => v.name).join(", ")}
@@ -168,7 +194,7 @@ function ResultPanel({ result }: { result: CalculatorResult }) {
         <summary className="cursor-pointer font-medium">
           Protocol Parameters
         </summary>
-        <div className="mt-2 grid grid-cols-2 gap-2 text-sm md:grid-cols-4">
+        <div className="mt-2 grid grid-cols-2 gap-2 text-sm">
           <div>
             HF: <strong>{fmt(result.currentHF, 3)}</strong>
           </div>
@@ -191,7 +217,7 @@ function ResultPanel({ result }: { result: CalculatorResult }) {
           <div className="mt-2 overflow-x-auto">
             <table className="w-full text-xs">
               <thead>
-                <tr className="border-b border-gray-200 text-left dark:border-gray-700">
+                <tr className="border-b border-zinc-700 text-left">
                   <th className="px-2 py-1">#</th>
                   <th className="px-2 py-1">Vaults</th>
                   <th className="px-2 py-1 text-right">BTC</th>
@@ -227,14 +253,14 @@ function ResultPanel({ result }: { result: CalculatorResult }) {
         </details>
       )}
 
-      {/* Suggested order (manual "Apply Suggested Order") */}
-      {result.suggestedVaultOrder && (
+      {/* Suggested order (manual "Apply Optimal Order") */}
+      {result.optimalVaultOrder && (
         <details open>
           <summary className="cursor-pointer font-medium">Suggestions</summary>
           <div className="mt-2 space-y-2 text-sm">
             <VaultOrderDisplay
               label="Suggested order"
-              vaults={result.suggestedVaultOrder}
+              vaults={result.optimalVaultOrder}
             />
           </div>
         </details>
@@ -296,15 +322,15 @@ function ManualInputPanel({
   );
 
   return (
-    <div className="space-y-3 rounded border border-purple-200 bg-white p-3 dark:border-purple-800 dark:bg-gray-800/50">
+    <div className="space-y-3 rounded border border-zinc-700 bg-zinc-800/40 p-3">
       {/* Market & Debt */}
-      <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
+      <div className={FIELD_GRID_CLASS}>
         <div>
-          <div className={LABEL_CLASS}>BTC Price ($)</div>
+          <div className={PANEL_LABEL_CLASS}>BTC Price ($)</div>
           <input
             type="number"
             step="100"
-            className={INPUT_CLASS}
+            className={PANEL_INPUT_CLASS}
             value={params.btcPrice}
             onChange={(e) =>
               updateField("btcPrice", parseFloat(e.target.value) || 0)
@@ -312,11 +338,11 @@ function ManualInputPanel({
           />
         </div>
         <div>
-          <div className={LABEL_CLASS}>Total Debt ($)</div>
+          <div className={PANEL_LABEL_CLASS}>Total Debt ($)</div>
           <input
             type="number"
             step="1000"
-            className={INPUT_CLASS}
+            className={PANEL_INPUT_CLASS}
             value={params.totalDebtUsd}
             onChange={(e) =>
               updateField("totalDebtUsd", parseFloat(e.target.value) || 0)
@@ -324,60 +350,69 @@ function ManualInputPanel({
           />
         </div>
         <div>
-          <div className={LABEL_CLASS}>CF</div>
+          <div className={PANEL_LABEL_CLASS}>CF</div>
           <input
             type="number"
             step="0.05"
             min="0.1"
             max="0.99"
-            className={INPUT_CLASS}
+            className={PANEL_INPUT_CLASS}
             value={params.CF}
             onChange={(e) =>
-              updateField("CF", parseFloat(e.target.value) || 0.75)
+              updateField("CF", parseFloat(e.target.value) || DEBUG_DEFAULT_CF)
             }
           />
         </div>
         <div>
-          <div className={LABEL_CLASS}>THF</div>
+          <div className={PANEL_LABEL_CLASS}>THF</div>
           <input
             type="number"
             step="0.01"
             min="1.01"
             max="2.0"
-            className={INPUT_CLASS}
+            className={PANEL_INPUT_CLASS}
             value={params.THF}
             onChange={(e) =>
-              updateField("THF", parseFloat(e.target.value) || 1.1)
+              updateField(
+                "THF",
+                parseFloat(e.target.value) || DEBUG_DEFAULT_THF,
+              )
             }
           />
         </div>
       </div>
-      <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
+      <div className={FIELD_GRID_CLASS}>
         <div>
-          <div className={LABEL_CLASS}>LB (maxLB)</div>
+          <div className={PANEL_LABEL_CLASS}>LB (maxLB)</div>
           <input
             type="number"
             step="0.01"
             min="1.0"
             max="1.5"
-            className={INPUT_CLASS}
+            className={PANEL_INPUT_CLASS}
             value={params.maxLB}
             onChange={(e) =>
-              updateField("maxLB", parseFloat(e.target.value) || 1.05)
+              updateField(
+                "maxLB",
+                parseFloat(e.target.value) || DEBUG_DEFAULT_MAX_LB,
+              )
             }
           />
         </div>
         <div>
-          <div className={LABEL_CLASS}>Expected HF</div>
+          <div className={PANEL_LABEL_CLASS}>Expected HF</div>
           <input
             type="number"
             step="0.01"
             min="0.5"
             max="1.0"
-            className={INPUT_CLASS}
+            className={PANEL_INPUT_CLASS}
             value={params.expectedHF}
             onChange={(e) =>
-              updateField("expectedHF", parseFloat(e.target.value) || 0.95)
+              updateField(
+                "expectedHF",
+                parseFloat(e.target.value) || DEBUG_DEFAULT_EXPECTED_HF,
+              )
             }
           />
         </div>
@@ -386,13 +421,13 @@ function ManualInputPanel({
       {/* Vaults */}
       <div>
         <div className="mb-1 flex items-center gap-2">
-          <span className="text-xs font-medium text-gray-700 dark:text-gray-300">
+          <span className="text-xs font-medium text-zinc-300">
             Vaults ({params.vaults.length})
           </span>
           <button
             type="button"
             onClick={addVault}
-            className="rounded bg-purple-100 px-2 py-0.5 text-xs font-medium text-purple-700 hover:bg-purple-200 dark:bg-purple-900/50 dark:text-purple-300 dark:hover:bg-purple-800/50"
+            className={PRESET_BUTTON_CLASS}
           >
             + Add
           </button>
@@ -400,27 +435,23 @@ function ManualInputPanel({
         <div className="space-y-1">
           {params.vaults.map((vault, i) => (
             <div key={vault.id} className="flex items-center gap-2">
-              <span className="w-16 text-xs text-gray-500 dark:text-gray-400">
-                {vault.name}
-              </span>
+              <span className="w-16 text-xs text-zinc-400">{vault.name}</span>
               <input
                 type="number"
                 step="0.01"
                 min="0.001"
-                className="w-24 rounded border border-gray-300 px-2 py-1 font-mono text-sm dark:border-gray-600 dark:bg-gray-800 dark:text-gray-200"
+                className={`w-24 ${PANEL_INPUT_CLASS}`}
                 value={vault.btc}
                 onChange={(e) =>
                   updateVaultBtc(i, parseFloat(e.target.value) || 0.01)
                 }
               />
-              <span className="text-xs text-gray-500 dark:text-gray-400">
-                BTC
-              </span>
+              <span className="text-xs text-zinc-400">BTC</span>
               {params.vaults.length > 1 && (
                 <button
                   type="button"
                   onClick={() => removeVault(i)}
-                  className="text-xs text-red-500 hover:text-red-700 dark:text-red-400 dark:hover:text-red-300"
+                  className="text-xs text-red-400 hover:text-red-300"
                 >
                   remove
                 </button>
@@ -433,99 +464,169 @@ function ManualInputPanel({
   );
 }
 
-interface PositionNotificationsDebugPanelProps {
-  /** Called whenever the debug panel's display result changes, so the main banner can update */
-  onResultChange?: (result: CalculatorResult | null) => void;
-  /** Called when simulated status changes (e.g. stale-price), so the main banner can show status-based UI */
-  onStatusChange?: (status: PositionNotificationsStatus | null) => void;
-}
-
-export function PositionNotificationsDebugPanel({
-  onResultChange,
-  onStatusChange,
-}: PositionNotificationsDebugPanelProps) {
-  const { address } = useETHWallet();
-  const { result: hookResult, status } = usePositionNotifications(address);
-  const [manualMode, setManualMode] = useState(false);
-  const [simulateStalePrice, setSimulateStalePrice] = useState(false);
-  const [manualParams, setManualParams] =
-    useState<CalculatorParams>(makeDefaultParams);
+/**
+ * Publishes `debugPositionStore`'s cascade inputs to `@/overrides/position`
+ * so the real banner/chart can pick them up, and clears the override on
+ * unmount. Mounted exactly once by the shell (`GodModePanel`), gated the
+ * same double flag as the old standalone position-notifications section —
+ * `CascadeSimulator` itself never does this (see this file's header).
+ */
+function CascadeOverridePublisherEffect() {
+  const manualMode = useDebugManualMode();
+  const simulateStalePrice = useDebugSimulateStalePrice();
+  const manualParams = useDebugManualParams();
 
   const manualResult = useMemo(
     () => (manualMode ? calculate(manualParams) : null),
     [manualMode, manualParams],
   );
 
-  const displayResult = manualMode ? manualResult : hookResult;
-
-  // Notify parent of result and status changes so the main banner updates
+  // Publish the derived override so the dashboard banner reflects the debug
+  // state. Live mode publishes nothing (every consumer already falls back to
+  // the live calculation); simulated mode publishes the simulated cascade;
+  // stale-price publishes the status with no cascade to chart.
   useEffect(() => {
     if (simulateStalePrice) {
-      onResultChange?.(null);
-      onStatusChange?.("stale-price");
+      setPositionCascadeOverride({
+        result: null,
+        status: "stale-price",
+        params: manualParams,
+      });
+    } else if (manualMode && manualResult) {
+      setPositionCascadeOverride({
+        result: manualResult,
+        status: null,
+        params: manualParams,
+      });
     } else {
-      onResultChange?.(displayResult);
-      onStatusChange?.(null);
+      setPositionCascadeOverride(null);
     }
-  }, [displayResult, simulateStalePrice, onResultChange, onStatusChange]);
+  }, [manualMode, manualResult, manualParams, simulateStalePrice]);
+
+  // Stop overriding the banner once this unmounts (god-mode hidden or the
+  // popped-out window closed) — otherwise the last simulated / stale-price
+  // override would linger in the module store and keep driving the
+  // dashboard banner.
+  useEffect(() => () => setPositionCascadeOverride(null), []);
+
+  return null;
+}
+
+export function CascadeOverridePublisher() {
+  if (!positionDebugGate()) return null;
+  return <CascadeOverridePublisherEffect />;
+}
+
+/**
+ * Scenario-based cascade simulator: Live | Simulated, one-click named
+ * presets, a "Stale price" status action, and a Custom… escape hatch holding
+ * the freeform param editor. Selecting Live clears both the simulated params
+ * and the stale-price status; the publish side lives in
+ * `CascadeOverridePublisher`, not here (see this file's header).
+ */
+export function CascadeSimulator() {
+  const { address } = useETHWallet();
+  const { result: hookResult, status } = usePositionNotifications(address);
+  const manualMode = useDebugManualMode();
+  const simulateStalePrice = useDebugSimulateStalePrice();
+  const manualParams = useDebugManualParams();
+
+  const manualResult = useMemo(
+    () => (manualMode ? calculate(manualParams) : null),
+    [manualMode, manualParams],
+  );
+
+  const simulated = manualMode || simulateStalePrice;
+  const displayResult = simulateStalePrice
+    ? null
+    : simulated
+      ? manualResult
+      : hookResult;
+
+  if (!positionDebugGate()) {
+    return (
+      <p className={PANEL_HINT_CLASS}>
+        Cascade simulator needs ENABLE_LIQUIDATION_NOTIFICATIONS and
+        POSITION_DEBUG_PANEL both on.
+      </p>
+    );
+  }
+
+  const goLive = () => {
+    setDebugManualMode(false);
+    setDebugSimulateStalePrice(false);
+  };
+
+  const applyPreset = (preset: (typeof DEBUG_PRESETS)[number]) => {
+    setDebugSimulateStalePrice(false);
+    applyDebugPreset(preset);
+  };
 
   return (
-    <details className="rounded-lg border border-dashed border-purple-400 bg-purple-50 p-4 dark:border-purple-700 dark:bg-purple-950/30">
-      <summary className="cursor-pointer text-sm font-semibold text-purple-700 dark:text-purple-300">
-        Position Notifications Debug Panel
-        {!manualMode && status === "loading" && " (loading...)"}
-        {manualMode && " (manual)"}
-      </summary>
-      <div className="mt-3 space-y-3">
-        {/* Mode toggle */}
-        <div className="flex items-center gap-3">
-          <label className="flex cursor-pointer items-center gap-2 text-sm">
-            <input
-              type="checkbox"
-              checked={manualMode}
-              onChange={(e) => setManualMode(e.target.checked)}
-              className="rounded"
-            />
-            Manual Mode
-          </label>
-          <label className="flex cursor-pointer items-center gap-2 text-sm">
-            <input
-              type="checkbox"
-              checked={simulateStalePrice}
-              onChange={(e) => setSimulateStalePrice(e.target.checked)}
-              className="rounded"
-            />
-            Simulate stale price
-          </label>
-          {manualMode && (
-            <button
-              type="button"
-              onClick={() => setManualParams(makeDefaultParams())}
-              className="rounded bg-gray-100 px-2 py-0.5 text-xs text-gray-600 hover:bg-gray-200 dark:bg-gray-700 dark:text-gray-300 dark:hover:bg-gray-600"
-            >
-              Reset defaults
-            </button>
-          )}
-        </div>
-
-        {/* Manual inputs */}
-        {manualMode && (
-          <ManualInputPanel
-            params={manualParams}
-            onParamsChange={setManualParams}
-          />
-        )}
-
-        {/* Status message (live mode only) */}
-        {!manualMode && status !== "ready" && (
-          <p className="text-sm text-gray-500 dark:text-gray-400">
-            {STATUS_MESSAGES[status]}
-          </p>
-        )}
-
-        {/* Results */}
-        {displayResult && <ResultPanel result={displayResult} />}
+    <div className="space-y-3">
+      <div className={PANEL_SECTION_TITLE_CLASS}>
+        Cascade simulator
+        {simulateStalePrice && " (stale price)"}
+        {!simulateStalePrice && manualMode && " (simulated)"}
       </div>
-    </details>
+
+      <div className="flex gap-2">
+        <SegmentButton label="Live" active={!simulated} onClick={goLive} />
+        <SegmentButton
+          label="Simulated"
+          active={simulated}
+          onClick={() => setDebugManualMode(true)}
+        />
+      </div>
+
+      {simulated && (
+        <>
+          <div className="flex flex-wrap gap-1.5">
+            {DEBUG_PRESETS.map((preset) => (
+              <button
+                key={preset.label}
+                type="button"
+                onClick={() => applyPreset(preset)}
+                className={PRESET_BUTTON_CLASS}
+              >
+                {preset.label}
+              </button>
+            ))}
+            <SegmentButton
+              label="Stale price"
+              active={simulateStalePrice}
+              onClick={() => setDebugSimulateStalePrice(!simulateStalePrice)}
+            />
+          </div>
+
+          <details className={PANEL_SECTION_CLASS}>
+            <summary className={PANEL_SECTION_TITLE_CLASS}>Custom…</summary>
+            <div className="mt-3 space-y-3">
+              <div className="flex justify-end">
+                <button
+                  type="button"
+                  onClick={() => resetDebugManualParams()}
+                  className={PANEL_BUTTON_CLASS}
+                >
+                  Reset defaults
+                </button>
+              </div>
+              <ManualInputPanel
+                params={manualParams}
+                onParamsChange={setDebugManualParams}
+              />
+            </div>
+          </details>
+        </>
+      )}
+
+      {/* Status message (live mode only) */}
+      {!simulated && status !== "ready" && (
+        <p className={PANEL_HINT_CLASS}>{STATUS_MESSAGES[status]}</p>
+      )}
+
+      {/* Results */}
+      {displayResult && <ResultPanel result={displayResult} />}
+    </div>
   );
 }

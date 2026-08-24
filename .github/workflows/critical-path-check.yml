@@ -21,12 +21,17 @@ jobs:
         id: detect
         run: |
           set -e
-          # Keep in sync with CLAUDE.md > "CRITICAL PATHS" and .github/CODEOWNERS.
+          # Keep in sync with SECURITY.md, CLAUDE.md > "CRITICAL PATHS",
+          # .github/CODEOWNERS, and .github/workflows/claude-md-drift.yml.
           paths=(
             "packages/babylon-tbv-rust-wasm/src/index.ts"
+            "packages/babylon-tbv-rust-wasm/src/index-node.ts"
+            "packages/babylon-tbv-rust-wasm/scripts/build-wasm.js"
             "packages/babylon-ts-sdk/src/tbv/core/utils/utxo/selectUtxos.ts"
-            "services/vault/src/utils/fee/peginFee.ts"
+            "packages/babylon-ts-sdk/src/tbv/core/utils/fee/peginFeeMath.ts"
+            "services/vault/src/hooks/deposit/useEstimatedBtcFee.ts"
             "packages/babylon-ts-sdk/src/tbv/core/primitives/psbt/payout.ts"
+            "packages/babylon-ts-sdk/src/tbv/core/services/deposit/signDepositorGraph.ts"
             "services/vault/src/hooks/deposit/depositFlowSteps/payoutSigning.ts"
             "packages/babylon-ts-sdk/src/tbv/core/vault-secrets/"
             "packages/babylon-ts-sdk/src/tbv/core/wots/blockDerivation.ts"
@@ -34,9 +39,20 @@ jobs:
             "services/vault/src/services/vault/vaultActivationService.ts"
             "packages/babylon-ts-sdk/src/tbv/integrations/aave/utils/vaultSplit.ts"
             "packages/babylon-ts-sdk/src/tbv/core/utils/signing.ts"
+            "packages/babylon-ledger-vault-signer/src/"
+            "packages/babylon-ledger-vault-signer/scripts/"
+            "packages/babylon-ts-sdk/src/tbv/core/clients/eth/onChainBtcPubkey.ts"
+            "packages/babylon-ts-sdk/src/tbv/core/clients/eth/pegin-transaction.ts"
+            "packages/babylon-ts-sdk/src/tbv/core/clients/eth/pegin-registration-client.ts"
+            "packages/babylon-ts-sdk/src/tbv/core/wasm/"
+            "packages/babylon-tbv-rust-wasm/src/wasm-loader.ts"
+            "packages/babylon-tbv-rust-wasm/src/wasm-loader-node.ts"
+            "packages/babylon-tbv-rust-wasm/src/raw.ts"
+            "packages/babylon-tbv-rust-wasm/src/raw-node.ts"
+            "services/vault/src/utils/btc/scriptPubKeyAddress.ts"
           )
 
-          git fetch origin main --depth=1 || true
+          git fetch origin main || true
           changed=$(git diff --name-only "origin/${GITHUB_BASE_REF}...HEAD")
 
           matched=()
@@ -77,7 +93,7 @@ jobs:
               '',
               '**Required before merge:**',
               '- Two code-owner approvals',
-              '- Author can walk every changed line without an AI assistant open',
+              '- Author can walk every changed line without an AI assistant open (generated golden vectors: reviewer-repeated re-derivation instead — see the per-path rule)',
               '- Per-path rule in CLAUDE.md is satisfied',
             ].join('\n');
 

@@ -5,6 +5,7 @@ import { usePrices } from "@/hooks/usePrices";
 
 import {
   calculate,
+  type CalculatorParams,
   type CalculatorResult,
   type Vault,
   type Warning,
@@ -31,6 +32,13 @@ export interface UsePositionNotificationsResult {
    * prompt fires. Non-null only when `status === "ready"`.
    */
   reorderVerificationContext: ReorderVerificationContext | null;
+  /**
+   * The exact params `result` was computed from. Non-null only when
+   * `status === "ready"`. Lets what-if consumers (the liquidation
+   * dashboard's price simulator) re-run the pure `calculate()` with an
+   * overridden `btcPrice` without touching this live path.
+   */
+  params: CalculatorParams | null;
 }
 
 /**
@@ -51,7 +59,7 @@ function buildLiveHfUrgentWarning(healthFactor: number): Warning {
     title: `Critical — health factor ${healthFactor.toFixed(2)}`,
     detail: `On-chain health factor is at or below ${LIVE_HF_URGENT_THRESHOLD.toFixed(2)}. The position can be liquidated at the current price.`,
     suggestion:
-      "Add collateral or repay part of the debt to restore a safe Health Factor.",
+      "Add collateral or repay part of the debt to restore a safe health factor.",
   };
 }
 
@@ -74,56 +82,72 @@ export function usePositionNotifications(
 
   const isLoading = paramsLoading || dashboardLoading;
 
-  const { result, status, reorderVerificationContext } = useMemo((): {
+  const { result, status, reorderVerificationContext, params } = useMemo((): {
     result: CalculatorResult | null;
     status: PositionNotificationsStatus;
     reorderVerificationContext: ReorderVerificationContext | null;
+    params: CalculatorParams | null;
   } => {
     if (!splitParams || isLoading)
       return {
         result: null,
         status: "loading",
         reorderVerificationContext: null,
+        params: null,
       };
     if (!connectedAddress)
       return {
         result: null,
         status: "no-wallet",
         reorderVerificationContext: null,
+        params: null,
       };
     if (btcMetadata?.isStale || btcMetadata?.fetchFailed)
       return {
         result: null,
         status: "stale-price",
         reorderVerificationContext: null,
+        params: null,
       };
     if (!btcMetadata || btcPrice <= 0)
       return {
         result: null,
         status: "no-price",
         reorderVerificationContext: null,
+        params: null,
       };
-    if (collateralVaults.length === 0)
+    // Optimistic activating rows carry collateral the contract has not seen
+    // yet, and a sentinel `liquidationIndex`. Including them would inflate
+    // `totalBtc`, pushing every liquidation price DOWN — understating the
+    // risk — and label a band "Vault 9007199254740992". The cascade models
+    // what the protocol would seize, so it sees indexed vaults only.
+    const indexedVaults = collateralVaults.filter(
+      (entry) => !entry.isActivating,
+    );
+    if (indexedVaults.length === 0)
       return {
         result: null,
         status: "no-vaults",
         reorderVerificationContext: null,
+        params: null,
       };
 
-    const vaults: Vault[] = collateralVaults.map((entry) => ({
+    const vaults: Vault[] = indexedVaults.map((entry) => ({
       id: entry.vaultId,
       btc: entry.amountBtc,
       name: `Vault ${entry.liquidationIndex + 1}`,
     }));
 
-    const calculatorResult = calculate({
+    const calculatorParams: CalculatorParams = {
       btcPrice,
       totalDebtUsd: debtValueUsd,
       vaults,
       CF: splitParams.CF,
       THF: splitParams.THF,
       maxLB: splitParams.LB,
-    });
+    };
+
+    const calculatorResult = calculate(calculatorParams);
 
     // Live-HF urgency guardrail. Even when the calculator's own
     // distance check did not surface urgent (e.g. because stale indexed
@@ -157,6 +181,7 @@ export function usePositionNotifications(
         btcPrice,
         totalDebtUsd: debtValueUsd,
       },
+      params: calculatorParams,
     };
   }, [
     splitParams,
@@ -169,5 +194,5 @@ export function usePositionNotifications(
     healthFactor,
   ]);
 
-  return { result, status, isLoading, reorderVerificationContext };
+  return { result, status, isLoading, reorderVerificationContext, params };
 }

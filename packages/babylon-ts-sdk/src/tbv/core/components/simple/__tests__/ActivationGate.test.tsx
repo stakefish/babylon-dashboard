@@ -46,14 +46,15 @@ describe("ActivationGate", () => {
     expect(queryByTestId("activation-step")).toBeNull();
   });
 
-  it("renders the children only after the user confirms", () => {
-    const { getByTestId } = render(
+  it("proceeds straight to the children after confirming", () => {
+    const { getByTestId, queryByTestId } = render(
       <ActivationGate activity={activity()} onClose={vi.fn()}>
         <div data-testid="activation-step" />
       </ActivationGate>,
     );
     fireEvent.click(getByTestId("confirm-activate"));
     expect(getByTestId("activation-step")).toBeTruthy();
+    expect(queryByTestId("confirm")).toBeNull();
   });
 
   it("forwards close from the confirmation gate", () => {

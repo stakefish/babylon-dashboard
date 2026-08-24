@@ -6,12 +6,19 @@
  * indexer can ask the wallet to derive over attacker-chosen funding outpoints.
  */
 
-import { render, waitFor } from "@testing-library/react";
+import { fireEvent, render, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { getVaultRegistryReader } from "@/clients/eth-contract/sdk-readers";
 import { usePayoutSigningState } from "@/components/deposit/PayoutSignModal/usePayoutSigningState";
+import {
+  getOptimisticDepositState,
+  markWotsSubmitted,
+  resetOptimisticDepositState,
+} from "@/context/deposit/optimisticDepositState";
+import { COPY } from "@/copy";
 import { useActivationState } from "@/hooks/deposit/useActivationState";
+import { shortId } from "@/infrastructure/telemetryEvents";
 import type { VaultActivity } from "@/types/activity";
 
 import {
@@ -31,6 +38,7 @@ const mockUseDepositPollingResult = vi.hoisted(() => vi.fn(() => undefined));
 const mockGetPeginDisplayStep = vi.hoisted(() =>
   vi.fn<(state: unknown) => number | null>(() => null),
 );
+const mockLoggerError = vi.hoisted(() => vi.fn());
 
 vi.mock("@babylonlabs-io/ts-sdk/tbv/core", () => ({
   computeWotsBlockPublicKeysHash: vi.fn(() => "0xwotshash"),
@@ -40,7 +48,12 @@ vi.mock("@babylonlabs-io/ts-sdk/tbv/core", () => ({
   expandHashlockSecret: vi.fn(() => new Uint8Array(32)),
   expandWotsSeed: vi.fn(() => new Uint8Array(32)),
   hexToUint8Array: vi.fn(() => new Uint8Array(32)),
+  isDepositTermsRejectedError: vi.fn(() => false),
   isWotsMismatchError: vi.fn(() => false),
+  isRegisteredVaultVersionMismatchError: vi.fn(() => false),
+  isParticipantKeyDriftError: vi.fn(() => false),
+  isPeginRegistrationMissingError: vi.fn(() => false),
+  isPeginRegistrationNotFinalError: vi.fn(() => false),
   parseFundingOutpointsFromTx: mockParseFundingOutpointsFromTx,
   stripHexPrefix: vi.fn((hex: string) => hex.replace(/^0x/, "")),
   uint8ArrayToHex: vi.fn(() => "00".repeat(32)),
@@ -48,6 +61,9 @@ vi.mock("@babylonlabs-io/ts-sdk/tbv/core", () => ({
 
 vi.mock("@babylonlabs-io/ts-sdk/tbv/core/clients", () => ({
   primeVpTokenRegistry: vi.fn(),
+  // mapDepositError narrows on `instanceof JsonRpcError`; provide a real class
+  // so the check is callable (these tests never throw a JsonRpcError).
+  JsonRpcError: class JsonRpcError extends Error {},
 }));
 
 vi.mock("@babylonlabs-io/ts-sdk/tbv/core/utils", () => ({
@@ -83,7 +99,7 @@ vi.mock("@/components/deposit/DepositSignModal/depositStepHelpers", () => ({
       isWaiting: boolean,
       error: string | null,
     ) => {
-      const isComplete = currentStep === 17; // DepositFlowStep.COMPLETED
+      const isComplete = currentStep === 16; // DepositFlowStep.COMPLETED
       return {
         isComplete,
         isProcessing: (processing || isWaiting) && !error && !isComplete,
@@ -118,8 +134,12 @@ vi.mock("@/components/deposit/PayoutSignModal/usePayoutSigningState", () => ({
     signing: false,
     progress: { phase: "claimers", completed: 0, total: 0 },
     error: null,
+    errorTerminal: false,
     isComplete: false,
     handleSign: vi.fn(),
+    canCancel: false,
+    cancelRequested: false,
+    handleCancel: vi.fn(),
   })),
 }));
 
@@ -132,6 +152,7 @@ vi.mock("@/hooks/deposit/useActivationState", () => ({
     activating: false,
     activated: false,
     error: null,
+    errorTerminal: false,
     handleActivation: mockHandleActivation,
   })),
 }));
@@ -149,7 +170,7 @@ vi.mock("@/hooks/deposit/useReleaseVpTokenOnUnmount", () => ({
 }));
 
 vi.mock("@/infrastructure", () => ({
-  logger: { warn: vi.fn(), error: vi.fn(), info: vi.fn() },
+  logger: { warn: vi.fn(), error: mockLoggerError, info: vi.fn() },
 }));
 
 vi.mock("@/utils/rpc", () => ({
@@ -158,6 +179,11 @@ vi.mock("@/utils/rpc", () => ({
 
 vi.mock("@/context/deposit/PeginPollingContext", () => ({
   useDepositPollingResult: mockUseDepositPollingResult,
+  // useSplitVaultProgress (via the Resume components) reads sibling polling
+  // state. These tests render standalone deposits (no siblingVaultIds), so the
+  // derivation returns early and never calls getPollingResult — but the hook
+  // still runs, so it must resolve to a usable shape.
+  usePeginPolling: () => ({ getPollingResult: () => undefined }),
 }));
 
 vi.mock("@/context/ProtocolParamsContext", () => ({
@@ -189,23 +215,61 @@ vi.mock("../DepositProgressView", () => ({
     isProcessing,
     terminalMessage,
     canContinueInBackground,
+    onRetry,
+    wotsApprovalHint,
+    started,
+    onSign,
+    canCancelSigning,
+    cancelSigningRequested,
+    onCancelSigning,
   }: {
     currentStep?: string;
-    error?: string | null;
+    error?: { title: string; body: string } | null;
     isComplete?: boolean;
     isProcessing?: boolean;
     terminalMessage?: string | null;
     canContinueInBackground?: boolean;
+    onRetry?: () => void;
+    wotsApprovalHint?: string | null;
+    started?: boolean;
+    onSign?: () => void;
+    canCancelSigning?: boolean;
+    cancelSigningRequested?: boolean;
+    onCancelSigning?: () => void;
   }) => (
     <div data-testid="progress-view">
+      {/* Mirrors the real prop default so views that never pass it read as
+          started, the same as they render today. */}
+      <span data-testid="started">{String(started !== false)}</span>
+      <button type="button" data-testid="sign" onClick={onSign}>
+        sign
+      </button>
+      <span data-testid="wots-hint">{wotsApprovalHint ?? ""}</span>
       <span data-testid="step">{String(currentStep)}</span>
-      <span data-testid="error">{error ?? ""}</span>
+      <span data-testid="error">{error?.body ?? ""}</span>
+      <span data-testid="error-title">{error?.title ?? ""}</span>
+      <span data-testid="has-retry">{String(!!onRetry)}</span>
       <span data-testid="complete">{String(!!isComplete)}</span>
       <span data-testid="processing">{String(!!isProcessing)}</span>
       <span data-testid="terminal">{terminalMessage ?? ""}</span>
       <span data-testid="background">{String(!!canContinueInBackground)}</span>
+      <span data-testid="can-cancel">{String(!!canCancelSigning)}</span>
+      <span data-testid="cancel-requested">
+        {String(!!cancelSigningRequested)}
+      </span>
+      <button
+        type="button"
+        data-testid="cancel-signing"
+        onClick={onCancelSigning}
+      >
+        cancel
+      </button>
     </div>
   ),
+}));
+
+vi.mock("../VaultActivatedView", () => ({
+  VaultActivatedView: () => <div data-testid="vault-activated-view" />,
 }));
 
 const mockGetVaultRegistryReader = vi.mocked(getVaultRegistryReader);
@@ -233,11 +297,20 @@ function readerWith(prePeginTxHash: string) {
         prePeginTxHash,
       },
     }),
-    getVaultProviderBtcPubKey: vi.fn().mockResolvedValue(null),
+    getVaultProviderGenesisBtcPubKey: vi.fn().mockResolvedValue(null),
     getVaultBasicInfo: vi.fn(),
     getVaultProtocolInfo: vi.fn(),
   } as unknown as ReturnType<typeof getVaultRegistryReader>;
 }
+
+// The optimistic store is module-scoped, so it outlives every render here. A
+// leaked WOTS marker is not inert: `ResumeWotsContent` reads it at mount to
+// decide whether it may auto-submit, so one block's marker would silently
+// turn off the auto-submit every later block depends on. Reset for the whole
+// file rather than per-describe.
+beforeEach(() => {
+  resetOptimisticDepositState();
+});
 
 describe("ResumeWotsContent — Pre-PegIn tx hash trust boundary", () => {
   beforeEach(() => {
@@ -268,6 +341,27 @@ describe("ResumeWotsContent — Pre-PegIn tx hash trust boundary", () => {
     expect(mockSubmitWotsPublicKey).not.toHaveBeenCalled();
   });
 
+  it("captures a WOTS submission failure to Sentry with the activation.wots stage and scrubbed vaultId", async () => {
+    mockCalculateBtcTxHash.mockReturnValue(ATTACKER_HASH);
+    mockGetVaultRegistryReader.mockReturnValue(readerWith(ON_CHAIN_HASH));
+
+    render(
+      <ResumeWotsContent
+        activity={baseActivity}
+        onClose={vi.fn()}
+        onSuccess={vi.fn()}
+      />,
+    );
+
+    await waitFor(() => {
+      expect(mockLoggerError).toHaveBeenCalledTimes(1);
+    });
+    const [err, ctx] = mockLoggerError.mock.calls[0];
+    expect(err).toBeInstanceOf(Error);
+    expect(ctx.tags.funnelStage).toBe("activation.wots");
+    expect(ctx.tags.vaultId).toBe(shortId(baseActivity.id));
+  });
+
   it("proceeds to deriveVaultRoot when the indexer tx hash matches on-chain", async () => {
     mockCalculateBtcTxHash.mockReturnValue(ON_CHAIN_HASH);
     mockGetVaultRegistryReader.mockReturnValue(readerWith(ON_CHAIN_HASH));
@@ -285,6 +379,150 @@ describe("ResumeWotsContent — Pre-PegIn tx hash trust boundary", () => {
       expect(mockDeriveVaultRoot).toHaveBeenCalledTimes(1);
     });
     expect(mockParseFundingOutpointsFromTx).toHaveBeenCalledWith("0xindexertx");
+  });
+
+  it("passes the wallet-approval hint to the progress view", async () => {
+    mockCalculateBtcTxHash.mockReturnValue(ON_CHAIN_HASH);
+    mockGetVaultRegistryReader.mockReturnValue(readerWith(ON_CHAIN_HASH));
+    mockDeriveVaultRoot.mockResolvedValue(new Uint8Array(32));
+
+    const { getByTestId } = render(
+      <ResumeWotsContent
+        activity={baseActivity}
+        onClose={vi.fn()}
+        onSuccess={vi.fn()}
+      />,
+    );
+
+    expect(getByTestId("wots-hint").textContent).toBe(
+      COPY.deposit.resume.wotsWalletApprovalHint,
+    );
+
+    await waitFor(() => {
+      expect(mockDeriveVaultRoot).toHaveBeenCalledTimes(1);
+    });
+  });
+});
+
+describe("ResumeWotsContent — submission marker", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockSubmitWotsPublicKey.mockReset();
+    mockCalculateBtcTxHash.mockReturnValue(ON_CHAIN_HASH);
+    mockGetVaultRegistryReader.mockReturnValue(readerWith(ON_CHAIN_HASH));
+    mockDeriveVaultRoot.mockResolvedValue(new Uint8Array(32));
+  });
+
+  it("records the WOTS submission so the dashboard row stops offering the button", async () => {
+    render(
+      <ResumeWotsContent
+        activity={baseActivity}
+        onClose={vi.fn()}
+        onSuccess={vi.fn()}
+      />,
+    );
+
+    await waitFor(() => {
+      expect(
+        getOptimisticDepositState().wotsSubmittedAt.has(baseActivity.id),
+      ).toBe(true);
+    });
+  });
+
+  it("does not record a submission that failed", async () => {
+    mockSubmitWotsPublicKey.mockRejectedValue(new Error("VP rejected the key"));
+
+    const { getByTestId } = render(
+      <ResumeWotsContent
+        activity={baseActivity}
+        onClose={vi.fn()}
+        onSuccess={vi.fn()}
+      />,
+    );
+
+    await waitFor(() => {
+      expect(getByTestId("error").textContent).toContain("VP rejected the key");
+    });
+    expect(
+      getOptimisticDepositState().wotsSubmittedAt.has(baseActivity.id),
+    ).toBe(false);
+  });
+
+  it("submits automatically on a first visit", async () => {
+    render(
+      <ResumeWotsContent
+        activity={baseActivity}
+        onClose={vi.fn()}
+        onSuccess={vi.fn()}
+      />,
+    );
+
+    await waitFor(() => {
+      expect(mockSubmitWotsPublicKey).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  it("maps a coded wallet rejection to the signing-rejected callout", async () => {
+    // The error state stores the caught value un-flattened, so the wallet
+    // code (not just the message) reaches mapDepositError at the render seam.
+    mockSubmitWotsPublicKey.mockRejectedValue(
+      Object.assign(new Error("nope"), { code: "CONNECTION_REJECTED" }),
+    );
+
+    const { getByTestId } = render(
+      <ResumeWotsContent
+        activity={baseActivity}
+        onClose={vi.fn()}
+        onSuccess={vi.fn()}
+      />,
+    );
+
+    await waitFor(() => {
+      expect(getByTestId("error-title").textContent).toBe(
+        COPY.deposit.errors.signingRejected.title,
+      );
+    });
+    expect(getByTestId("error").textContent).toBe(
+      COPY.deposit.errors.signingRejected.body,
+    );
+  });
+
+  it("waits for a click instead of auto-submitting when the suppression lapsed", async () => {
+    // The TTL expiring re-offers SUBMIT_WOTS_KEY, which remounts this
+    // component. Auto-firing there would open a wallet prompt at a modal the
+    // user left sitting open, with no gesture behind it.
+    //
+    // Record the marker 21 minutes in the past (fake timers only for the
+    // write, real timers restored for the async render below) so the fixture
+    // is the production scenario the title names: a marker that is present
+    // but past the 20-minute TTL — not merely present.
+    const lapsedStamp = Date.now() - 21 * 60 * 1000;
+    vi.useFakeTimers();
+    vi.setSystemTime(lapsedStamp);
+    markWotsSubmitted(baseActivity.id);
+    vi.useRealTimers();
+
+    const { getByTestId } = render(
+      <ResumeWotsContent
+        activity={baseActivity}
+        onClose={vi.fn()}
+        onSuccess={vi.fn()}
+      />,
+    );
+
+    // `getVaultRegistryReader` is the first thing handleSubmit touches and it
+    // runs synchronously, so it is a reliable "the submit path started" probe.
+    // Asserting on `submitWotsPublicKey` here would not be: it sits behind
+    // several awaits and reads as un-called whether or not the guard holds.
+    expect(mockGetVaultRegistryReader).not.toHaveBeenCalled();
+    expect(getByTestId("started").textContent).toBe("false");
+
+    fireEvent.click(getByTestId("sign"));
+
+    await waitFor(() => {
+      expect(mockSubmitWotsPublicKey).toHaveBeenCalledTimes(1);
+    });
+    expect(getByTestId("started").textContent).toBe("true");
   });
 });
 
@@ -390,7 +628,7 @@ describe("ResumeActivationContent — Pre-PegIn tx hash trust boundary", () => {
         activity={baseActivity}
         depositorEthAddress="0xdepositor"
         onClose={vi.fn()}
-        onSuccess={vi.fn()}
+        onGoToDashboard={vi.fn()}
       />,
     );
 
@@ -405,6 +643,28 @@ describe("ResumeActivationContent — Pre-PegIn tx hash trust boundary", () => {
     expect(mockHandleActivation).not.toHaveBeenCalled();
   });
 
+  it("captures a secret-derivation failure to Sentry with the activation.secret stage and scrubbed vaultId", async () => {
+    mockCalculateBtcTxHash.mockReturnValue(ATTACKER_HASH);
+    mockGetVaultRegistryReader.mockReturnValue(readerWith(ON_CHAIN_HASH));
+
+    render(
+      <ResumeActivationContent
+        activity={baseActivity}
+        depositorEthAddress="0xdepositor"
+        onClose={vi.fn()}
+        onGoToDashboard={vi.fn()}
+      />,
+    );
+
+    await waitFor(() => {
+      expect(mockLoggerError).toHaveBeenCalledTimes(1);
+    });
+    const [err, ctx] = mockLoggerError.mock.calls[0];
+    expect(err).toBeInstanceOf(Error);
+    expect(ctx.tags.funnelStage).toBe("activation.secret");
+    expect(ctx.tags.vaultId).toBe(shortId(baseActivity.id));
+  });
+
   it("proceeds to deriveVaultRoot when the indexer tx hash matches on-chain", async () => {
     mockCalculateBtcTxHash.mockReturnValue(ON_CHAIN_HASH);
     mockGetVaultRegistryReader.mockReturnValue(readerWith(ON_CHAIN_HASH));
@@ -415,7 +675,7 @@ describe("ResumeActivationContent — Pre-PegIn tx hash trust boundary", () => {
         activity={baseActivity}
         depositorEthAddress="0xdepositor"
         onClose={vi.fn()}
-        onSuccess={vi.fn()}
+        onGoToDashboard={vi.fn()}
       />,
     );
 
@@ -435,8 +695,12 @@ describe("ResumeSignContent — reactive verification terminal", () => {
       signing: false,
       progress: { phase: "claimers", completed: 0, total: 0 },
       error: null,
+      errorTerminal: false,
       isComplete: true,
       handleSign: vi.fn(),
+      canCancel: false,
+      cancelRequested: false,
+      handleCancel: vi.fn(),
     });
   });
 
@@ -472,7 +736,7 @@ describe("ResumeSignContent — reactive verification terminal", () => {
     const { getByTestId } = renderSign();
 
     // RETRIEVE_SECRET
-    expect(getByTestId("step").textContent).toBe("14");
+    expect(getByTestId("step").textContent).toBe("13");
     expect(getByTestId("terminal").textContent?.toLowerCase()).toContain(
       "ready to activate",
     );
@@ -486,24 +750,124 @@ describe("ResumeSignContent — reactive verification terminal", () => {
     const { getByTestId } = renderSign();
 
     // COMPLETED — the whole flow is done, so no stale "ready to activate".
-    expect(getByTestId("step").textContent).toBe("17");
+    expect(getByTestId("step").textContent).toBe("16");
     expect(getByTestId("terminal").textContent).toBe("");
+  });
+
+  it("suppresses Retry on a terminal signing refusal and keeps the hook's title/body", () => {
+    vi.mocked(usePayoutSigningState).mockReturnValue({
+      signing: false,
+      progress: { phase: "auth", completed: 0, total: 0 },
+      error: COPY.deposit.payoutSignatureErrors.ackWindowElapsed,
+      errorTerminal: true,
+      isComplete: false,
+      handleSign: vi.fn(),
+      canCancel: false,
+      cancelRequested: false,
+      handleCancel: vi.fn(),
+    });
+
+    const { getByTestId } = renderSign();
+
+    expect(getByTestId("error-title").textContent).toBe(
+      COPY.deposit.payoutSignatureErrors.ackWindowElapsed.title,
+    );
+    expect(getByTestId("has-retry").textContent).toBe("false");
+  });
+
+  it("keeps Retry for a non-terminal signing failure", () => {
+    vi.mocked(usePayoutSigningState).mockReturnValue({
+      signing: false,
+      progress: { phase: "auth", completed: 0, total: 0 },
+      error: COPY.deposit.payoutSignatureErrors.unexpected,
+      errorTerminal: false,
+      isComplete: false,
+      handleSign: vi.fn(),
+      canCancel: false,
+      cancelRequested: false,
+      handleCancel: vi.fn(),
+    });
+
+    const { getByTestId } = renderSign();
+
+    expect(getByTestId("has-retry").textContent).toBe("true");
+  });
+
+  it("plumbs the hook's device-cancel seam into DepositProgressView", () => {
+    const handleCancel = vi.fn();
+    vi.mocked(usePayoutSigningState).mockReturnValue({
+      signing: true,
+      progress: { phase: "claimers", completed: 0, total: 3 },
+      error: null,
+      errorTerminal: false,
+      isComplete: false,
+      handleSign: vi.fn(),
+      canCancel: true,
+      cancelRequested: true,
+      handleCancel,
+    });
+
+    const { getByTestId } = renderSign();
+
+    expect(getByTestId("can-cancel").textContent).toBe("true");
+    expect(getByTestId("cancel-requested").textContent).toBe("true");
+    fireEvent.click(getByTestId("cancel-signing"));
+    expect(handleCancel).toHaveBeenCalledTimes(1);
+  });
+
+  it("re-enters the pre-sign entry state after a self-requested cancel settles quietly", () => {
+    // The hook's quiet reset (signing false, NO error) must not strand the
+    // modal on a disabled Sign button: the view's pre-sign entry state is the
+    // re-offer seam, and its CTA re-runs the full ceremony via handleSign.
+    const handleSign = vi.fn();
+    const midCancel = {
+      signing: true,
+      progress: { phase: "graph", completed: 0, total: 1 },
+      error: null,
+      errorTerminal: false,
+      isComplete: false,
+      handleSign,
+      canCancel: true,
+      cancelRequested: true,
+      handleCancel: vi.fn(),
+    } as const;
+    vi.mocked(usePayoutSigningState).mockReturnValue({ ...midCancel });
+
+    const { getByTestId, rerender } = renderSign();
+    expect(getByTestId("started").textContent).toBe("true");
+
+    // The cancel settles quietly: idle, no error, not complete.
+    vi.mocked(usePayoutSigningState).mockReturnValue({
+      ...midCancel,
+      signing: false,
+      canCancel: false,
+      cancelRequested: false,
+    });
+    rerender(
+      <ResumeSignContent
+        activity={baseActivity}
+        btcPublicKey="0xbtcpub"
+        depositorEthAddress={"0xdepositor" as never}
+        onClose={vi.fn()}
+        onSuccess={vi.fn()}
+      />,
+    );
+
+    expect(getByTestId("started").textContent).toBe("false");
+    // useRunOnce auto-fires handleSign at mount; the CTA must add a fresh run.
+    const callsBeforeClick = handleSign.mock.calls.length;
+    fireEvent.click(getByTestId("sign"));
+    expect(handleSign.mock.calls.length).toBe(callsBeforeClick + 1);
   });
 });
 
-describe("ResumeActivationContent — reactive activation terminal", () => {
+describe("ResumeActivationContent — activated success terminal", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mockCalculateBtcTxHash.mockReturnValue(ON_CHAIN_HASH);
     mockGetVaultRegistryReader.mockReturnValue(readerWith(ON_CHAIN_HASH));
     mockDeriveVaultRoot.mockResolvedValue(new Uint8Array(32));
     mockUseDepositPollingResult.mockReturnValue(undefined);
-    vi.mocked(useActivationState).mockReturnValue({
-      activating: false,
-      activated: true,
-      error: null,
-      handleActivation: mockHandleActivation,
-    });
   });
 
   function renderActivation() {
@@ -512,30 +876,127 @@ describe("ResumeActivationContent — reactive activation terminal", () => {
         activity={baseActivity}
         depositorEthAddress="0xdepositor"
         onClose={vi.fn()}
-        onSuccess={vi.fn()}
+        onGoToDashboard={vi.fn()}
       />,
     );
   }
 
-  it("keeps awaiting confirmation after broadcast until the contract is ACTIVE", async () => {
+  it("shows the activated success screen (not the completed stepper) once activation is submitted", async () => {
+    vi.mocked(useActivationState).mockReturnValue({
+      activating: false,
+      activated: true,
+      error: null,
+      errorTerminal: false,
+      handleActivation: mockHandleActivation,
+    });
     mockUseDepositPollingResult.mockReturnValue({
       peginState: { contractStatus: 1 }, // VERIFIED — broadcast landed, not yet ACTIVE
     } as never);
 
-    const { getByTestId } = renderActivation();
+    const { getByTestId, queryByTestId } = renderActivation();
 
-    // AWAIT_ACTIVATION_CONFIRMATION
-    await waitFor(() => expect(getByTestId("step").textContent).toBe("16"));
+    await waitFor(() =>
+      expect(getByTestId("vault-activated-view")).toBeTruthy(),
+    );
+    expect(queryByTestId("progress-view")).toBeNull();
   });
 
-  it("completes once the contract reports ACTIVE", async () => {
+  it("shows the activated success screen when the contract reports ACTIVE without a local activation", async () => {
+    vi.mocked(useActivationState).mockReturnValue({
+      activating: false,
+      activated: false,
+      error: null,
+      errorTerminal: false,
+      handleActivation: mockHandleActivation,
+    });
     mockUseDepositPollingResult.mockReturnValue({
-      peginState: { contractStatus: 2 }, // ACTIVE
+      peginState: { contractStatus: 2 }, // ACTIVE — activated elsewhere
     } as never);
+
+    const { getByTestId, queryByTestId } = renderActivation();
+
+    await waitFor(() =>
+      expect(getByTestId("vault-activated-view")).toBeTruthy(),
+    );
+    expect(queryByTestId("progress-view")).toBeNull();
+  });
+
+  it("keeps the activation stepper while activation is still in flight", async () => {
+    vi.mocked(useActivationState).mockReturnValue({
+      activating: true,
+      activated: false,
+      error: null,
+      errorTerminal: false,
+      handleActivation: mockHandleActivation,
+    });
+    mockUseDepositPollingResult.mockReturnValue({
+      peginState: { contractStatus: 1 }, // VERIFIED — ready to activate
+    } as never);
+
+    const { getByTestId, queryByTestId } = renderActivation();
+
+    // ACTIVATE_VAULT
+    await waitFor(() => expect(getByTestId("step").textContent).toBe("14"));
+    expect(queryByTestId("vault-activated-view")).toBeNull();
+  });
+
+  it("shows the deadline-passed copy and suppresses Retry on a terminal failure", async () => {
+    vi.mocked(useActivationState).mockReturnValue({
+      activating: false,
+      activated: false,
+      error: "The activation deadline has passed.",
+      errorTerminal: true,
+      handleActivation: mockHandleActivation,
+    });
 
     const { getByTestId } = renderActivation();
 
-    // COMPLETED
-    await waitFor(() => expect(getByTestId("step").textContent).toBe("17"));
+    await waitFor(() =>
+      expect(getByTestId("error-title").textContent).toBe(
+        COPY.deposit.errors.activationDeadlinePassed.title,
+      ),
+    );
+    expect(getByTestId("error").textContent).toBe(
+      COPY.deposit.errors.activationDeadlinePassed.body,
+    );
+    expect(getByTestId("has-retry").textContent).toBe("false");
+  });
+
+  it("keeps Retry and the generic mapping for a non-terminal failure", async () => {
+    vi.mocked(useActivationState).mockReturnValue({
+      activating: false,
+      activated: false,
+      error: "Some transient RPC error",
+      errorTerminal: false,
+      handleActivation: mockHandleActivation,
+    });
+
+    const { getByTestId } = renderActivation();
+
+    await waitFor(() =>
+      expect(getByTestId("has-retry").textContent).toBe("true"),
+    );
+    expect(getByTestId("error-title").textContent).not.toBe(
+      COPY.deposit.errors.activationDeadlinePassed.title,
+    );
+  });
+
+  it("maps a coded wallet rejection during secret derivation to the signing-rejected callout", async () => {
+    // The local error state stores the caught value un-flattened, so the
+    // wallet code (not just the message) reaches mapDepositError at render.
+    mockDeriveVaultRoot.mockRejectedValue(
+      Object.assign(new Error("nope"), { code: "CONNECTION_REJECTED" }),
+    );
+
+    const { getByTestId } = renderActivation();
+
+    await waitFor(() => {
+      expect(getByTestId("error-title").textContent).toBe(
+        COPY.deposit.errors.signingRejected.title,
+      );
+    });
+    expect(getByTestId("error").textContent).toBe(
+      COPY.deposit.errors.signingRejected.body,
+    );
   });
 });

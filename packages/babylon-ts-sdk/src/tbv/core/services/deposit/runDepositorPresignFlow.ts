@@ -11,11 +11,15 @@
 import type { Network } from "@babylonlabs-io/babylon-tbv-rust-wasm";
 
 import type { BitcoinWallet } from "../../../../shared/wallets/interfaces";
-import { DaemonStatus } from "../../clients/vault-provider/types";
 import type {
   ClaimerSignatures,
   ClaimerTransactions,
 } from "../../clients/vault-provider/types";
+import { DaemonStatus } from "../../clients/vault-provider/types";
+import {
+  supportsDepositApproval,
+  type DepositTerms,
+} from "../../deposit-terms";
 import { PayoutManager } from "../../managers/PayoutManager";
 import {
   processPublicKeyToXOnly,
@@ -34,6 +38,13 @@ import { waitForPeginStatus } from "./waitForPeginStatus";
  * Caller builds this from on-chain data (contract queries, GraphQL, config).
  */
 export interface PayoutSigningContext {
+  /**
+   * Vault core (tx-graph) version the vault was registered under — the
+   * vault's stamped on-chain `vaultCoreVersion` from `BTCVaultRegistry`.
+   * Selects which graph's connector scripts every payout/nopayout PSBT is
+   * rebuilt with.
+   */
+  vaultCoreVersion: number;
   /** Raw pegin BTC transaction hex (for PSBT construction) */
   peginTxHex: string;
   /** Vault provider's BTC public key (x-only hex, no prefix) */
@@ -57,14 +68,14 @@ export interface PayoutSigningContext {
    * Security council member x-only public keys (hex, no prefix).
    * Source: ProtocolParams contract via
    * `getOffchainParamsByVersion(...).securityCouncilKeys`.
-   * Required for the depositor-graph NoPayout local rebuild.
+   * Required to rebuild every Assert:0 leaf (payout and NoPayout) locally.
    */
   councilMembers: string[];
   /**
    * M-of-N council quorum threshold.
    * Source: ProtocolParams contract via
    * `getOffchainParamsByVersion(...).councilQuorum`.
-   * Required for the depositor-graph NoPayout local rebuild.
+   * Required to rebuild every Assert:0 leaf (payout and NoPayout) locally.
    */
   councilQuorum: number;
   /** BTC network (Mainnet, Testnet, etc.) */
@@ -73,6 +84,23 @@ export interface PayoutSigningContext {
   registeredPayoutScriptPubKey: string;
   /** VP commission (bps) from `BTCVaultRegistry`; caps the VP-claimer payout commission output. */
   commissionBps: number;
+  /**
+   * Tx-graph fee rate (sat/vB) from the locked offchain params version —
+   * `getOffchainParamsByVersion(...).feeRate`, the rate the VP built the
+   * graph with. Bounds every payout's implicit fee (payout fee band).
+   */
+  protocolFeeRate: bigint;
+
+  /**
+   * RFC-006 resolved keeper payout destinations at the vault's frozen
+   * `appKeeperKeyEpoch`, keyed by lowercased x-only operation pubkey.
+   */
+  vkClaimerPayoutScriptPubKeys: Readonly<Record<string, string>>;
+  /**
+   * RFC-006 resolved VP commission destination at the vault's frozen
+   * `vpKeyEpoch`.
+   */
+  vpCommissionScriptPubKey: string;
 }
 
 export interface RunDepositorPresignFlowParams {
@@ -88,6 +116,12 @@ export interface RunDepositorPresignFlowParams {
   depositorPk: string;
   /** Signing context built from on-chain data */
   signingContext: PayoutSigningContext;
+  /**
+   * Required for approval-capable wallets. Fresh flows pass
+   * PreparePeginResult.depositTerms; resume flows rebuild them from
+   * on-chain state (the vault app's rebuildDepositTerms).
+   */
+  depositTerms?: DepositTerms;
   /** Maximum polling timeout in milliseconds (default: 20 min) */
   timeoutMs?: number;
   /** AbortSignal for cancellation */
@@ -148,6 +182,86 @@ function normalizeClaimerPubkey(pubkey: string): string {
 }
 
 /**
+ * Assert the approved terms describe the graph we will actually sign. An
+ * RFC-006 key rotation bumps only a key epoch, so no version comparison can
+ * catch it; `verifyRegisteredParticipantKeys` is the app-side pin, and this
+ * keeps the seam self-contained for external providers (#2109).
+ *
+ * @throws If the terms and the signing context disagree
+ */
+function assertDepositTermsMatchSigningContext(
+  terms: DepositTerms,
+  context: PayoutSigningContext,
+): void {
+  const refuse = (field: string, a: unknown, b: unknown): never => {
+    throw new Error(
+      `Deposit terms ${field} (${String(a)}) does not match the vault's ` +
+        `version-locked signing context (${String(b)}); refusing to sign ` +
+        `payouts against terms that describe a different graph.`,
+    );
+  };
+
+  // Every scalar the two types share: each one shapes the graph, and the
+  // timelocks are what payout.ts pins the input sequences to.
+  const scalars = [
+    ["protocolFeeRate", terms.protocolFeeRate, context.protocolFeeRate],
+    ["vaultCoreVersion", terms.vaultCoreVersion, context.vaultCoreVersion],
+    ["timelockPegin", terms.timelockPegin, context.timelockPegin],
+    ["timelockAssert", terms.timelockAssert, context.timelockAssert],
+  ] as const;
+  for (const [field, fromTerms, fromContext] of scalars) {
+    if (fromTerms !== fromContext) {
+      refuse(field, fromTerms, fromContext);
+    }
+  }
+
+  // Set, not sequence: btc-vault sorts every roster and rejects duplicates
+  // (crates/vault/src/lib.rs:249, :339), so a permutation is not drift.
+  const canonical = (keys: readonly string[]) =>
+    keys.map(normalizeClaimerPubkey).sort();
+  const sameSet = (a: readonly string[], b: readonly string[]) => {
+    const x = canonical(a);
+    const y = canonical(b);
+    return x.length === y.length && x.every((k, i) => k === y[i]);
+  };
+
+  if (!sameSet(terms.vaultKeeperBtcPubkeys, context.vaultKeeperBtcPubkeys)) {
+    refuse(
+      "vaultKeeperBtcPubkeys",
+      terms.vaultKeeperBtcPubkeys.join(","),
+      context.vaultKeeperBtcPubkeys.join(","),
+    );
+  }
+  if (
+    !sameSet(
+      terms.universalChallengerBtcPubkeys,
+      context.universalChallengerBtcPubkeys,
+    )
+  ) {
+    refuse(
+      "universalChallengerBtcPubkeys",
+      terms.universalChallengerBtcPubkeys.join(","),
+      context.universalChallengerBtcPubkeys.join(","),
+    );
+  }
+
+  // Membership, not equality: `DepositTermsVaultGroup` carries a per-vault VP
+  // key, so a batch may legitimately span providers. What matters is that the
+  // vault this flow signs for was covered by what the depositor approved.
+  const contextVp = normalizeClaimerPubkey(context.vaultProviderBtcPubkey);
+  const approvedVps = terms.vaults.map((v) =>
+    normalizeClaimerPubkey(v.vaultProviderBtcPubkey),
+  );
+  if (!approvedVps.includes(contextVp)) {
+    refuse(
+      "vaults[].vaultProviderBtcPubkey",
+      approvedVps.join(",") || "<no vaults>",
+      context.vaultProviderBtcPubkey,
+    );
+  }
+}
+
+/**
  * Reject VP-supplied `response.txs` whose non-depositor claimer set does not
  * exactly equal `{vaultProviderBtcPubkey} ∪ vaultKeeperBtcPubkeys`.
  *
@@ -192,9 +306,7 @@ function assertNonDepositorClaimerSetMatches(
     normalizeClaimerPubkey(tx.claimer_pubkey),
   );
   if (new Set(suppliedAll).size !== suppliedAll.length) {
-    throw new Error(
-      "Presign response contains duplicate claimer entries",
-    );
+    throw new Error("Presign response contains duplicate claimer entries");
   }
 
   const suppliedNonDepositor = suppliedAll.filter((k) => k !== depositor);
@@ -220,6 +332,7 @@ function buildPayoutSigningInput(
   context: PayoutSigningContext,
 ) {
   return {
+    vaultCoreVersion: context.vaultCoreVersion,
     payoutTxHex: tx.payoutTxHex,
     peginTxHex: context.peginTxHex,
     assertTxHex: tx.assertTxHex,
@@ -228,9 +341,15 @@ function buildPayoutSigningInput(
     universalChallengerBtcPubkeys: context.universalChallengerBtcPubkeys,
     depositorBtcPubkey: context.depositorBtcPubkey,
     timelockPegin: context.timelockPegin,
+    timelockAssert: context.timelockAssert,
     registeredPayoutScriptPubKey: context.registeredPayoutScriptPubKey,
     claimerBtcPubkey: tx.claimerPubkeyXOnly,
     commissionBps: context.commissionBps,
+    protocolFeeRate: context.protocolFeeRate,
+    councilMembers: context.councilMembers,
+    councilQuorum: context.councilQuorum,
+    vkClaimerPayoutScriptPubKeys: context.vkClaimerPayoutScriptPubKeys,
+    vpCommissionScriptPubKey: context.vpCommissionScriptPubKey,
   };
 }
 
@@ -303,6 +422,7 @@ export async function runDepositorPresignFlow(
     peginTxid,
     depositorPk,
     signingContext,
+    depositTerms,
     timeoutMs = MAX_POLLING_TIMEOUT_MS,
     signal,
     onProgress,
@@ -323,6 +443,26 @@ export async function runDepositorPresignFlow(
   }
 
   signal?.throwIfAborted();
+
+  // Approval-capable wallets must approve before any signing call they
+  // authorize, and the terms must match what we sign. Conditional because
+  // non-approval wallets pass no terms.
+  if (depositTerms !== undefined) {
+    assertDepositTermsMatchSigningContext(depositTerms, signingContext);
+  }
+
+  if (supportsDepositApproval(btcWallet)) {
+    if (!depositTerms) {
+      throw new Error(
+        "runDepositorPresignFlow: this wallet requires approved deposit terms but none were " +
+          "provided. Fresh deposits must pass PreparePeginResult.depositTerms; resume flows " +
+          "must rebuild them from on-chain state (the vault app's rebuildDepositTerms).",
+      );
+    }
+    // The provider validates its own device envelope inside
+    // approveDepositTerms (DepositTermsApprover contract, #2109).
+    await btcWallet.approveDepositTerms(depositTerms);
+  }
 
   // Phase 2: Fetch presign transactions
   const response = await presignClient.requestDepositorPresignTransactions(
@@ -373,6 +513,7 @@ export async function runDepositorPresignFlow(
     depositorGraph: response.depositor_graph,
     btcWallet,
     signingContext: {
+      vaultCoreVersion: signingContext.vaultCoreVersion,
       peginTxHex: signingContext.peginTxHex,
       depositorBtcPubkey: depositorPk,
       vaultProviderBtcPubkey: signingContext.vaultProviderBtcPubkey,
@@ -385,6 +526,9 @@ export async function runDepositorPresignFlow(
       councilQuorum: signingContext.councilQuorum,
       network: signingContext.network,
       registeredPayoutScriptPubKey: signingContext.registeredPayoutScriptPubKey,
+      protocolFeeRate: signingContext.protocolFeeRate,
+      vkClaimerPayoutScriptPubKeys: signingContext.vkClaimerPayoutScriptPubKeys,
+      vpCommissionScriptPubKey: signingContext.vpCommissionScriptPubKey,
     },
   });
 

@@ -1,7 +1,7 @@
-import { act, renderHook, waitFor } from "@testing-library/react";
+import { act, render, renderHook, waitFor } from "@testing-library/react";
 import type { PropsWithChildren } from "react";
 import type { Hex } from "viem";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { COPY } from "../../../copy";
 import {
@@ -11,16 +11,25 @@ import {
   PeginAction,
 } from "../../../models/peginStateMachine";
 import type { VaultActivity } from "../../../types/activity";
-import { PeginPollingProvider, usePeginPolling } from "../PeginPollingContext";
+import type { PeginPollingContextValue } from "../../../types/peginPolling";
+import {
+  PeginPollingProvider,
+  resetPeginPollingProviderCount,
+  usePeginPolling,
+} from "../PeginPollingContext";
+import {
+  markWotsSubmitted,
+  resetOptimisticDepositState,
+} from "../optimisticDepositState";
 
 const mockQueryResult = {
+  polledIds: undefined as string[] | undefined,
   errors: undefined as Map<string, Error> | undefined,
   needsWotsKey: undefined as Set<string> | undefined,
   pendingIngestion: undefined as Set<string> | undefined,
   pendingDepositorSignatures: undefined as Set<string> | undefined,
   isLoading: false,
   refetch: vi.fn(),
-  depositsToPoll: [],
 };
 
 vi.mock("../../../hooks/deposit/usePeginPollingQuery", () => ({
@@ -33,25 +42,93 @@ vi.mock("../../../hooks/deposit/usePeginPollingQuery", () => ({
 // assert which txids actually reach the mempool poller, while EXPIRED
 // maturity tests inject depth-reached entries via `mockReturnValue`.
 // `vi.hoisted` keeps the spy reference live across vi.mock's factory hoist.
-const { mockUsePrePeginMempoolConfirmations } = vi.hoisted(() => ({
-  mockUsePrePeginMempoolConfirmations: vi.fn<
+const { mockUseBtcMempoolConfirmations } = vi.hoisted(() => ({
+  mockUseBtcMempoolConfirmations: vi.fn<
     (txids: ReadonlyArray<string | undefined>) => {
       confirmationsByTxid: Map<string, number>;
     }
   >(() => ({ confirmationsByTxid: new Map<string, number>() })),
 }));
-vi.mock("../../../hooks/deposit/usePrePeginMempoolConfirmations", () => ({
-  usePrePeginMempoolConfirmations: (txids: ReadonlyArray<string | undefined>) =>
-    mockUsePrePeginMempoolConfirmations(txids),
+vi.mock("../../../hooks/useBtcMempoolConfirmations", () => ({
+  useBtcMempoolConfirmations: (txids: ReadonlyArray<string | undefined>) =>
+    mockUseBtcMempoolConfirmations(txids),
+}));
+
+// EXPIRED-vault HTLC refund-spend poller — stub so the provider renders
+// without a real QueryClient. Default: nothing spent. Tests can inject a
+// spent/confirmed entry via `mockReturnValue`.
+const { mockUseBtcHtlcRefundStatus } = vi.hoisted(() => ({
+  mockUseBtcHtlcRefundStatus: vi.fn<
+    () => {
+      refundByDepositId: Map<
+        string,
+        { spent: boolean; confirmed: boolean; spendingTxid?: string }
+      >;
+    }
+  >(() => ({ refundByDepositId: new Map() })),
+}));
+vi.mock("../../../hooks/useBtcHtlcRefundStatus", () => ({
+  useBtcHtlcRefundStatus: () => mockUseBtcHtlcRefundStatus(),
+}));
+
+// Activation-deadline gate uses react-query + chain reads — stub so the
+// provider renders in isolation. Default: nothing gated. Tests can inject a
+// gated vault id via `mockReturnValue`.
+const { mockUseActivationDeadlineGate } = vi.hoisted(() => ({
+  mockUseActivationDeadlineGate: vi.fn<() => ReadonlySet<string>>(
+    () => new Set<string>(),
+  ),
+}));
+vi.mock("../../../hooks/useActivationDeadlineGate", () => ({
+  useActivationDeadlineGate: () => mockUseActivationDeadlineGate(),
+}));
+
+// Stuck-state chain confirm: same story as the deadline gate — react-query plus
+// a chain read. Default is the empty set, i.e. nothing confirmed stuck, which
+// is also the production fail-open default.
+const { mockUseStuckVaultChainConfirm } = vi.hoisted(() => ({
+  mockUseStuckVaultChainConfirm: vi.fn<
+    (suspectIds: readonly string[]) => ReadonlySet<string>
+  >(() => new Set<string>()),
+}));
+// Forwards the suspect ids so a test can assert on Tier 1's output — the set
+// this hook is asked to confirm is the only place `stuckSuspectIds` is visible.
+vi.mock("../../../hooks/useStuckVaultChainConfirm", () => ({
+  useStuckVaultChainConfirm: (suspectIds: readonly string[]) =>
+    mockUseStuckVaultChainConfirm(suspectIds),
+}));
+
+// Floor gate is feature-flagged off by default; stub it so the provider renders
+// without a QueryClient, exactly as the deadline gate above is stubbed.
+vi.mock("../../../hooks/useActivationFloorGate", () => ({
+  useActivationFloorGate: () => new Map<string, number | null>(),
 }));
 
 const mockVersionedParams = new Map<number, { tRefund: number }>();
 
-vi.mock("../../ProtocolParamsContext", () => ({
-  useProtocolParamsContext: () => ({
-    config: { offchainParams: { minPrepeginDepth: 6 } },
-    getOffchainParamsByVersion: (v: number) => mockVersionedParams.get(v),
-  }),
+// The provider reads params through the non-blocking hook (it mounts above the
+// routes owning the blocking ProtocolParamsProvider), so stub that hook rather
+// than the context. Function identities are module-stable, which matters: the
+// provider memoizes on them and churning refs would re-fire its effects.
+// `ready`/`error` are mutated by the unresolved-params tests below.
+const mockProtocolParams = {
+  ready: true,
+  error: null as Error | null,
+  pegInActivationTimeout: undefined as bigint | undefined,
+  resolveRequiredPrePeginDepth: (): number | undefined =>
+    mockProtocolParams.ready ? 6 : undefined,
+  resolveRefundTimelock: (v?: number): number | undefined =>
+    v !== undefined ? mockVersionedParams.get(v)?.tRefund : undefined,
+};
+
+// Captures the `enabled` argument so the provider's gate wiring is asserted
+// here, not only at the hook level.
+const mockParamsEnabledCalls: boolean[] = [];
+vi.mock("../../../hooks/deposit/usePeginPollingProtocolParams", () => ({
+  usePeginPollingProtocolParams: (enabled: boolean) => {
+    mockParamsEnabledCalls.push(enabled);
+    return mockProtocolParams;
+  },
 }));
 
 const ACTIVITY_ID = "0xpegin" as Hex;
@@ -86,21 +163,40 @@ function renderProvider() {
 
 describe("PeginPollingContext", () => {
   beforeEach(() => {
+    mockParamsEnabledCalls.length = 0;
     mockQueryResult.errors = undefined;
     mockQueryResult.needsWotsKey = undefined;
     mockQueryResult.pendingIngestion = undefined;
     mockQueryResult.pendingDepositorSignatures = undefined;
     mockQueryResult.isLoading = false;
     mockQueryResult.refetch.mockClear();
-    mockUsePrePeginMempoolConfirmations.mockReset();
+    mockUseBtcMempoolConfirmations.mockReset();
     // Default: empty confirmations. Individual tests can override via
     // `mockReturnValue` to inject a depth-reached entry.
-    mockUsePrePeginMempoolConfirmations.mockReturnValue({
+    mockUseBtcMempoolConfirmations.mockReturnValue({
       confirmationsByTxid: new Map<string, number>(),
     });
+    mockUseBtcHtlcRefundStatus.mockReset();
+    mockUseBtcHtlcRefundStatus.mockReturnValue({
+      refundByDepositId: new Map(),
+    });
     mockVersionedParams.clear();
+    mockProtocolParams.ready = true;
+    mockProtocolParams.error = null;
     // The persistent confirmed-txid cache leaks across tests otherwise.
     localStorage.clear();
+    // Optimistic completions are app-scoped, so they outlive any single
+    // provider — and therefore any single test.
+    resetOptimisticDepositState();
+    // Same for the provider mount counter: a test that throws on a second
+    // mount leaves the count non-zero and would trip the next test.
+    resetPeginPollingProviderCount();
+  });
+
+  // Restored here, not at the end of each timer test: a failing assertion would
+  // otherwise leak fake timers into every later `waitFor` and cascade timeouts.
+  afterEach(() => {
+    vi.useRealTimers();
   });
 
   it("trusts an in-memory PAYOUT_SIGNED over a stale-cached transactionsReady so the Sign button hides immediately after signing", () => {
@@ -169,6 +265,151 @@ describe("PeginPollingContext", () => {
     );
   });
 
+  it("hides Sign Payouts on the dashboard row when the signing modal records the completion", () => {
+    // The reported bug, now structurally impossible: the modal and the row used
+    // to sit under two different providers, so a completion recorded by the
+    // modal never reached the row and "Sign Payouts" stayed live for the rest
+    // of the session. With one provider they share state — this pins that the
+    // row actually re-renders on the write rather than reading a stale
+    // memoized snapshot.
+    const OTHER_ID = "0xpeginOther" as Hex;
+    const OTHER_ACTIVITY: VaultActivity = { ...ACTIVITY, id: OTHER_ID };
+    mockQueryResult.pendingDepositorSignatures = new Set([
+      ACTIVITY_ID,
+      OTHER_ID,
+    ]);
+
+    // Captured per render: `getPollingResult` is memoized on the provider's
+    // inputs, so an assertion holding the pre-action context object would read
+    // the pre-action snapshot and pass regardless.
+    const captured: {
+      row?: PeginPollingContextValue;
+      modal?: PeginPollingContextValue;
+    } = {};
+    function DashboardRow() {
+      captured.row = usePeginPolling();
+      return null;
+    }
+    function SigningModal() {
+      captured.modal = usePeginPolling();
+      return null;
+    }
+    const rowActions = (id: string) =>
+      captured.row?.getPollingResult(id)?.peginState.availableActions;
+
+    render(
+      <PeginPollingProvider
+        activities={[ACTIVITY, OTHER_ACTIVITY]}
+        pendingPegins={[]}
+        btcPublicKey={BTC_PUBKEY}
+      >
+        <DashboardRow />
+        <SigningModal />
+      </PeginPollingProvider>,
+    );
+
+    expect(rowActions(ACTIVITY_ID)).toContain(
+      PeginAction.SIGN_PAYOUT_TRANSACTIONS,
+    );
+
+    act(() => {
+      captured.modal?.setOptimisticStatus(
+        ACTIVITY_ID,
+        LocalStorageStatus.PAYOUT_SIGNED,
+      );
+    });
+
+    expect(rowActions(ACTIVITY_ID)).toEqual([PeginAction.NONE]);
+    // The sibling the user has not signed keeps its button.
+    expect(rowActions(OTHER_ID)).toContain(
+      PeginAction.SIGN_PAYOUT_TRANSACTIONS,
+    );
+  });
+
+  it("hides Submit WOTS Key once the submission resolves, before the poll clears needsWotsKey", () => {
+    // The VP keeps reporting PENDING_DEPOSITOR_WOTS_PK until its daemon
+    // advances, so for up to a full poll interval the row re-offered the
+    // button — and clicking it re-runs the whole derivation, wallet popup
+    // included, for a submission that already landed.
+    mockQueryResult.needsWotsKey = new Set([ACTIVITY_ID]);
+    // Real poll shape: the sets are rebuilt each cycle, so a deposit awaiting
+    // its WOTS key is absent from `pendingIngestion` rather than unobserved.
+    mockQueryResult.pendingIngestion = new Set();
+
+    const { result } = renderProvider();
+    expect(
+      result.current.getPollingResult(ACTIVITY_ID)?.peginState.availableActions,
+    ).toContain(PeginAction.SUBMIT_WOTS_KEY);
+
+    act(() => {
+      markWotsSubmitted(ACTIVITY_ID);
+    });
+
+    // Exactly NONE — suppressing the WOTS action must not fall through to
+    // re-offering the Pre-PegIn broadcast the depositor already completed.
+    expect(
+      result.current.getPollingResult(ACTIVITY_ID)?.peginState.availableActions,
+    ).toEqual([PeginAction.NONE]);
+  });
+
+  it("keeps Submit WOTS Key available for a deposit whose submission was never recorded", () => {
+    // Negative control for the suppression above: the marker is per-deposit,
+    // so a sibling still awaiting its key must be unaffected.
+    const OTHER_ID = "0xpeginOther" as Hex;
+    mockQueryResult.needsWotsKey = new Set([ACTIVITY_ID, OTHER_ID]);
+
+    const wrapper = ({ children }: PropsWithChildren) => (
+      <PeginPollingProvider
+        activities={[ACTIVITY, { ...ACTIVITY, id: OTHER_ID }]}
+        pendingPegins={[]}
+        btcPublicKey={BTC_PUBKEY}
+      >
+        {children}
+      </PeginPollingProvider>
+    );
+    const { result } = renderHook(() => usePeginPolling(), { wrapper });
+
+    act(() => {
+      markWotsSubmitted(ACTIVITY_ID);
+    });
+
+    expect(
+      result.current.getPollingResult(OTHER_ID)?.peginState.availableActions,
+    ).toContain(PeginAction.SUBMIT_WOTS_KEY);
+  });
+
+  it("recomputes Submit WOTS Key as available once the suppression window has elapsed and the vault provider is still asking", () => {
+    // The marker only bridges daemon lag. A VP still asking twenty minutes on
+    // is asking for real — a rejected or rotated key, or a submission lost
+    // behind a 200 — and an unbounded marker would leave the row with no
+    // action at all until the user thought to reload.
+    //
+    // Scope: this calls `getPollingResult` directly after advancing the clock,
+    // so it pins the COMPUTATION flipping, not a re-render. No dep of that
+    // `useCallback` changes when the clock crosses the boundary, so this would
+    // pass even if nothing re-rendered. What carries it in production is
+    // `refetchInterval` — see `WOTS_SUBMISSION_SUPPRESSION_MS`.
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-07-27T12:00:00Z"));
+    mockQueryResult.needsWotsKey = new Set([ACTIVITY_ID]);
+    mockQueryResult.pendingIngestion = new Set();
+
+    const { result } = renderProvider();
+
+    act(() => {
+      markWotsSubmitted(ACTIVITY_ID);
+    });
+    expect(
+      result.current.getPollingResult(ACTIVITY_ID)?.peginState.availableActions,
+    ).toEqual([PeginAction.NONE]);
+
+    vi.advanceTimersByTime(21 * 60 * 1000);
+
+    expect(
+      result.current.getPollingResult(ACTIVITY_ID)?.peginState.availableActions,
+    ).toContain(PeginAction.SUBMIT_WOTS_KEY);
+  });
+
   it("polls mempool using prePeginTxHash, not peginTxHash", () => {
     // Regression: the dashboard previously polled `peginTxHash` (the VP's
     // later activation tx, which doesn't exist on Bitcoin until post-
@@ -218,7 +459,7 @@ describe("PeginPollingContext", () => {
 
     // Poller receives the prePegin hashes — not the pegin hashes.
     const lastCall =
-      mockUsePrePeginMempoolConfirmations.mock.calls.at(-1)?.[0] ?? [];
+      mockUseBtcMempoolConfirmations.mock.calls.at(-1)?.[0] ?? [];
     expect(new Set(lastCall)).toEqual(new Set([PREPEGIN_A, PREPEGIN_B]));
     expect(lastCall).not.toContain(PEGIN_A);
     expect(lastCall).not.toContain(PEGIN_B);
@@ -304,7 +545,7 @@ describe("PeginPollingContext", () => {
     renderHook(() => usePeginPolling(), { wrapper });
 
     const lastCall =
-      mockUsePrePeginMempoolConfirmations.mock.calls.at(-1)?.[0] ?? [];
+      mockUseBtcMempoolConfirmations.mock.calls.at(-1)?.[0] ?? [];
     expect(new Set(lastCall)).toEqual(
       new Set([NO_LOCAL_ID, PENDING_ID, CONFIRMING_ID]),
     );
@@ -327,7 +568,7 @@ describe("PeginPollingContext", () => {
     // Seed the mock so the lookup site sees a confirmation count at depth
     // ONLY when keyed by prePeginTxHash. If the consumer accidentally keys
     // by peginTxHash, it would return undefined and we'd see PENDING below.
-    mockUsePrePeginMempoolConfirmations.mockReturnValue({
+    mockUseBtcMempoolConfirmations.mockReturnValue({
       confirmationsByTxid: new Map([
         [PREPEGIN_HASH.slice(2).toLowerCase(), REQUIRED_DEPTH],
       ]),
@@ -400,7 +641,7 @@ describe("PeginPollingContext", () => {
     // effect that captures the observation runs after render — we have to
     // give React a tick for the state update + re-render that drops the
     // confirmed txid from the next polled list.
-    mockUsePrePeginMempoolConfirmations.mockReturnValue({
+    mockUseBtcMempoolConfirmations.mockReturnValue({
       confirmationsByTxid: new Map([[canonical, REQUIRED_DEPTH]]),
     });
 
@@ -442,7 +683,7 @@ describe("PeginPollingContext", () => {
     // list drops the now-confirmed txid.
     await waitFor(() => {
       const lastCall =
-        mockUsePrePeginMempoolConfirmations.mock.calls.at(-1)?.[0] ?? [];
+        mockUseBtcMempoolConfirmations.mock.calls.at(-1)?.[0] ?? [];
       expect(lastCall).not.toContain(PREPEGIN_HASH);
     });
   });
@@ -464,7 +705,7 @@ describe("PeginPollingContext", () => {
     );
 
     // Empty mempool result (the poll skipped this txid because cache filter dropped it).
-    mockUsePrePeginMempoolConfirmations.mockReturnValue({
+    mockUseBtcMempoolConfirmations.mockReturnValue({
       confirmationsByTxid: new Map<string, number>(),
     });
     mockQueryResult.pendingIngestion = new Set([VAULT_ID]);
@@ -563,7 +804,7 @@ describe("PeginPollingContext", () => {
     renderHook(() => usePeginPolling(), { wrapper });
 
     // Every recorded polling-hook call should exclude the cached txid.
-    for (const call of mockUsePrePeginMempoolConfirmations.mock.calls) {
+    for (const call of mockUseBtcMempoolConfirmations.mock.calls) {
       expect(call[0]).not.toContain(PREPEGIN_HASH);
     }
   });
@@ -596,7 +837,7 @@ describe("PeginPollingContext", () => {
 
   it("EXPIRED: gates the refund action on CSV maturity (confirmations < tRefund → no action, maturing state)", () => {
     mockVersionedParams.set(3, { tRefund: 144 });
-    mockUsePrePeginMempoolConfirmations.mockReturnValue({
+    mockUseBtcMempoolConfirmations.mockReturnValue({
       confirmationsByTxid: new Map([[PRE_PEGIN_TXID_HEX, 20]]),
     });
 
@@ -610,7 +851,7 @@ describe("PeginPollingContext", () => {
 
   it("EXPIRED: exposes the refund action once CSV is satisfied (confirmations ≥ tRefund)", () => {
     mockVersionedParams.set(3, { tRefund: 144 });
-    mockUsePrePeginMempoolConfirmations.mockReturnValue({
+    mockUseBtcMempoolConfirmations.mockReturnValue({
       confirmationsByTxid: new Map([[PRE_PEGIN_TXID_HEX, 144]]),
     });
 
@@ -623,9 +864,29 @@ describe("PeginPollingContext", () => {
     expect(status?.peginState.refundMaturityState).toBe("mature");
   });
 
+  it("EXPIRED: hides the refund action and shows Refunded when the HTLC spend has confirmed", () => {
+    mockVersionedParams.set(3, { tRefund: 144 });
+    mockUseBtcMempoolConfirmations.mockReturnValue({
+      confirmationsByTxid: new Map([[PRE_PEGIN_TXID_HEX, 144]]),
+    });
+    // Chain ground truth: the HTLC output was already spent (refund landed
+    // and confirmed) — the dashboard must not re-offer a doomed refund.
+    mockUseBtcHtlcRefundStatus.mockReturnValue({
+      refundByDepositId: new Map([
+        [ACTIVITY_ID.toLowerCase(), { spent: true, confirmed: true }],
+      ]),
+    });
+
+    const { result } = renderExpired();
+    const status = result.current.getPollingResult(ACTIVITY_ID);
+
+    expect(status?.peginState.availableActions).toEqual([PeginAction.NONE]);
+    expect(status?.peginState.displayLabel).toBe(PEGIN_DISPLAY_LABELS.REFUNDED);
+  });
+
   it("EXPIRED: never marks mature when the per-deposit tRefund is unknown (no fallback to latest)", () => {
     // mockVersionedParams left empty for version 3 → tRefund undefined.
-    mockUsePrePeginMempoolConfirmations.mockReturnValue({
+    mockUseBtcMempoolConfirmations.mockReturnValue({
       confirmationsByTxid: new Map([[PRE_PEGIN_TXID_HEX, 9_999]]),
     });
 
@@ -639,7 +900,7 @@ describe("PeginPollingContext", () => {
 
   it("EXPIRED: reports unknown when confirmations are not yet available", () => {
     mockVersionedParams.set(3, { tRefund: 144 });
-    mockUsePrePeginMempoolConfirmations.mockReturnValue({
+    mockUseBtcMempoolConfirmations.mockReturnValue({
       confirmationsByTxid: new Map(),
     });
 
@@ -655,7 +916,7 @@ describe("PeginPollingContext", () => {
     // permanent. The mature cache lets us drop the txid from polling so a
     // long-stale expired vault doesn't burn `/tx/<txid>` per cycle.
     mockVersionedParams.set(3, { tRefund: 144 });
-    mockUsePrePeginMempoolConfirmations.mockReturnValue({
+    mockUseBtcMempoolConfirmations.mockReturnValue({
       confirmationsByTxid: new Map([[PRE_PEGIN_TXID_HEX, 144]]),
     });
 
@@ -663,7 +924,7 @@ describe("PeginPollingContext", () => {
 
     await waitFor(() => {
       const lastCall =
-        mockUsePrePeginMempoolConfirmations.mock.calls.at(-1)?.[0] ?? [];
+        mockUseBtcMempoolConfirmations.mock.calls.at(-1)?.[0] ?? [];
       expect(lastCall).not.toContain(EXPIRED_ACTIVITY.prePeginTxHash);
     });
   });
@@ -678,7 +939,7 @@ describe("PeginPollingContext", () => {
       JSON.stringify({ [PRE_PEGIN_TXID_HEX]: Date.now() }),
     );
     mockVersionedParams.set(3, { tRefund: 144 });
-    mockUsePrePeginMempoolConfirmations.mockReturnValue({
+    mockUseBtcMempoolConfirmations.mockReturnValue({
       confirmationsByTxid: new Map(),
     });
 
@@ -700,7 +961,7 @@ describe("PeginPollingContext", () => {
     // bypass surfaces REFUND_HTLC so main's ownership flow takes over.
     const OTHER_BTC_PUBKEY = "cd".repeat(32);
     mockVersionedParams.set(3, { tRefund: 144 });
-    mockUsePrePeginMempoolConfirmations.mockReturnValue({
+    mockUseBtcMempoolConfirmations.mockReturnValue({
       confirmationsByTxid: new Map(),
     });
 
@@ -723,5 +984,208 @@ describe("PeginPollingContext", () => {
     expect(status?.peginState.availableActions).toEqual([
       PeginAction.REFUND_HTLC,
     ]);
+  });
+
+  // ==========================================================================
+  // VERIFIED — Tier-1 stuck suspects
+  // ==========================================================================
+
+  it("VERIFIED: forms a stuck suspect when the activity id carries uppercase hex", () => {
+    // `useBtcHtlcRefundStatus` keys its map lowercase; activity ids arrive
+    // from the indexer unnormalized. A raw lookup misses and reads as "not
+    // swept", so no suspect forms, Tier 2 never runs, and the stuck card and
+    // Withdraw CTA silently never appear for a genuinely stuck deposit.
+    const MIXED_CASE_ID = "0xPEGIN" as Hex;
+    const PEGIN_TXID = `0x${"ef".repeat(32)}` as Hex;
+    mockUseBtcHtlcRefundStatus.mockReturnValue({
+      refundByDepositId: new Map([
+        [
+          MIXED_CASE_ID.toLowerCase(),
+          { spent: true, confirmed: true, spendingTxid: PEGIN_TXID },
+        ],
+      ]),
+    });
+
+    const wrapper = ({ children }: PropsWithChildren) => (
+      <PeginPollingProvider
+        activities={[
+          {
+            ...ACTIVITY,
+            id: MIXED_CASE_ID,
+            contractStatus: ContractStatus.VERIFIED,
+            peginTxHash: PEGIN_TXID,
+          },
+        ]}
+        pendingPegins={[]}
+        btcPublicKey={BTC_PUBKEY}
+      >
+        {children}
+      </PeginPollingProvider>
+    );
+    renderHook(() => usePeginPolling(), { wrapper });
+
+    expect(mockUseStuckVaultChainConfirm).toHaveBeenLastCalledWith([
+      MIXED_CASE_ID,
+    ]);
+  });
+
+  it("reports the deposit as loading while the protocol params are unresolved", () => {
+    // The provider now reads params non-blockingly, so an unresolved depth
+    // must present as "still loading" rather than a settled unknown — a card
+    // that renders a resolved state off missing params misreports progress.
+    mockProtocolParams.ready = false;
+
+    const { result } = renderProvider();
+
+    const status = result.current.getPollingResult(ACTIVITY_ID);
+    expect(status?.loading).toBe(true);
+    expect(status?.requiredPrePeginDepth).toBeUndefined();
+  });
+
+  it("throws in dev when a second provider mounts alongside the first", () => {
+    // The guardrail. Two providers fork polling and optimistic-completion
+    // state, so an action completed under one stops hiding its button under
+    // the other — silent at runtime, and exactly the bug this tree was
+    // collapsed to remove. Siblings count, not just nesting.
+    const Tree = () => (
+      <>
+        <PeginPollingProvider
+          activities={[ACTIVITY]}
+          pendingPegins={[]}
+          btcPublicKey={BTC_PUBKEY}
+        >
+          <div />
+        </PeginPollingProvider>
+        <PeginPollingProvider
+          activities={[ACTIVITY]}
+          pendingPegins={[]}
+          btcPublicKey={BTC_PUBKEY}
+        >
+          <div />
+        </PeginPollingProvider>
+      </>
+    );
+
+    expect(() => render(<Tree />)).toThrow(
+      /PeginPollingProvider instances are mounted at once/,
+    );
+  });
+
+  it("gates the params reads on having deposits to evaluate", () => {
+    // The wiring half of the hook-level "fires no contract read while
+    // disabled" test: the provider must pass `activities.length > 0`, or the
+    // gate exists but nothing ever flips it.
+    const withDeposits = renderProvider();
+    expect(mockParamsEnabledCalls.at(-1)).toBe(true);
+    // Unmount before the empty-activities mount — the single-provider
+    // invariant (rightly) throws on two live providers.
+    withDeposits.unmount();
+
+    mockParamsEnabledCalls.length = 0;
+    render(
+      <PeginPollingProvider
+        activities={[]}
+        pendingPegins={[]}
+        btcPublicKey={BTC_PUBKEY}
+      >
+        <div />
+      </PeginPollingProvider>,
+    );
+    expect(mockParamsEnabledCalls.at(-1)).toBe(false);
+  });
+
+  it("recovers after the dev double-mount throw without a counter reset", () => {
+    // The throw happens inside an effect setup, which never registers its
+    // cleanup — so the offending mount's increment must be undone before
+    // throwing. Otherwise the counter stays elevated for the session and a
+    // CORRECTED tree (the second render here) keeps tripping the invariant
+    // on every HMR update until a full reload.
+    const Doubled = () => (
+      <>
+        <PeginPollingProvider
+          activities={[ACTIVITY]}
+          pendingPegins={[]}
+          btcPublicKey={BTC_PUBKEY}
+        >
+          <div />
+        </PeginPollingProvider>
+        <PeginPollingProvider
+          activities={[ACTIVITY]}
+          pendingPegins={[]}
+          btcPublicKey={BTC_PUBKEY}
+        >
+          <div />
+        </PeginPollingProvider>
+      </>
+    );
+    expect(() => render(<Doubled />)).toThrow(
+      /PeginPollingProvider instances are mounted at once/,
+    );
+
+    const Single = () => (
+      <PeginPollingProvider
+        activities={[ACTIVITY]}
+        pendingPegins={[]}
+        btcPublicKey={BTC_PUBKEY}
+      >
+        <div />
+      </PeginPollingProvider>
+    );
+    expect(() => render(<Single />)).not.toThrow();
+  });
+
+  it("allows a provider to remount after the previous one unmounts", () => {
+    // The counter must not leak across mounts — RootLayout swaps its whole
+    // content subtree for the geo-block branch, so a legitimate remount would
+    // otherwise trip the invariant on the second visit.
+    const Tree = () => (
+      <PeginPollingProvider
+        activities={[ACTIVITY]}
+        pendingPegins={[]}
+        btcPublicKey={BTC_PUBKEY}
+      >
+        <div />
+      </PeginPollingProvider>
+    );
+
+    render(<Tree />).unmount();
+    expect(() => render(<Tree />)).not.toThrow();
+  });
+
+  it("surfaces a protocol-params load failure on the deposit result", () => {
+    // Without this the params query could fail and every row would sit on
+    // "confirming" forever with nothing surfaced to the user.
+    const paramsError = new Error("protocol params unavailable");
+    mockProtocolParams.ready = false;
+    mockProtocolParams.error = paramsError;
+
+    const { result } = renderProvider();
+
+    expect(result.current.getPollingResult(ACTIVITY_ID)?.error).toBe(
+      paramsError,
+    );
+  });
+
+  it("reports a protocol-params failure as failed, not as still loading", () => {
+    // The queries have exhausted their retries, so `ready` can never flip. A
+    // result asserting `loading` beside that error would park every consumer on
+    // the loading branch forever — the frozen row this seam exists to prevent.
+    mockProtocolParams.ready = false;
+    mockProtocolParams.error = new Error("protocol params unavailable");
+
+    const { result } = renderProvider();
+
+    expect(result.current.getPollingResult(ACTIVITY_ID)?.loading).toBe(false);
+  });
+
+  it("still reports loading while the params are merely resolving", () => {
+    // The other half of the same rule: unresolved is not failed, and a cold
+    // load must not read as a settled "depth unknown".
+    mockProtocolParams.ready = false;
+    mockProtocolParams.error = null;
+
+    const { result } = renderProvider();
+
+    expect(result.current.getPollingResult(ACTIVITY_ID)?.loading).toBe(true);
   });
 });

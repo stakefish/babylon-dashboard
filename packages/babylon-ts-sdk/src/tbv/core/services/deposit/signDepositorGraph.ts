@@ -21,13 +21,18 @@
 import { type Network } from "@babylonlabs-io/babylon-tbv-rust-wasm";
 import { Transaction } from "bitcoinjs-lib";
 
-import type { BitcoinWallet, SignPsbtOptions } from "../../../../shared/wallets/interfaces";
+import type {
+  BitcoinWallet,
+  SignPsbtOptions,
+} from "../../../../shared/wallets/interfaces";
 import type {
   DepositorAsClaimerPresignatures,
   DepositorGraphTransactions,
   DepositorPreSigsPerChallenger,
   PresignDataPerChallenger,
 } from "../../clients/vault-provider/types";
+import { signPsbtsWithFallback } from "../../managers/pegin/signPsbtsWithFallback";
+import { deriveLocalChallengers } from "../../primitives/challengers";
 import {
   assertPsbtUnsignedTxMatches,
   type AssertPsbtUnsignedTxMatchesParams,
@@ -40,6 +45,7 @@ import {
   buildPayoutPsbt,
   extractPayoutSignature,
 } from "../../primitives/psbt/payout";
+import { assertScriptPathSchnorrSignature } from "../../primitives/psbt/verifyScriptPathSchnorrSignature";
 import {
   stripHexPrefix,
   uint8ArrayToHex,
@@ -79,43 +85,6 @@ interface CollectedDepositorGraphPsbts {
 // ============================================================================
 // Helpers
 // ============================================================================
-
-/**
- * Compute the local-challenger set for the depositor-as-claimer flow.
- *
- * Per btc-vault `crates/vault/src/tx_graph/graph.rs:144-150` (introduced in
- * PR #1092 / commit 3133b698, 2026-02-18):
- *   Depositor-as-claimer: LocalChallengers = VKs only (VP excluded)
- *
- * Note: the docstring at `crates/vault/src/lib.rs:332` still says
- * `{VaultProvider, VaultKeepers} - {Claimer}` — that wording is stale and
- * predates the depositor-as-claimer special case. This function follows the
- * actual implementation, not the stale docstring.
- *
- * The protocol guarantees the depositor is not a vault keeper
- * (`TxGraphParams::validate` enforces it), so the depositor filter here is
- * defense-in-depth; it surfaces a clear error if a misconfigured context
- * ever violates the invariant.
- */
-function deriveLocalChallengers(
-  vaultKeeperBtcPubkeys: string[],
-  depositorBtcPubkey: string,
-): string[] {
-  const depositor = stripHexPrefix(depositorBtcPubkey).toLowerCase();
-  const vks = vaultKeeperBtcPubkeys.map((k) => stripHexPrefix(k).toLowerCase());
-  const filtered = vks.filter((k) => k !== depositor);
-  if (filtered.length === 0) {
-    throw new Error(
-      "Cannot derive localChallengers: vault keeper set is empty (or contains only the depositor)",
-    );
-  }
-  if (new Set(filtered).size !== filtered.length) {
-    throw new Error(
-      "Cannot derive localChallengers: duplicate vaultKeeper key — signing context is misconfigured",
-    );
-  }
-  return filtered;
-}
 
 /**
  * Reject VP-supplied `challenger_presign_data` whose pubkey set does not
@@ -230,10 +199,12 @@ async function collectDepositorGraphPsbts(
 
   // 1. Fail-fast on a malformed VP response BEFORE doing any PSBT-build
   //    work that would be wasted if the challenger set is wrong.
-  const localChallengers = deriveLocalChallengers(
-    ctx.vaultKeeperBtcPubkeys,
-    ctx.depositorBtcPubkey,
-  );
+  const localChallengers = deriveLocalChallengers({
+    claimerBtcPubkey: ctx.depositorBtcPubkey,
+    depositorBtcPubkey: ctx.depositorBtcPubkey,
+    vaultProviderBtcPubkey: ctx.vaultProviderBtcPubkey,
+    vaultKeeperBtcPubkeys: ctx.vaultKeeperBtcPubkeys,
+  });
   assertChallengerSetMatchesExpected(
     depositorGraph.challenger_presign_data,
     localChallengers,
@@ -244,9 +215,13 @@ async function collectDepositorGraphPsbts(
   //    derived from trusted on-chain connector params, not from the VP.
   //    buildPayoutPsbt also runs the per-role output validation.
   const builtPayout = await buildPayoutPsbt({
+    vaultCoreVersion: ctx.vaultCoreVersion,
+    vkClaimerPayoutScriptPubKeys: ctx.vkClaimerPayoutScriptPubKeys,
+    vpCommissionScriptPubKey: ctx.vpCommissionScriptPubKey,
     payoutTxHex: depositorGraph.payout_tx.tx_hex,
     peginTxHex: ctx.peginTxHex,
     assertTxHex: depositorGraph.assert_tx.tx_hex,
+    timelockAssert: ctx.timelockAssert,
     depositorBtcPubkey: ctx.depositorBtcPubkey,
     vaultProviderBtcPubkey: ctx.vaultProviderBtcPubkey,
     vaultKeeperBtcPubkeys: ctx.vaultKeeperBtcPubkeys,
@@ -256,6 +231,9 @@ async function collectDepositorGraphPsbts(
     claimerBtcPubkey: ctx.depositorBtcPubkey,
     registeredPayoutScriptPubKey: ctx.registeredPayoutScriptPubKey,
     commissionBps: DEPOSITOR_PATH_UNUSED_COMMISSION_BPS,
+    protocolFeeRate: ctx.protocolFeeRate,
+    councilMembers: ctx.councilMembers,
+    councilQuorum: ctx.councilQuorum,
   });
   psbtHexes.push(builtPayout.psbtHex);
   signOptions.push(
@@ -399,6 +377,7 @@ async function buildLocalNoPayoutPsbt(
     challengerPubkey,
     prevouts,
     connectorParams: {
+      txGraphVersion: ctx.vaultCoreVersion,
       claimer: claimerPubkey,
       localChallengers,
       universalChallengers: ctx.universalChallengerBtcPubkeys,
@@ -432,20 +411,38 @@ function extractDepositorGraphSignatures(
   // Set up by `collectDepositorGraphPsbts` (payout pushed first, then each
   // nopayout). A future refactor that reorders the array would silently
   // extract the wrong signature for the wrong slot — Critical Path #3.
+  // Payout and every NoPayout PSBT are signed on input 0 (depositor script-path).
+  const DEPOSITOR_SIGNED_INPUT_INDEX = 0;
+
   assertPsbtUnsignedTxMatches(psbtPairs[0]);
   const payoutSignature = extractPayoutSignature(
     psbtPairs[0].returnedPsbtHex,
     depositorPubkey,
   );
+  // Critical Path #7: verify the wallet's signature against a sighash recomputed
+  // from the PSBT we built (psbtPairs[0].requestedPsbtHex), not the returned one.
+  assertScriptPathSchnorrSignature({
+    requestedPsbtHex: psbtPairs[0].requestedPsbtHex,
+    signatureHex: payoutSignature,
+    signerXOnlyPubkeyHex: depositorPubkey,
+    inputIndex: DEPOSITOR_SIGNED_INPUT_INDEX,
+  });
 
   const perChallenger: Record<string, DepositorPreSigsPerChallenger> = {};
   for (const entry of challengerEntries) {
     assertPsbtUnsignedTxMatches(psbtPairs[entry.noPayoutIdx]);
+    const nopayoutSignature = extractPayoutSignature(
+      psbtPairs[entry.noPayoutIdx].returnedPsbtHex,
+      depositorPubkey,
+    );
+    assertScriptPathSchnorrSignature({
+      requestedPsbtHex: psbtPairs[entry.noPayoutIdx].requestedPsbtHex,
+      signatureHex: nopayoutSignature,
+      signerXOnlyPubkeyHex: depositorPubkey,
+      inputIndex: DEPOSITOR_SIGNED_INPUT_INDEX,
+    });
     perChallenger[entry.challengerPubkey] = {
-      nopayout_signature: extractPayoutSignature(
-        psbtPairs[entry.noPayoutIdx].returnedPsbtHex,
-        depositorPubkey,
-      ),
+      nopayout_signature: nopayoutSignature,
     };
   }
 
@@ -455,26 +452,6 @@ function extractDepositorGraphSignatures(
     },
     per_challenger: perChallenger,
   };
-}
-
-/**
- * Sign multiple PSBTs, using batch signing when the wallet supports it.
- * Falls back to sequential `signPsbt` calls for wallets without `signPsbts`.
- */
-async function signPsbtsWithFallback(
-  wallet: BitcoinWallet,
-  psbtHexes: string[],
-  options?: SignPsbtOptions[],
-): Promise<string[]> {
-  if (typeof wallet.signPsbts === "function") {
-    return wallet.signPsbts(psbtHexes, options);
-  }
-
-  const signed: string[] = [];
-  for (let i = 0; i < psbtHexes.length; i++) {
-    signed.push(await wallet.signPsbt(psbtHexes[i], options?.[i]));
-  }
-  return signed;
 }
 
 // ============================================================================
@@ -488,6 +465,12 @@ async function signPsbtsWithFallback(
  * directly into the Taproot sighash.
  */
 export interface DepositorGraphSigningContext {
+  /**
+   * Vault core (tx-graph) version the vault was registered under — the
+   * vault's stamped on-chain `vaultCoreVersion` from `BTCVaultRegistry`.
+   * Selects which graph's connector scripts every PSBT is rebuilt with.
+   */
+  vaultCoreVersion: number;
   /** Raw pegin BTC transaction hex (provides the depositor's signed prevout) */
   peginTxHex: string;
   /** Depositor's BTC public key (x-only, 64-char hex, no 0x prefix) */
@@ -500,6 +483,11 @@ export interface DepositorGraphSigningContext {
   universalChallengerBtcPubkeys: string[];
   /** Pegin CSV timelock from the locked offchain params version (blocks) */
   timelockPegin: number;
+  /**
+   * Tx-graph fee rate (sat/vB) from the locked offchain params version —
+   * bounds the depositor-claimer payout's implicit fee (payout fee band).
+   */
+  protocolFeeRate: bigint;
   /**
    * Assert CSV timelock from the locked offchain params version (blocks).
    * Sourced from the on-chain ProtocolParams contract via
@@ -525,6 +513,15 @@ export interface DepositorGraphSigningContext {
    * the depositor's registered address before the wallet produces a signature.
    */
   registeredPayoutScriptPubKey: string;
+  /**
+   * RFC-006 operator payout destinations. Forwarded to `buildPayoutPsbt` for
+   * shape completeness only: this graph is signed under the
+   * `depositor-as-claimer` role, whose payout has two outputs and reads
+   * neither the keeper map nor the VP commission destination.
+   */
+  vkClaimerPayoutScriptPubKeys: Readonly<Record<string, string>>;
+  /** See {@link vkClaimerPayoutScriptPubKeys} — unused for this role. */
+  vpCommissionScriptPubKey: string;
 }
 
 export interface SignDepositorGraphParams {
@@ -568,17 +565,13 @@ export async function signDepositorGraph(
     );
 
   // 2. Sign all PSBTs (batch when supported, sequential fallback for mobile)
+  // signPsbtsWithFallback guarantees one signed PSBT per input (or throws), so
+  // no separate arity check is needed here.
   const signedPsbtHexes = await signPsbtsWithFallback(
     btcWallet,
     psbtHexes,
     signOptions,
   );
-
-  if (signedPsbtHexes.length !== psbtHexes.length) {
-    throw new Error(
-      `Wallet returned ${signedPsbtHexes.length} signed PSBTs, expected ${psbtHexes.length}`,
-    );
-  }
 
   // 3. Pair requested with signed and extract signatures
   const psbtPairs: PsbtPair[] = psbtHexes.map((requestedPsbtHex, i) => ({

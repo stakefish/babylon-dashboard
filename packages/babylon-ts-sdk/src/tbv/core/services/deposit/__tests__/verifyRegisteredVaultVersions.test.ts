@@ -18,6 +18,7 @@ const VAULT_ID_B =
 const OFFCHAIN = 7;
 const KEEPERS = 3;
 const CHALLENGERS = 5;
+const CORE = 1;
 
 function info(overrides: Partial<VaultProtocolInfo> = {}): VaultProtocolInfo {
   return {
@@ -52,10 +53,12 @@ function buildRegistryReader(
     getVaultProtocolInfo: vi.fn(),
     getProtocolInfoBatch,
     getVaultData: vi.fn(),
-    getVaultProviderBtcPubKey: vi.fn(),
+    getVaultProviderGenesisBtcPubKey: vi.fn(),
     getPegInFee: vi.fn(),
     getVaultProviderCommission: vi.fn(),
-    getOffchainParamsVersionsByVaultIds: vi.fn(),
+    getVaultKeyEpochs: vi.fn(),
+    getVaultKeyEpochsBatch: vi.fn(),
+    getCurrentVaultProviderOperationBtcKey: vi.fn(),
   };
 }
 
@@ -74,6 +77,7 @@ describe("verifyRegisteredVaultVersions", () => {
         expectedOffchainParamsVersion: OFFCHAIN,
         expectedAppVaultKeepersVersion: KEEPERS,
         expectedUniversalChallengersVersion: CHALLENGERS,
+        expectedVaultCoreVersion: CORE,
       }),
     ).resolves.toBeUndefined();
 
@@ -93,6 +97,7 @@ describe("verifyRegisteredVaultVersions", () => {
         expectedOffchainParamsVersion: OFFCHAIN,
         expectedAppVaultKeepersVersion: KEEPERS,
         expectedUniversalChallengersVersion: CHALLENGERS,
+        expectedVaultCoreVersion: CORE,
       }),
     ).rejects.toThrow(RegisteredVaultVersionMismatchError);
   });
@@ -107,6 +112,7 @@ describe("verifyRegisteredVaultVersions", () => {
         expectedOffchainParamsVersion: OFFCHAIN,
         expectedAppVaultKeepersVersion: KEEPERS,
         expectedUniversalChallengersVersion: CHALLENGERS,
+        expectedVaultCoreVersion: CORE,
       }),
     ).rejects.toThrow(RegisteredVaultVersionMismatchError);
   });
@@ -123,8 +129,26 @@ describe("verifyRegisteredVaultVersions", () => {
         expectedOffchainParamsVersion: OFFCHAIN,
         expectedAppVaultKeepersVersion: KEEPERS,
         expectedUniversalChallengersVersion: CHALLENGERS,
+        expectedVaultCoreVersion: CORE,
       }),
     ).rejects.toThrow(RegisteredVaultVersionMismatchError);
+  });
+
+  it("throws on vaultCoreVersion mismatch (governance flip between build and registration)", async () => {
+    const reader = buildRegistryReader([info({ vaultCoreVersion: 2 })]);
+
+    await expect(
+      verifyRegisteredVaultVersions({
+        vaultRegistryReader: reader,
+        vaultIds: [VAULT_ID_A],
+        expectedOffchainParamsVersion: OFFCHAIN,
+        expectedAppVaultKeepersVersion: KEEPERS,
+        expectedUniversalChallengersVersion: CHALLENGERS,
+        expectedVaultCoreVersion: CORE,
+      }),
+    ).rejects.toThrow(
+      /vaultCoreVersion expected v1 \(build-time active\), got v2/,
+    );
   });
 
   it("resolves without RPC for empty vaultIds", async () => {
@@ -136,6 +160,7 @@ describe("verifyRegisteredVaultVersions", () => {
       expectedOffchainParamsVersion: OFFCHAIN,
       expectedAppVaultKeepersVersion: KEEPERS,
       expectedUniversalChallengersVersion: CHALLENGERS,
+      expectedVaultCoreVersion: CORE,
     });
 
     expect(reader.getProtocolInfoBatch).toHaveBeenCalledWith([]);
@@ -151,6 +176,7 @@ describe("verifyRegisteredVaultVersions", () => {
         expectedOffchainParamsVersion: OFFCHAIN,
         expectedAppVaultKeepersVersion: KEEPERS,
         expectedUniversalChallengersVersion: CHALLENGERS,
+        expectedVaultCoreVersion: CORE,
       }),
     ).rejects.toThrow("rpc down");
     await expect(
@@ -160,6 +186,7 @@ describe("verifyRegisteredVaultVersions", () => {
         expectedOffchainParamsVersion: OFFCHAIN,
         expectedAppVaultKeepersVersion: KEEPERS,
         expectedUniversalChallengersVersion: CHALLENGERS,
+        expectedVaultCoreVersion: CORE,
       }),
     ).rejects.not.toBeInstanceOf(RegisteredVaultVersionMismatchError);
   });

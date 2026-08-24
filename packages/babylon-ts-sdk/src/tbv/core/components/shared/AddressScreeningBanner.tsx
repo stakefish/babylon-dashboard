@@ -17,10 +17,10 @@ export function AddressScreeningBanner({
       <div className="flex flex-row items-center gap-2">
         <PiWarningOctagonFill className="flex-shrink-0" />
         <Text variant="body1">
-          <strong>Wallet Not Eligible</strong>
+          <strong>Wallet not eligible</strong>
           <br />
-          This wallet is not eligible to use the vault. Please review the Terms
-          of Use or contact support if you believe this is an error.
+          This wallet is not eligible to use the BTC Vault. Please review the
+          Terms of Use or contact support if you believe this is an error.
         </Text>
       </div>
     </div>

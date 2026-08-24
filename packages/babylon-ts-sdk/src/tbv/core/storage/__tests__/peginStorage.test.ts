@@ -50,6 +50,7 @@ const validPegin: PendingPeginRequest = {
   buildOffchainParamsVersion: 7,
   buildAppVaultKeepersVersion: 3,
   buildUniversalChallengersVersion: 5,
+  buildVaultCoreVersion: 1,
 };
 
 describe("getPendingPegins integrity validation", () => {
@@ -214,6 +215,103 @@ describe("getPendingPegins integrity validation", () => {
     expect(result[0].id).toBe(VALID_VAULT_ID_2);
   });
 
+  // RFC-006: the build-time operation keys are read back before a resume
+  // broadcast and compared against what the vault's frozen epochs resolve to.
+  // A tampered or malformed value here would feed that equality check, so the
+  // field is optional but strictly validated whenever it is present.
+
+  it("accepts an entry with no operation keys (written before the stamp shipped)", () => {
+    localStorage.setItem(storageKey, JSON.stringify([validPegin]));
+
+    expect(getPendingPegins(ETH_ADDRESS)).toHaveLength(1);
+  });
+
+  it("accepts an entry carrying well-formed operation keys", () => {
+    const withKeys: PendingPeginRequest = {
+      ...validPegin,
+      buildParticipantOperationKeys: {
+        vaultProvider: "a".repeat(64),
+        vaultKeepers: ["b".repeat(64), "c".repeat(64)],
+        universalChallengers: ["d".repeat(64)],
+      },
+    };
+    localStorage.setItem(storageKey, JSON.stringify([withKeys]));
+
+    const result = getPendingPegins(ETH_ADDRESS);
+
+    expect(result).toHaveLength(1);
+    expect(result[0].buildParticipantOperationKeys?.vaultProvider).toBe(
+      "a".repeat(64),
+    );
+  });
+
+  it("filters entries whose operation keys are not an object", () => {
+    const tampered = {
+      ...validPegin,
+      buildParticipantOperationKeys: "not-an-object",
+    };
+    localStorage.setItem(storageKey, JSON.stringify([tampered]));
+
+    expect(getPendingPegins(ETH_ADDRESS)).toHaveLength(0);
+  });
+
+  it("filters entries whose vault provider operation key is not 32-byte hex", () => {
+    const tampered = {
+      ...validPegin,
+      buildParticipantOperationKeys: {
+        vaultProvider: "tooshort",
+        vaultKeepers: ["b".repeat(64)],
+        universalChallengers: ["d".repeat(64)],
+      },
+    };
+    localStorage.setItem(storageKey, JSON.stringify([tampered]));
+
+    expect(getPendingPegins(ETH_ADDRESS)).toHaveLength(0);
+  });
+
+  it("filters entries whose keeper key set is empty", () => {
+    // An empty set is never a valid vault configuration, and would make the
+    // pre-broadcast comparison vacuously pass.
+    const tampered = {
+      ...validPegin,
+      buildParticipantOperationKeys: {
+        vaultProvider: "a".repeat(64),
+        vaultKeepers: [],
+        universalChallengers: ["d".repeat(64)],
+      },
+    };
+    localStorage.setItem(storageKey, JSON.stringify([tampered]));
+
+    expect(getPendingPegins(ETH_ADDRESS)).toHaveLength(0);
+  });
+
+  it("filters entries where one key in a set is malformed", () => {
+    const tampered = {
+      ...validPegin,
+      buildParticipantOperationKeys: {
+        vaultProvider: "a".repeat(64),
+        vaultKeepers: ["b".repeat(64), "NOT_HEX"],
+        universalChallengers: ["d".repeat(64)],
+      },
+    };
+    localStorage.setItem(storageKey, JSON.stringify([tampered]));
+
+    expect(getPendingPegins(ETH_ADDRESS)).toHaveLength(0);
+  });
+
+  it("filters entries whose challenger keys are missing entirely", () => {
+    const tampered = {
+      ...validPegin,
+      buildParticipantOperationKeys: {
+        vaultProvider: "a".repeat(64),
+        vaultKeepers: ["b".repeat(64)],
+      },
+    };
+    localStorage.setItem(storageKey, JSON.stringify([tampered]));
+
+    expect(getPendingPegins(ETH_ADDRESS)).toHaveLength(0);
+  });
+
   it("filters entries whose id is a non-string (DoS protection)", () => {
     // A non-string id would throw in normalizeTransactionId, fall into the
     // outer catch block, and wipe the entire storage key. This test guards
@@ -291,6 +389,37 @@ describe("getPendingPegins integrity validation", () => {
     delete (legacy as Partial<PendingPeginRequest>)
       .buildUniversalChallengersVersion;
     localStorage.setItem(storageKey, JSON.stringify([legacy]));
+
+    expect(getPendingPegins(ETH_ADDRESS)).toHaveLength(0);
+  });
+
+  // Records written before the buildVaultCoreVersion stamp were all built
+  // with graph v1 (every construction site was hard-pinned) — they must be
+  // backfilled, not filtered, so an in-flight deposit survives the deploy.
+  it("backfills buildVaultCoreVersion=1 for records that predate the field", () => {
+    const preStamp = { ...validPegin };
+    delete (preStamp as Partial<PendingPeginRequest>).buildVaultCoreVersion;
+    localStorage.setItem(storageKey, JSON.stringify([preStamp]));
+
+    const result = getPendingPegins(ETH_ADDRESS);
+    expect(result).toHaveLength(1);
+    expect(result[0].buildVaultCoreVersion).toBe(1);
+  });
+
+  it("does not backfill buildVaultCoreVersion when the other build fields are also missing", () => {
+    const legacy = { ...validPegin };
+    delete (legacy as Partial<PendingPeginRequest>).buildVaultCoreVersion;
+    delete (legacy as Partial<PendingPeginRequest>).buildOffchainParamsVersion;
+    localStorage.setItem(storageKey, JSON.stringify([legacy]));
+
+    expect(getPendingPegins(ETH_ADDRESS)).toHaveLength(0);
+  });
+
+  // 0 is never a valid vault core version (contract stamps >= 1; pre-stamp
+  // records backfill to 1) — a stored 0 is tampering or corruption.
+  it("filters PENDING entries with buildVaultCoreVersion 0", () => {
+    const tampered = { ...validPegin, buildVaultCoreVersion: 0 };
+    localStorage.setItem(storageKey, JSON.stringify([tampered]));
 
     expect(getPendingPegins(ETH_ADDRESS)).toHaveLength(0);
   });
@@ -444,6 +573,7 @@ describe("removePendingPegin", () => {
       buildOffchainParamsVersion: 7,
       buildAppVaultKeepersVersion: 3,
       buildUniversalChallengersVersion: 5,
+      buildVaultCoreVersion: 1,
     });
     addPendingPegin(ETH_ADDRESS, {
       id: VALID_VAULT_ID_2,
@@ -452,6 +582,7 @@ describe("removePendingPegin", () => {
       buildOffchainParamsVersion: 7,
       buildAppVaultKeepersVersion: 3,
       buildUniversalChallengersVersion: 5,
+      buildVaultCoreVersion: 1,
     });
 
     removePendingPegin(ETH_ADDRESS, VALID_VAULT_ID);
@@ -500,6 +631,7 @@ describe("addPendingPegin persistence failures", () => {
       buildOffchainParamsVersion: 7,
       buildAppVaultKeepersVersion: 3,
       buildUniversalChallengersVersion: 5,
+      buildVaultCoreVersion: 1,
     });
     addPendingPegin(ETH_ADDRESS, {
       id: VALID_VAULT_ID_2,
@@ -508,6 +640,7 @@ describe("addPendingPegin persistence failures", () => {
       buildOffchainParamsVersion: 7,
       buildAppVaultKeepersVersion: 3,
       buildUniversalChallengersVersion: 5,
+      buildVaultCoreVersion: 1,
     });
 
     const setItemSpy = vi

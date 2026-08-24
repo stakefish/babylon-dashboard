@@ -12,6 +12,8 @@
     "lint": "pnpm nx lint simple-staking",
     "test": "pnpm nx test simple-staking",
     "nx:sync": "nx sync",
+    "visual:diff": "node scripts/visual-diff.mjs",
+    "visual:test": "node --test \"scripts/__tests__/*.test.mjs\"",
     "prepare": "husky",
     "ci:release": "nx run @internal/release:run"
   },
@@ -43,6 +45,8 @@
     "husky": "^9.1.7",
     "jsonc-eslint-parser": "^2.4.0",
     "nx": "21.3.7",
+    "pixelmatch": "7.2.0",
+    "pngjs": "7.0.0",
     "prettier": "^3.6.2",
     "syncpack": "^13.0.4",
     "tslib": "^2.3.0",

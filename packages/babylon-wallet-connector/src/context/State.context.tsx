@@ -1,7 +1,8 @@
-import { type PropsWithChildren, createContext, useEffect, useMemo, useState } from "react";
+import { type PropsWithChildren, createContext, useEffect, useMemo, useRef, useState } from "react";
 
 import { WALLET_MODAL_OPEN_EVENT } from "@/constants/walletEvents";
-import type { IChain, IWallet } from "@/core/types";
+import { WALLET_CONFIRMATION_RECEIPT_KEY } from "@/core/confirmationReceipt";
+import type { HashMap, IChain, IWallet } from "@/core/types";
 
 export type Screen<T extends string = string> = {
   type: T;
@@ -10,10 +11,8 @@ export type Screen<T extends string = string> = {
 
 export type Screens =
   | Screen<"LOADER">
-  | Screen<"TERMS_OF_SERVICE">
   | Screen<"CHAINS">
   | Screen<"WALLETS">
-  | Screen<"INSCRIPTIONS">
   | Screen<"ERROR">;
 
 export interface State {
@@ -21,7 +20,13 @@ export interface State {
   visible: boolean;
   screen: Screens;
   selectedWallets: Record<string, IWallet | undefined>;
+  /** Every chain the dialog displays. */
   chains: Record<string, IChain>;
+  /**
+   * The subset of `chains` a host requires before the session counts as
+   * connected. Chains outside this set are offered but never block confirm.
+   */
+  requiredChainIds: string[];
 }
 
 export interface Actions {
@@ -30,8 +35,6 @@ export interface Actions {
   displayLoader?: (message?: string, description?: string) => void;
   displayChains?: () => void;
   displayWallets?: (chain: string) => void;
-  displayInscriptions?: () => void;
-  displayTermsOfService?: () => void;
   displayError?: (params: {
     icon?: JSX.Element;
     title: string;
@@ -44,21 +47,26 @@ export interface Actions {
   selectWallet?: (chain: string, wallet: IWallet) => void;
   removeWallet?: (chain: string) => void;
   confirm?: () => void;
+  /** Withdraws the confirmation without disconnecting anything. */
+  unconfirm?: () => void;
   reset?: () => void;
 }
 
 const defaultState: State = {
   confirmed: false,
   visible: false,
-  screen: { type: "TERMS_OF_SERVICE" },
+  screen: { type: "CHAINS" },
   chains: {},
   selectedWallets: {},
+  requiredChainIds: [],
 };
 
 export const StateContext = createContext<State & Actions>(defaultState);
 
 interface StateProviderProps {
   chains: IChain[];
+  requiredChainIds: readonly string[];
+  storage?: HashMap;
 }
 
 // Filters selected wallets to only include those that belong to currently valid chains.
@@ -75,18 +83,34 @@ function filterWalletsByValidChains(
   }, {} as Record<string, IWallet | undefined>);
 }
 
-export function StateProvider({ children, chains }: PropsWithChildren<StateProviderProps>) {
-  const [state, setState] = useState<State>(defaultState);
+export function StateProvider({ children, chains, requiredChainIds, storage }: PropsWithChildren<StateProviderProps>) {
+  const [state, setState] = useState<State>(() => ({
+    ...defaultState,
+    chains: chains.reduce((acc, chain) => ({ ...acc, [chain.id]: chain }), {}),
+    requiredChainIds: [...requiredChainIds],
+  }));
+  const stateRef = useRef(state);
+  stateRef.current = state;
 
+  // A change to the requirement set is not itself a consent change. Hosts that
+  // derive requirements per route narrow and widen this list as the user
+  // navigates, and tearing the confirmation down here would sign them out on
+  // routine navigation. Whether the stored approval still covers the new set is
+  // decided in `useWalletConnectors`, which can see the live connections.
   useEffect(() => {
     setState((state) => {
       const newChains = chains.reduce((acc, chain) => ({ ...acc, [chain.id]: chain }), {});
-      const validChainIds = new Set(chains.map(chain => chain.id));
+      const validChainIds = new Set(chains.map((chain) => chain.id));
       const filteredWallets = filterWalletsByValidChains(state.selectedWallets, validChainIds);
 
-      return { ...state, chains: newChains, selectedWallets: filteredWallets };
+      return {
+        ...state,
+        chains: newChains,
+        selectedWallets: filteredWallets,
+        requiredChainIds: [...requiredChainIds],
+      };
     });
-  }, [chains]);
+  }, [chains, requiredChainIds]);
 
   const actions: Actions = useMemo(
     () => ({
@@ -106,15 +130,12 @@ export function StateProvider({ children, chains }: PropsWithChildren<StateProvi
       },
 
       reset: () => {
-        setState(({ chains }) => ({ ...defaultState, chains }));
+        storage?.delete(WALLET_CONFIRMATION_RECEIPT_KEY);
+        setState(({ chains, requiredChainIds }) => ({ ...defaultState, chains, requiredChainIds }));
       },
 
       displayLoader: (message = "", description = "") => {
         setState((state) => ({ ...state, screen: { type: "LOADER", params: { message, description } } }));
-      },
-
-      displayTermsOfService: () => {
-        setState((state) => ({ ...state, screen: { type: "TERMS_OF_SERVICE" } }));
       },
 
       displayChains: () => {
@@ -123,10 +144,6 @@ export function StateProvider({ children, chains }: PropsWithChildren<StateProvi
 
       displayWallets: (chain: string) => {
         setState((state) => ({ ...state, screen: { type: "WALLETS", params: { chain } } }));
-      },
-
-      displayInscriptions: () => {
-        setState((state) => ({ ...state, screen: { type: "INSCRIPTIONS" } }));
       },
 
       displayError: (params) => {
@@ -141,8 +158,15 @@ export function StateProvider({ children, chains }: PropsWithChildren<StateProvi
       },
 
       removeWallet: (chain: string) => {
+        if (stateRef.current.requiredChainIds.includes(chain)) {
+          storage?.delete(WALLET_CONFIRMATION_RECEIPT_KEY);
+        }
         setState((state) => ({
           ...state,
+          // Losing an optional chain must not tear down a confirmed session.
+          // Losing a required one does invalidate the confirmation, so
+          // reconnecting cannot silently restore it.
+          confirmed: state.requiredChainIds.includes(chain) ? false : state.confirmed,
           selectedWallets: { ...state.selectedWallets, [chain]: undefined },
         }));
       },
@@ -150,8 +174,12 @@ export function StateProvider({ children, chains }: PropsWithChildren<StateProvi
       confirm: () => {
         setState((state) => ({ ...state, confirmed: true }));
       },
+
+      unconfirm: () => {
+        setState((state) => (state.confirmed ? { ...state, confirmed: false } : state));
+      },
     }),
-    [],
+    [storage],
   );
 
   const context = useMemo(

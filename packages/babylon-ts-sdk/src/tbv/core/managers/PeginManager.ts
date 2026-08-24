@@ -24,13 +24,6 @@ import { Psbt, Transaction } from "bitcoinjs-lib";
 import { Buffer } from "buffer";
 
 import {
-  assertAuthAnchorOpReturn,
-  expandPerVaultSecrets,
-  normalizePopSignature,
-  normalizeXOnlyPubkey,
-  signPsbtsWithFallback,
-} from "./pegin";
-import {
   encodeFunctionData,
   isAddressEqual,
   zeroAddress,
@@ -40,22 +33,46 @@ import {
   type PublicClient,
   type WalletClient,
 } from "viem";
+import {
+  assertAuthAnchorOpReturn,
+  expandPerVaultSecrets,
+  normalizePopSignature,
+  normalizeXOnlyPubkey,
+  signPsbtsWithFallback,
+  verifyPopWitness,
+} from "./pegin";
 
-import type { BitcoinWallet, Hash, SignPsbtOptions } from "../../../shared/wallets";
-import type { WotsBlockPublicKey } from "../clients/vault-provider/types";
+import type {
+  BitcoinWallet,
+  Hash,
+  SignPsbtOptions,
+} from "../../../shared/wallets";
 import { ViemVaultRegistryReader } from "../clients/eth";
-import { type UtxoInfo, getUtxoInfo, pushTx } from "../clients/mempool";
+import { getUtxoInfo, pushTx, type UtxoInfo } from "../clients/mempool";
+import type { WotsBlockPublicKey } from "../clients/vault-provider/types";
 import { BTCVaultRegistryABI, handleContractError } from "../contracts";
 import {
+  buildDepositTerms,
+  capMaxAcceptableCommissionBps,
+  COMMISSION_BPS_HEADROOM,
+  ensurePrePeginTermsApproval,
+  MAX_ACCEPTABLE_COMMISSION_BPS_CAP,
+  requireChangeAddress,
+  supportsDepositApproval,
+  type DepositTerms,
+} from "../deposit-terms";
+import {
   assertPsbtUnsignedTxMatches,
-  buildPrePeginPsbt,
-  buildPeginTxFromFundedPrePegin,
+  assertReturnedKeyPathSignatures,
+  assertScriptPathSchnorrSignature,
   buildPeginInputPsbt,
+  buildPeginTxFromFundedPrePegin,
+  buildPrePeginPsbt,
+  deriveVaultId,
   extractPeginInputSignature,
   finalizePeginInputPsbt,
-  deriveVaultId,
-  type PrePeginParams,
   type Network,
+  type PrePeginParams,
 } from "../primitives";
 import {
   ensureHexPrefix,
@@ -70,11 +87,11 @@ import {
   fundPeginTransaction,
   getNetwork,
   getPsbtInputFields,
+  MAX_REASONABLE_FEE_SATS,
   peginOutputCount,
   selectUtxosForPegin,
-  type UTXO,
-  MAX_REASONABLE_FEE_SATS,
   waitForTransactionReceiptSmartAware,
+  type UTXO,
 } from "../utils";
 import { createTaprootScriptPathSignOptions } from "../utils/signing";
 import {
@@ -85,24 +102,6 @@ import {
 
 /** Referral code sent with pegin registration — 0 means no referral. */
 const NO_REFERRAL_CODE = 0;
-
-/**
- * Headroom (in basis points) added to the current VP commission to compute
- * `maxAcceptableCommissionBps` at submit time. Lets the VP raise its
- * commission by up to this amount between read and submit without forcing
- * a re-quote. Capped by {@link MAX_ACCEPTABLE_COMMISSION_BPS_CAP}.
- *
- * Contract check is strict `>` (PeginLogic.sol:182-190), so +25 allows up
- * to +25 bps of drift.
- */
-const COMMISSION_BPS_HEADROOM = 25;
-
-/**
- * Hard ceiling for `maxAcceptableCommissionBps`. The contract enforces
- * `commissionBps < 10000`, so any value at/above that is unreachable;
- * `9999` is the maximum useful cap.
- */
-const MAX_ACCEPTABLE_COMMISSION_BPS_CAP = 9999;
 
 /**
  * 32-byte zero hex used as a placeholder during the sizing pass for any
@@ -177,6 +176,14 @@ export interface PeginManagerConfig {
  */
 export interface PreparePeginParams {
   /**
+   * Vault core (tx-graph) version to build — the contract's
+   * `ProtocolParams.activeVaultCoreVersion()` at build time. Stamped onto
+   * the vault at registration; every Pre-PegIn/PegIn artifact this manager
+   * constructs derives from this graph version.
+   */
+  vaultCoreVersion: number;
+
+  /**
    * Amounts to peg in per HTLC (in satoshis).
    * Must have the same length as `hashlocks`.
    * For single deposits, pass a single-element array.
@@ -188,6 +195,13 @@ export interface PreparePeginParams {
    * Can be provided with or without "0x" prefix (will be stripped automatically).
    */
   vaultProviderBtcPubkey: string;
+
+  /**
+   * VP commission quoted for this deposit (bps). Capped to the approval
+   * ceiling before it sizes the terms' commissionFee, so the user approves
+   * the most the VP can take — not the quote.
+   */
+  commissionBps: number;
 
   /**
    * Vault keeper BTC public keys (x-only, 64-char hex).
@@ -205,6 +219,14 @@ export interface PreparePeginParams {
    * CSV timelock in blocks for the PegIn vault output.
    */
   timelockPegin: number;
+  /**
+   * btc-vault `timelock_assert` (t2) — the Assert:0 payout-leaf CSV. Carried
+   * into DepositTerms as its own field. Production collapses the two: the SDK
+   * derives timelockPegin from the same on-chain timelockAssert
+   * (`protocol-params-reader.ts` deriveTimelockPegin), mirroring vaultd
+   * (`pegin_validation.rs`). The terms never assume that identity.
+   */
+  timelockAssert: number;
 
   /**
    * CSV timelock in blocks for the Pre-PegIn HTLC refund path.
@@ -332,8 +354,14 @@ export interface PreparePeginResult {
   depositorBtcPubkey: string;
   /** Sensitive derived material — see {@link PreparePeginDerivedSecrets}. */
   derivedSecrets: PreparePeginDerivedSecrets;
+  /**
+   * Protocol-level deposit terms for this Pre-PegIn. Always built, regardless
+   * of wallet capability — {@link supportsDepositApproval} wallets get it via
+   * `approveDepositTerms` before PegIn signing; others just get it back for
+   * reference.
+   */
+  depositTerms: DepositTerms;
 }
-
 
 /**
  * Parameters for signing and broadcasting a transaction.
@@ -358,6 +386,15 @@ export interface SignAndBroadcastParams {
    * Useful for split transactions where outputs are unconfirmed.
    */
   localPrevouts?: Record<string, { scriptPubKey: string; value: number }>;
+
+  /**
+   * Approved deposit terms. REQUIRED when `config.btcWallet` supports deposit
+   * approval (`supportsDepositApproval`) — the device signs the Pre-PegIn only
+   * from an approved intent matching this tx. Pass `PreparePeginResult.
+   * depositTerms` for fresh flows, or a resume rebuild. For non-approval
+   * wallets it is ignored, but still validated against the tx's txid if given.
+   */
+  depositTerms?: DepositTerms;
 }
 
 /**
@@ -424,7 +461,11 @@ export interface RegisterPeginParams {
    */
   htlcVout: number;
 
-  /** VP commission (bps) shown to the user — bounds maxAcceptableCommissionBps. See #1691. */
+  /**
+   * Bounds the registration's maxAcceptableCommissionBps (#1691). REQUIRED
+   * when the wallet approved terms — the ceiling must anchor to the approved
+   * quote. Optional otherwise; falls back to chain-current.
+   */
   quotedCommissionBps?: number;
 }
 
@@ -507,7 +548,6 @@ export interface RegisterPeginBatchResult {
   vaults: BatchPeginResultItem[];
 }
 
-
 /**
  * Detect a P2WPKH (Native SegWit) bech32 address for the configured network,
  * used purely for diagnostic routing. Distinguishes P2WPKH (witness v0,
@@ -541,7 +581,9 @@ function isP2wpkhAddressForNetwork(address: string, network: Network): boolean {
 function resolveUtxoInfo(
   txid: string,
   vout: number,
-  localPrevouts: Record<string, { scriptPubKey: string; value: number }> | undefined,
+  localPrevouts:
+    | Record<string, { scriptPubKey: string; value: number }>
+    | undefined,
   apiUrl: string,
 ): Promise<UtxoInfo> {
   const local = localPrevouts?.[`${txid}:${vout}`];
@@ -613,15 +655,14 @@ export class PeginManager {
   /**
    * Prepare a peg-in: sizing pass → vault-root derivation (one wallet
    * popup) → per-vault WOTS / hashlock derivation → commit pass with
-   * batch PSBT signing (one popup). Returns broadcast-ready txs, the
-   * pubkey snapshot, and the sensitive derived material.
+   * PSBT signing (signPsbt for a single vault, one batch popup for a
+   * split). Returns broadcast-ready txs, the pubkey snapshot, and the
+   * sensitive derived material.
    *
    * @throws If the wallet rejects, insufficient funds, or an internal
    *         invariant violation.
    */
-  async preparePegin(
-    params: PreparePeginParams,
-  ): Promise<PreparePeginResult> {
+  async preparePegin(params: PreparePeginParams): Promise<PreparePeginResult> {
     if (params.amounts.length === 0) {
       throw new Error("amounts must contain at least one entry");
     }
@@ -629,17 +670,31 @@ export class PeginManager {
     // Raw form for `signInputs[].publicKey` (UniSat/OKX/OneKey reject
     // x-only); x-only form for protocol/HTLC use. One snapshot binds
     // sizing, root derivation, and PSBT signing to one identity.
-    const depositorBtcPubkeyRaw =
-      await this.config.btcWallet.getPublicKeyHex();
+    const depositorBtcPubkeyRaw = await this.config.btcWallet.getPublicKeyHex();
     const depositorBtcPubkey = normalizeXOnlyPubkey(depositorBtcPubkeyRaw);
 
     // Pre-PegIn change pays back to the depositor. The wallet will sign
     // whatever output the PSBT carries; nothing downstream proves the
     // change address belongs to the signing key, so a state-race / stale
     // FE / hostile adapter that puts an attacker-controlled address here
-    // would drain the change after signing. Bind once at entry using the
-    // pubkey snapshot above (no second wallet read).
-    if (
+    // would drain the change after signing. Bind once at entry — against the
+    // wallet's own change branch when it has one, else the pubkey snapshot.
+    if (supportsDepositApproval(this.config.btcWallet)) {
+      // Approval (policy) wallets own their change branch: the device accepts a
+      // change output only on `.../1/i`, which is not derivable from the receive
+      // key. Any other change address fails mid-ceremony on the device, so this
+      // gate closes that window before any approval screen (the only device
+      // traffic it costs is the silent policy-context read).
+      const walletChange = (
+        await requireChangeAddress(this.config.btcWallet)
+      ).trim();
+      if (params.changeAddress.trim() !== walletChange) {
+        throw new Error(
+          `Pre-PegIn changeAddress "${params.changeAddress}" is not the approval wallet's change address ` +
+            `("${walletChange}"). Refusing to build a tx the signing device would reject.`,
+        );
+      }
+    } else if (
       !isAddressFromPublicKey(
         params.changeAddress,
         depositorBtcPubkeyRaw,
@@ -727,9 +782,11 @@ export class PeginManager {
       authAnchorHash,
     );
 
+    const { depositTerms, ...commitTransaction } = commit;
+
     return {
       transaction: {
-        ...commit,
+        ...commitTransaction,
         selectedUTXOs: sizing.selectedUTXOs,
         fee: sizing.fee,
         changeAmount: sizing.changeAmount,
@@ -741,6 +798,7 @@ export class PeginManager {
         htlcSecretHexes,
         authAnchorHex,
       },
+      depositTerms,
     };
   }
 
@@ -770,6 +828,7 @@ export class PeginManager {
     const numLocalChallengers = params.vaultKeeperBtcPubkeys.length;
 
     const prePegin = await buildPrePeginPsbt({
+      vaultCoreVersion: params.vaultCoreVersion,
       depositorPubkey: depositorBtcPubkey,
       vaultProviderPubkey: stripHexPrefix(params.vaultProviderBtcPubkey),
       vaultKeeperPubkeys: params.vaultKeeperBtcPubkeys.map(stripHexPrefix),
@@ -813,6 +872,7 @@ export class PeginManager {
     fundedPrePeginTxHex: string;
     prePeginTxid: string;
     perVault: PerVaultPeginData[];
+    depositTerms: DepositTerms;
   }> {
     const {
       depositorBtcPubkeyRaw,
@@ -845,13 +905,17 @@ export class PeginManager {
       );
     }
 
-    const vaultProviderBtcPubkey = stripHexPrefix(params.vaultProviderBtcPubkey);
-    const vaultKeeperBtcPubkeys = params.vaultKeeperBtcPubkeys.map(stripHexPrefix);
+    const vaultProviderBtcPubkey = stripHexPrefix(
+      params.vaultProviderBtcPubkey,
+    );
+    const vaultKeeperBtcPubkeys =
+      params.vaultKeeperBtcPubkeys.map(stripHexPrefix);
     const universalChallengerBtcPubkeys =
       params.universalChallengerBtcPubkeys.map(stripHexPrefix);
     const numLocalChallengers = vaultKeeperBtcPubkeys.length;
 
     const prePeginParams: PrePeginParams = {
+      vaultCoreVersion: params.vaultCoreVersion,
       depositorPubkey: depositorBtcPubkey,
       vaultProviderPubkey: vaultProviderBtcPubkey,
       vaultKeeperPubkeys: vaultKeeperBtcPubkeys,
@@ -879,8 +943,28 @@ export class PeginManager {
       network,
     });
 
-    const prePeginTxid = stripHexPrefix(calculateBtcTxHash(fundedPrePeginTxHex));
+    // sizing.fee ships in the deposit terms as a hardware signing bound
+    // (prepeginMaxFee) — assert the funded tx actually pays it before the
+    // bound leaves this method.
+    const fundedFee =
+      sizing.selectedUTXOs.reduce((sum, u) => sum + BigInt(u.value), 0n) -
+      prePeginResult.totalOutputValue -
+      sizing.changeAmount;
+    if (fundedFee !== sizing.fee) {
+      throw new Error(
+        `Pre-PegIn funded fee ${fundedFee} does not match the sizing-pass fee ` +
+          `${sizing.fee}; refusing to publish a deposit-terms fee bound the ` +
+          `funded transaction does not pay.`,
+      );
+    }
 
+    const prePeginTxid = stripHexPrefix(
+      calculateBtcTxHash(fundedPrePeginTxHex),
+    );
+
+    // Build the per-vault PegIn txs before deposit-terms approval so the real
+    // htlcVout bind-check inside buildPeginTxFromFundedPrePegin runs before
+    // the depositor approves on a hardware wallet, not after.
     const peginTxResults: Array<{
       txHex: string;
       txid: string;
@@ -898,6 +982,7 @@ export class PeginManager {
       });
 
       const peginInputPsbtResult = await buildPeginInputPsbt({
+        vaultCoreVersion: params.vaultCoreVersion,
         peginTxHex: peginTxResult.txHex,
         fundedPrePeginTxHex,
         depositorPubkey: depositorBtcPubkey,
@@ -914,6 +999,32 @@ export class PeginManager {
       signOptions.push(
         createTaprootScriptPathSignOptions(depositorBtcPubkeyRaw, 1),
       );
+    }
+
+    // Always build the deposit terms so callers get them back regardless of
+    // wallet capability; only approval-capable wallets need the call below.
+    // peginMaxFee reuses assertWasmPeginSizing's already-asserted minPeginFee
+    // (via prePeginResult) instead of recomputing it.
+    const depositTerms = buildDepositTerms({
+      vaultCoreVersion: params.vaultCoreVersion,
+      protocolFeeRate: params.protocolFeeRate,
+      timelockPegin: params.timelockPegin,
+      timelockAssert: params.timelockAssert,
+      timelockRefund: params.timelockRefund,
+      prepeginTxid: prePeginTxid,
+      prepeginMaxFee: sizing.fee,
+      vaultProviderBtcPubkey,
+      vaultKeeperBtcPubkeys,
+      universalChallengerBtcPubkeys,
+      maxAcceptableCommissionBps: capMaxAcceptableCommissionBps(
+        params.commissionBps,
+      ),
+      peginAmounts: params.amounts,
+      depositorClaimValue: prePeginResult.depositorClaimValue,
+      peginMaxFee: prePeginResult.minPeginFee,
+    });
+    if (supportsDepositApproval(this.config.btcWallet)) {
+      await this.config.btcWallet.approveDepositTerms(depositTerms);
     }
 
     const signedPsbts = await signPsbtsWithFallback(
@@ -933,6 +1044,15 @@ export class PeginManager {
         signedPsbts[i],
         depositorBtcPubkey,
       );
+      // Critical Path #7: verify the depositor's script-path signature against a
+      // sighash recomputed from the PSBT we built (psbtsToSign[i]) before the
+      // signed tx is finalized and broadcast. The PegIn input is signed on input 0.
+      assertScriptPathSchnorrSignature({
+        requestedPsbtHex: psbtsToSign[i],
+        signatureHex: peginInputSignature,
+        signerXOnlyPubkeyHex: depositorBtcPubkey,
+        inputIndex: 0,
+      });
 
       const depositorSignedPeginTxHex = finalizePeginInputPsbt(signedPsbts[i]);
 
@@ -950,9 +1070,9 @@ export class PeginManager {
       fundedPrePeginTxHex,
       prePeginTxid,
       perVault,
+      depositTerms,
     };
   }
-
 
   /**
    * Signs and broadcasts a funded peg-in transaction to the Bitcoin network.
@@ -964,6 +1084,14 @@ export class PeginManager {
    * 4. Signs via btcWallet.signPsbt()
    * 5. Finalizes and extracts the transaction
    * 6. Broadcasts via mempool API
+   *
+   * IMPORTANT — this method does NOT gate on Ethereum finality. Committing
+   * BTC to the HTLC while the peg-in registration is still reorg-exposed can
+   * strand the deposit: the vault record disappears from the chain while the
+   * BTC stays locked until the HTLC refund timelock. Callers must await
+   * `waitForPeginRegistrationDepth` for the registered vault(s) before calling
+   * this. The gate is not applied here because the params carry no vault ID —
+   * adding one would be a breaking signature change.
    *
    * @param params - Transaction hex and depositor public key
    * @returns The broadcasted Bitcoin transaction ID
@@ -1059,6 +1187,18 @@ export class PeginManager {
       });
     }
 
+    // Step 3.5: intent-wallet ceremony (derive → approve) immediately before
+    // signing. Placed after prevout resolution — a network failure there must
+    // not burn a two-screen device ceremony — and adjacent to signPsbt to keep
+    // the approve→sign gap minimal (the seam invariant). No-op for wallets that
+    // do not support deposit approval.
+    await ensurePrePeginTermsApproval({
+      wallet: this.config.btcWallet,
+      depositTerms: params.depositTerms,
+      fundedPrePeginTxHex,
+      depositorBtcPubkey,
+    });
+
     // Step 4: Sign PSBT via wallet
     const requestedPsbtHex = psbt.toHex();
     const signedPsbtHex =
@@ -1068,6 +1208,26 @@ export class PeginManager {
       requestedPsbtHex,
       returnedPsbtHex: signedPsbtHex,
     });
+
+    // Far-side check of the returned signatures (CLAUDE.md §8: never trust
+    // the wallet's success/finalization). Taproot key-path inputs are
+    // Schnorr-verified and counted; P2WPKH funding is ECDSA-verified
+    // (throwing on failure) without counting; P2WSH stays skipped.
+    const verifiedInputs = assertReturnedKeyPathSignatures({
+      requestedPsbtHex,
+      returnedPsbtHex: signedPsbtHex,
+    });
+    // An approval wallet signs key-path under a wallet policy, so every input
+    // must have been verified; 0 would mean the check silently covered nothing.
+    if (
+      supportsDepositApproval(this.config.btcWallet) &&
+      verifiedInputs !== psbt.data.inputs.length
+    ) {
+      throw new Error(
+        `Key-path verification covered ${verifiedInputs} of ${psbt.data.inputs.length} Pre-PegIn ` +
+          `inputs; an approval wallet signs every input key-path, so the unverified ones must not be broadcast.`,
+      );
+    }
 
     const signedPsbt = Psbt.fromHex(signedPsbtHex);
 
@@ -1141,7 +1301,9 @@ export class PeginManager {
       throw new Error("Ethereum wallet account not found");
     }
     const depositorEthAddress = this.config.ethWallet.account.address;
-    if (!isAddressEqual(popSignature.depositorEthAddress, depositorEthAddress)) {
+    if (
+      !isAddressEqual(popSignature.depositorEthAddress, depositorEthAddress)
+    ) {
       throw new Error(
         `Proof of possession was signed for ${popSignature.depositorEthAddress} ` +
           `but the Ethereum wallet is currently connected to ${depositorEthAddress}. ` +
@@ -1156,7 +1318,9 @@ export class PeginManager {
     const btcPopSignature = popSignature.btcPopSignature;
 
     // Step 2: Format parameters for contract call
-    const depositorBtcPubkeyHex = ensureHexPrefix(popSignature.depositorBtcPubkey);
+    const depositorBtcPubkeyHex = ensureHexPrefix(
+      popSignature.depositorBtcPubkey,
+    );
     const unsignedPrePeginTxHex = ensureHexPrefix(unsignedPrePeginTx);
     const depositorSignedPeginTxHex = ensureHexPrefix(depositorSignedPeginTx);
 
@@ -1317,7 +1481,9 @@ export class PeginManager {
       throw new Error("Ethereum wallet account not found");
     }
     const depositorEthAddress = this.config.ethWallet.account.address;
-    if (!isAddressEqual(popSignature.depositorEthAddress, depositorEthAddress)) {
+    if (
+      !isAddressEqual(popSignature.depositorEthAddress, depositorEthAddress)
+    ) {
       throw new Error(
         `Proof of possession was signed for ${popSignature.depositorEthAddress} ` +
           `but the Ethereum wallet is currently connected to ${depositorEthAddress}. ` +
@@ -1483,6 +1649,20 @@ export class PeginManager {
     vaultProvider: Address,
     quotedCommissionBps?: number,
   ): Promise<number> {
+    // Approval-capable wallets froze the ceiling on-device at prepare time
+    // (DepositTerms.commissionFee from the quoted bps). The chain-current
+    // fallback could exceed that approved ceiling, letting registration
+    // admit a commission the device would refuse to pay out — require the
+    // same quote instead.
+    if (
+      quotedCommissionBps === undefined &&
+      supportsDepositApproval(this.config.btcWallet)
+    ) {
+      throw new Error(
+        "quotedCommissionBps is required when the wallet approved deposit " +
+          "terms: the registration ceiling must anchor to the approved quote.",
+      );
+    }
     let currentBps: number;
     try {
       const reader = new ViemVaultRegistryReader(
@@ -1506,16 +1686,10 @@ export class PeginManager {
             `Please refresh to see the new commission and try again.`,
         );
       }
-      return Math.min(
-        quotedCommissionBps + COMMISSION_BPS_HEADROOM,
-        MAX_ACCEPTABLE_COMMISSION_BPS_CAP,
-      );
+      return capMaxAcceptableCommissionBps(quotedCommissionBps);
     }
 
-    return Math.min(
-      currentBps + COMMISSION_BPS_HEADROOM,
-      MAX_ACCEPTABLE_COMMISSION_BPS_CAP,
-    );
+    return capMaxAcceptableCommissionBps(currentBps);
   }
 
   /**
@@ -1611,6 +1785,13 @@ export class PeginManager {
    * wallet to the connected ETH account for this chain and vault
    * registry. The returned {@link PopSignature} can be reused across
    * every register call in the same session.
+   *
+   * The witness is verified against the depositor key before it is
+   * returned — Schnorr for one-item (P2TR), ECDSA over the BIP-322
+   * P2WPKH virtual transaction for two-item — see {@link verifyPopWitness}.
+   *
+   * @throws If the wallet returns a malformed witness or a signature that
+   *         does not verify.
    */
   async signProofOfPossession(): Promise<PopSignature> {
     if (!this.config.ethWallet.account) {
@@ -1630,11 +1811,17 @@ export class PeginManager {
       "bip322-simple",
     );
 
-    return {
-      btcPopSignature: normalizePopSignature(raw),
-      depositorEthAddress,
+    const btcPopSignature = normalizePopSignature(raw);
+    // Fail before the Ethereum registration: vaultd rejects a bad PoP permanently.
+    // The verdict is informational — both shapes are fully verified, and
+    // anything invalid already threw.
+    verifyPopWitness(
+      new TextEncoder().encode(popMessage),
       depositorBtcPubkey,
-    };
+      btcPopSignature,
+    );
+
+    return { btcPopSignature, depositorEthAddress, depositorBtcPubkey };
   }
 
   /**
@@ -1775,8 +1962,13 @@ export interface EstimateSubmitPeginRequestBatchGasParams {
 export async function estimateSubmitPeginRequestBatchGas(
   params: EstimateSubmitPeginRequestBatchGasParams,
 ): Promise<bigint> {
-  const { publicClient, btcVaultRegistry, depositorEthAddress, vaultProvider, batchSize } =
-    params;
+  const {
+    publicClient,
+    btcVaultRegistry,
+    depositorEthAddress,
+    vaultProvider,
+    batchSize,
+  } = params;
 
   if (batchSize <= 0) {
     throw new Error(

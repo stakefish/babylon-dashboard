@@ -56,6 +56,8 @@ export default defineConfig({
       name: "e2e",
       testDir: "./tests/e2e",
       testMatch: "**/*.spec.ts",
+      // Real-extension wallet specs run under playwright.wallets.config.ts (no Storybook webServer).
+      testIgnore: "**/specs/wallets/**",
       use: {
         ...devices["Desktop Chrome"],
         locale: "en-US",
@@ -75,9 +77,5 @@ export default defineConfig({
     url: baseURL,
     timeout: 120 * 1000,
     reuseExistingServer: true,
-    env: {
-      E2E_WALLET_MNEMONIC: process.env.E2E_WALLET_MNEMONIC!,
-      E2E_WALLET_PASSWORD: process.env.E2E_WALLET_PASSWORD!,
-    },
   },
 });

@@ -11,17 +11,30 @@ export default defineConfig({
       tsconfigPath: "./tsconfig.lib.json",
       insertTypesEntry: true,
       include: ["src"],
-      exclude: ["src/**/*.stories.tsx"],
+      exclude: ["src/**/*.stories.tsx", "src/**/*.test.ts", "src/**/*.test.tsx", "src/__fixtures__/**"],
     }),
     nodePolyfills(),
   ],
   build: {
     outDir: "dist",
     sourcemap: true,
+    commonjsOptions: {
+      // Bundled CJS (@bitcoinerlab/descriptors) does `require("bitcoinjs-lib").payments`.
+      // plugin-commonjs renders requires of externals as *default* imports unless the id
+      // is listed here, and bitcoinjs-lib is __esModule with no default export — so the
+      // default is undefined once a consumer pre-bundles us. Namespace import instead.
+      esmExternals: ["bitcoinjs-lib"],
+    },
     lib: {
-      entry: path.resolve(__dirname, "src/index.tsx"),
+      entry: {
+        index: path.resolve(__dirname, "src/index.tsx"),
+        eth: path.resolve(__dirname, "src/eth.ts"),
+      },
       formats: ["es", "cjs"],
-      fileName: (format) => `index.${format}.js`,
+      fileName: (format, entryName) => `${entryName}.${format}.js`,
+      // Pinned because a multi-entry lib build otherwise names the stylesheet
+      // after the package, changing the published `./style.css` target.
+      cssFileName: "wallet-connector",
     },
     rollupOptions: {
       external: [
@@ -33,6 +46,7 @@ export default defineConfig({
         "viem",
         "@cosmjs/stargate",
         "@babylonlabs-io/core-ui",
+        "@babylonlabs-io/ledger-vault-signer",
         "bitcoinjs-lib",
         "@keystonehq/animated-qr",
         // Issues linking with Next.js

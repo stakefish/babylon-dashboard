@@ -72,11 +72,16 @@ vi.mock("bitcoinjs-lib", () => ({
 }));
 
 vi.mock("../../../primitives/utils/bitcoin", () => ({
+  processPublicKeyToXOnly: (pk: string) => {
+    const stripped = pk.startsWith("0x") ? pk.slice(2) : pk;
+    return stripped.length === 66 ? stripped.slice(2) : stripped;
+  },
   stripHexPrefix: (s: string) => (s.startsWith("0x") ? s.slice(2) : s),
-  uint8ArrayToHex: (bytes: Uint8Array) =>
-    Buffer.from(bytes).toString("hex"),
+  uint8ArrayToHex: (bytes: Uint8Array) => Buffer.from(bytes).toString("hex"),
   validateWalletPubkey: (walletRaw: string, expectedDepositor: string) => {
-    const stripped = walletRaw.startsWith("0x") ? walletRaw.slice(2) : walletRaw;
+    const stripped = walletRaw.startsWith("0x")
+      ? walletRaw.slice(2)
+      : walletRaw;
     const walletXOnly = stripped.length === 66 ? stripped.slice(2) : stripped;
     if (walletXOnly.toLowerCase() !== expectedDepositor.toLowerCase()) {
       throw new Error(
@@ -108,6 +113,13 @@ vi.mock("../../../utils/signing", () => ({
 // dedicated tests against real PSBTs in primitives/psbt/__tests__/.
 vi.mock("../../../primitives/psbt/assertPsbtUnsignedTxMatches", () => ({
   assertPsbtUnsignedTxMatches: vi.fn(),
+}));
+
+// Same rationale for the Schnorr-signature verification guard: it needs real
+// PSBTs + real signatures, which it gets in its own dedicated unit tests
+// (primitives/psbt/__tests__/verifyScriptPathSchnorrSignature.test.ts).
+vi.mock("../../../primitives/psbt/verifyScriptPathSchnorrSignature", () => ({
+  assertScriptPathSchnorrSignature: vi.fn(),
 }));
 
 // ---------------------------------------------------------------------------
@@ -258,6 +270,14 @@ function createSigningContext(
   // excluded) ∪ UniversalChallengers. Default fixture uses 2 VKs and 0 UCs
   // so most tests can build a 2-entry graph; tests that need a UC override.
   return {
+    // Unused by the depositor-as-claimer role, but required by the shared
+    // `buildPayoutPsbt` shape.
+    vkClaimerPayoutScriptPubKeys: {},
+    vpCommissionScriptPubKey: "0x0014" + "00".repeat(20),
+    // Non-default on purpose: a re-hardcoded version anywhere in the
+    // signing path would fail the threading assertions below.
+    vaultCoreVersion: 2,
+    protocolFeeRate: 2n,
     peginTxHex: PEGIN_TX_HEX,
     depositorBtcPubkey: DEPOSITOR_PUBKEY,
     vaultProviderBtcPubkey: VP_PUBKEY,
@@ -280,9 +300,7 @@ function createSigningContext(
 describe("signDepositorGraph", () => {
   it("rebuilds the payout PSBT locally from authoritative connector params", async () => {
     registerStandardMocks([CHALLENGER_A, CHALLENGER_B]);
-    const { buildPayoutPsbt } = await import(
-      "../../../primitives/psbt/payout"
-    );
+    const { buildPayoutPsbt } = await import("../../../primitives/psbt/payout");
     const builder = vi.mocked(buildPayoutPsbt);
     builder.mockClear();
 
@@ -298,6 +316,9 @@ describe("signDepositorGraph", () => {
 
     expect(builder).toHaveBeenCalledOnce();
     expect(builder).toHaveBeenCalledWith({
+      vaultCoreVersion: 2,
+      vkClaimerPayoutScriptPubKeys: ctx.vkClaimerPayoutScriptPubKeys,
+      vpCommissionScriptPubKey: ctx.vpCommissionScriptPubKey,
       payoutTxHex: graph.payout_tx.tx_hex,
       peginTxHex: ctx.peginTxHex,
       assertTxHex: graph.assert_tx.tx_hex,
@@ -306,10 +327,14 @@ describe("signDepositorGraph", () => {
       vaultKeeperBtcPubkeys: ctx.vaultKeeperBtcPubkeys,
       universalChallengerBtcPubkeys: ctx.universalChallengerBtcPubkeys,
       timelockPegin: ctx.timelockPegin,
+      timelockAssert: ctx.timelockAssert,
       network: ctx.network,
       claimerBtcPubkey: ctx.depositorBtcPubkey,
       registeredPayoutScriptPubKey: ctx.registeredPayoutScriptPubKey,
       commissionBps: 1,
+      protocolFeeRate: ctx.protocolFeeRate,
+      councilMembers: ctx.councilMembers,
+      councilQuorum: ctx.councilQuorum,
     });
   });
 
@@ -349,6 +374,7 @@ describe("signDepositorGraph", () => {
           { script_pubkey: "dd", value: 300 },
         ],
         connectorParams: {
+          txGraphVersion: 2,
           claimer: DEPOSITOR_PUBKEY,
           localChallengers: expectedLocalChallengers,
           universalChallengers: ctx.universalChallengerBtcPubkeys,
@@ -627,7 +653,7 @@ describe("signDepositorGraph", () => {
         btcWallet: wallet,
         signingContext: createSigningContext(),
       }),
-    ).rejects.toThrow("expected 3");
+    ).rejects.toThrow(/expected 3/i);
   });
 
   it("strips 0x prefix from depositor pubkey", async () => {
@@ -648,9 +674,7 @@ describe("signDepositorGraph", () => {
 
   it("propagates payout build errors and never reaches the wallet", async () => {
     registerStandardMocks([CHALLENGER_A, CHALLENGER_B]);
-    const { buildPayoutPsbt } = await import(
-      "../../../primitives/psbt/payout"
-    );
+    const { buildPayoutPsbt } = await import("../../../primitives/psbt/payout");
     vi.mocked(buildPayoutPsbt).mockImplementationOnce(async () => {
       throw new Error(
         "Payout transaction output 0 does not pay the expected scriptPubKey for role depositor-as-claimer",
@@ -734,7 +758,9 @@ describe("signDepositorGraph", () => {
         }),
       }),
     ).rejects.toThrow(
-      new RegExp(`challenger set does not match expected.*missing.*${UC_PUBKEY}`),
+      new RegExp(
+        `challenger set does not match expected.*missing.*${UC_PUBKEY}`,
+      ),
     );
 
     expect(wallet.signPsbts).not.toHaveBeenCalled();

@@ -5,9 +5,7 @@ import { ContractStatus } from "../../models/peginStateMachine";
 import type { Vault } from "../../types/vault";
 import {
   derivePrePeginTxHash,
-  getFormattedRepayAmount,
   transformVaultToActivity,
-  transformVaultsToActivities,
 } from "../vaultTransformers";
 
 vi.mock("../../config", () => ({
@@ -95,7 +93,7 @@ describe("vaultTransformers", () => {
         depositorSignedPeginTx: "0xsigned" as Hex,
         unsignedPrePeginTx: "0xunsigned" as Hex,
         expiredAt: 1700001000000,
-        expirationReason: "ack_timeout" as any,
+        expirationReason: "ack_timeout",
       });
       const activity = transformVaultToActivity(vault);
 
@@ -106,11 +104,11 @@ describe("vaultTransformers", () => {
       expect(activity.expirationReason).toBe("ack_timeout");
     });
 
-    it("shows expired with ack_timeout reason", () => {
+    it("labels an expired vault as Expired", () => {
       const vault = makeVault({
         status: ContractStatus.EXPIRED,
         expiredAt: 1700001000000,
-        expirationReason: "ack_timeout" as any,
+        expirationReason: "ack_timeout",
       });
       const activity = transformVaultToActivity(vault);
 
@@ -125,31 +123,6 @@ describe("vaultTransformers", () => {
       expect(activity.borrowingData).toBeUndefined();
       expect(activity.marketData).toBeUndefined();
       expect(activity.action).toBeUndefined();
-    });
-  });
-
-  describe("transformVaultsToActivities", () => {
-    it("transforms multiple vaults", () => {
-      const vaults = [
-        makeVault({ id: "0x1" as Hex }),
-        makeVault({ id: "0x2" as Hex }),
-      ];
-      const activities = transformVaultsToActivities(vaults);
-
-      expect(activities).toHaveLength(2);
-      expect(activities[0].id).toBe("0x1");
-      expect(activities[1].id).toBe("0x2");
-    });
-
-    it("returns empty array for empty input", () => {
-      expect(transformVaultsToActivities([])).toEqual([]);
-    });
-  });
-
-  describe("getFormattedRepayAmount", () => {
-    it("returns '0 USDC' when no position data", () => {
-      const activity = transformVaultToActivity(makeVault());
-      expect(getFormattedRepayAmount(activity)).toBe("0 USDC");
     });
   });
 });

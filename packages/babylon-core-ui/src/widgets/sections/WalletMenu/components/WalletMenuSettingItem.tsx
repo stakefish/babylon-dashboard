@@ -34,9 +34,7 @@ export const WalletMenuSettingItem: React.FC<WalletMenuSettingItemProps> = ({
             <Text as="span" variant="body2" className="font-medium text-accent-primary">
               {title}
               <Hint tooltip={tooltip} placement="bottom" attachToChildren={true} offset={[20, 8]}>
-                <span className="ml-1 inline-block cursor-pointer align-middle text-secondary-strokeDark">
-                  {infoIcon}
-                </span>
+                <span className="ml-1 inline-block cursor-pointer align-middle text-accent-secondary">{infoIcon}</span>
               </Hint>
             </Text>
           ) : (

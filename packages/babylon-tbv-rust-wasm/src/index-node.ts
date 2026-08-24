@@ -5,12 +5,13 @@
 // loading, which does not work in Node.js environments, and does not require
 // a separate wasm-pack --target nodejs build step.
 
-import { readFileSync } from "node:fs";
-import { dirname, join } from "node:path";
-import { fileURLToPath } from "node:url";
+import { readFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
+// prettier-ignore
 // @ts-expect-error - WASM files are in dist/generated/ (checked into git), not src/generated/
-import { initSync, WasmPrePeginTx, WasmPeginTx, WasmPrePeginHtlcConnector, WasmPeginPayoutConnector, WasmAssertPayoutNoPayoutConnector, WasmAssertChallengeAssertConnector, computeMinClaimValue as wasmComputeMinClaimValue, computeMinPeginFee as wasmComputeMinPeginFee, deriveVaultId as wasmDeriveVaultId, expandAuthAnchor as wasmExpandAuthAnchor, expandHashlockSecret as wasmExpandHashlockSecret, expandWotsSeed as wasmExpandWotsSeed } from "./generated/btc_vault.js";
+import { initSync, WasmPrePeginTx, WasmPeginTx, WasmPrePeginHtlcConnector, WasmPeginPayoutConnector, WasmAssertPayoutNoPayoutConnector, WasmAssertChallengeAssertConnector, computeMinClaimValue as wasmComputeMinClaimValue, computeMinPeginFee as wasmComputeMinPeginFee, computePayoutFeeFloor as wasmComputePayoutFeeFloor, deriveVaultId as wasmDeriveVaultId, expandAuthAnchor as wasmExpandAuthAnchor, expandHashlockSecret as wasmExpandHashlockSecret, expandWotsSeed as wasmExpandWotsSeed, peginP2aAnchorOutput as wasmPeginP2aAnchorOutput, supportedTxGraphVersions as wasmSupportedTxGraphVersions, validatePeginP2aAnchor as wasmValidatePeginP2aAnchor } from './generated/vault_wasm.js';
 
 import type {
   PrePeginParams,
@@ -18,6 +19,7 @@ import type {
   PeginTxResult,
   HtlcConnectorParams,
   HtlcConnectorInfo,
+  PeginP2aAnchorInfo,
   PayoutConnectorParams,
   PayoutConnectorInfo,
   Network,
@@ -26,7 +28,8 @@ import type {
   AssertNoPayoutScriptInfo,
   ChallengeAssertConnectorParams,
   ChallengeAssertScriptInfo,
-} from "./types.js";
+} from './types.js';
+import { assertPositiveBigintArray, assertWasmBigint } from './value-guards.js';
 
 /**
  * HTLC output index for single deposits.
@@ -38,8 +41,8 @@ export async function initWasm(): Promise<void> {
   if (wasmInitialized) return;
   const wasmPath = join(
     dirname(fileURLToPath(import.meta.url)),
-    "generated",
-    "btc_vault_bg.wasm",
+    'generated',
+    'vault_wasm_bg.wasm',
   );
   initSync({ module: readFileSync(wasmPath) });
   wasmInitialized = true;
@@ -50,33 +53,18 @@ export async function createPrePeginTransaction(
 ): Promise<PrePeginResult> {
   await initWasm();
 
-  // The 14th positional arg `auth_anchor_hash` is an Option<String> in
-  // Rust — pass `undefined` for Pre-PegIns that do not commit an auth
-  // anchor. Requires a WASM build from a btc-vault commit ≥ 1ced81e5
-  // (btc-vault #1516). The 9th arg `min_pegin_fee_rate` requires the
-  // two-rate `WasmPrePeginTx` constructor from btc-vault #1930.
-  const tx = new (WasmPrePeginTx as unknown as new (
-    depositor: string,
-    vault_provider: string,
-    vault_keepers: string[],
-    universal_challengers: string[],
-    hashlocks: string[],
-    pegin_amounts: BigUint64Array,
-    timelock_refund: number,
-    fee_rate: bigint,
-    min_pegin_fee_rate: bigint,
-    num_local_challengers: number,
-    council_quorum: number,
-    council_size: number,
-    network: string,
-    auth_anchor_hash?: string,
-  ) => typeof WasmPrePeginTx.prototype)(
+  // Leading arg selects the tx-graph version inside the vault-wasm facade;
+  // an unsupported version throws before any construction (fail closed).
+  const tx = new WasmPrePeginTx(
+    params.txGraphVersion,
     params.depositorPubkey,
     params.vaultProviderPubkey,
     params.vaultKeeperPubkeys,
     params.universalChallengerPubkeys,
     [...params.hashlocks],
-    new BigUint64Array(params.pegInAmounts),
+    new BigUint64Array(
+      assertPositiveBigintArray(params.pegInAmounts, 'pegInAmounts'),
+    ),
     params.timelockRefund,
     params.feeRate,
     params.minPeginFeeRate,
@@ -95,10 +83,12 @@ export async function createPrePeginTransaction(
     const peginAmounts: bigint[] = [];
 
     for (let i = 0; i < numHtlcs; i++) {
-      htlcValues.push(tx.getHtlcValue(i));
+      htlcValues.push(assertWasmBigint(tx.getHtlcValue(i), `htlcValue[${i}]`));
       htlcScriptPubKeys.push(tx.getHtlcScriptPubKey(i));
       htlcAddresses.push(tx.getHtlcAddress(i));
-      peginAmounts.push(tx.getPeginAmountAt(i));
+      peginAmounts.push(
+        assertWasmBigint(tx.getPeginAmountAt(i), `peginAmount[${i}]`),
+      );
     }
 
     return {
@@ -108,7 +98,10 @@ export async function createPrePeginTransaction(
       htlcScriptPubKeys,
       htlcAddresses,
       peginAmounts,
-      depositorClaimValue: tx.getDepositorClaimValue(),
+      depositorClaimValue: assertWasmBigint(
+        tx.getDepositorClaimValue(),
+        'depositorClaimValue',
+      ),
     };
   } finally {
     tx.free();
@@ -123,28 +116,16 @@ export async function buildPeginTxFromPrePegin(
 ): Promise<PeginTxResult> {
   await initWasm();
 
-  const unfundedTx = new (WasmPrePeginTx as unknown as new (
-    depositor: string,
-    vault_provider: string,
-    vault_keepers: string[],
-    universal_challengers: string[],
-    hashlocks: string[],
-    pegin_amounts: BigUint64Array,
-    timelock_refund: number,
-    fee_rate: bigint,
-    min_pegin_fee_rate: bigint,
-    num_local_challengers: number,
-    council_quorum: number,
-    council_size: number,
-    network: string,
-    auth_anchor_hash?: string,
-  ) => typeof WasmPrePeginTx.prototype)(
+  const unfundedTx = new WasmPrePeginTx(
+    params.txGraphVersion,
     params.depositorPubkey,
     params.vaultProviderPubkey,
     params.vaultKeeperPubkeys,
     params.universalChallengerPubkeys,
     [...params.hashlocks],
-    new BigUint64Array(params.pegInAmounts),
+    new BigUint64Array(
+      assertPositiveBigintArray(params.pegInAmounts, 'pegInAmounts'),
+    ),
     params.timelockRefund,
     params.feeRate,
     params.minPeginFeeRate,
@@ -165,7 +146,7 @@ export async function buildPeginTxFromPrePegin(
       txHex: peginTx.toHex(),
       txid: peginTx.getTxid(),
       vaultScriptPubKey: peginTx.getVaultScriptPubKey(),
-      vaultValue: peginTx.getVaultValue(),
+      vaultValue: assertWasmBigint(peginTx.getVaultValue(), 'vaultValue'),
     };
   } finally {
     peginTx?.free();
@@ -180,6 +161,7 @@ export async function getPrePeginHtlcConnectorInfo(
   await initWasm();
 
   const connector = new WasmPrePeginHtlcConnector(
+    params.txGraphVersion,
     params.depositorPubkey,
     params.vaultProviderPubkey,
     params.vaultKeeperPubkeys,
@@ -203,6 +185,7 @@ export async function getPrePeginHtlcConnectorInfo(
 }
 
 export async function computeMinClaimValue(
+  txGraphVersion: number,
   numLocalChallengers: number,
   numUniversalChallengers: number,
   councilQuorum: number,
@@ -210,22 +193,139 @@ export async function computeMinClaimValue(
   feeRate: bigint,
 ): Promise<bigint> {
   await initWasm();
-  return wasmComputeMinClaimValue(
-    numLocalChallengers,
-    numUniversalChallengers,
-    councilQuorum,
-    councilSize,
-    feeRate,
-  );
+  try {
+    return assertWasmBigint(
+      wasmComputeMinClaimValue(
+        txGraphVersion,
+        numLocalChallengers,
+        numUniversalChallengers,
+        councilQuorum,
+        councilSize,
+        feeRate,
+      ),
+      'minClaimValue',
+    );
+  } catch (err) {
+    throw toError(err, 'computeMinClaimValue');
+  }
 }
 
 export async function computeMinPeginFee(
+  txGraphVersion: number,
   numVks: number,
   numUcs: number,
   minPeginFeeRate: bigint,
 ): Promise<bigint> {
   await initWasm();
-  return wasmComputeMinPeginFee(numVks, numUcs, minPeginFeeRate);
+  try {
+    return assertWasmBigint(
+      wasmComputeMinPeginFee(txGraphVersion, numVks, numUcs, minPeginFeeRate),
+      'minPeginFee',
+    );
+  } catch (err) {
+    throw toError(err, 'computeMinPeginFee');
+  }
+}
+
+/**
+ * Floor of the Payout transaction fee under `txGraphVersion`: the minimum of
+ * `estimatedVsize * feeRate` across every output-sizing model a deployed
+ * vault provider is known to have used (fixed-34, intermediate,
+ * script-aware). A VP-built payout paying less than this is provably not
+ * produced by any known VP build. `out0Len` must be the TRUSTED length of the
+ * pinned outs[0] script (1..=128); `out1Len` is the measured, UNTRUSTED
+ * commission-script length — safe here because padding cannot raise the floor
+ * (the fixed-34 model saturates the minimum) and shortening only lowers it.
+ * Pass `undefined` for `out1Len` on 2-output (non-VP-claimer) payouts.
+ * `feeRate` is the vault's version-locked `offchainParams.feeRate`.
+ */
+export async function computePayoutFeeFloor(
+  txGraphVersion: number,
+  numVaultKeepers: number,
+  numUniversalChallengers: number,
+  numLocalChallengers: number,
+  councilSize: number,
+  out0Len: number,
+  out1Len: number | null | undefined,
+  feeRate: bigint,
+): Promise<bigint> {
+  await initWasm();
+  try {
+    return assertWasmBigint(
+      wasmComputePayoutFeeFloor(
+        txGraphVersion,
+        numVaultKeepers,
+        numUniversalChallengers,
+        numLocalChallengers,
+        councilSize,
+        out0Len,
+        out1Len,
+        feeRate,
+      ),
+      'payoutFeeFloor',
+    );
+  } catch (err) {
+    throw toError(err, 'computePayoutFeeFloor');
+  }
+}
+
+/**
+ * Tx graph versions the shipped vault-wasm binary can build. Callers must
+ * preflight the required version (fresh: active; resume: stamped) against
+ * this list and fail closed instead of hitting per-call errors mid-flow.
+ *
+ * Note: the facade constructors themselves fail closed on unsupported
+ * versions, and derived objects carry the version they were built with —
+ * value-level cross-checks live in `assertWasmPeginSizing` and the golden
+ * byte-parity tests, not in a per-call version echo.
+ */
+export async function supportedTxGraphVersions(): Promise<number[]> {
+  await initWasm();
+  return Array.from(wasmSupportedTxGraphVersions());
+}
+
+/**
+ * The PegIn transaction's P2A (pay-to-anchor) output for a graph version, or
+ * `null` when that version's PegIn carries no anchor (v1). For v2/v3: 240 sats
+ * at vout 2, script `51024e73`.
+ */
+export async function peginP2aAnchorOutput(
+  txGraphVersion: number,
+): Promise<PeginP2aAnchorInfo | null> {
+  await initWasm();
+  let anchor;
+  try {
+    anchor = wasmPeginP2aAnchorOutput(txGraphVersion);
+  } catch (err) {
+    throw toError(err, 'peginP2aAnchorOutput');
+  }
+  if (anchor === undefined) return null;
+  try {
+    return {
+      value: assertWasmBigint(anchor.value, 'p2aAnchorValue'),
+      vout: anchor.vout,
+      scriptPubKey: anchor.scriptPubKey,
+    };
+  } finally {
+    anchor.free();
+  }
+}
+
+/**
+ * Validate a PegIn transaction's P2A anchor against a graph version's rules:
+ * v2 requires the exact anchor (240 sats, vout 2, P2A script) and v1 requires
+ * that NO output carries the P2A script. Throws on any mismatch.
+ */
+export async function validatePeginP2aAnchor(
+  txGraphVersion: number,
+  txHex: string,
+): Promise<void> {
+  await initWasm();
+  try {
+    wasmValidatePeginP2aAnchor(txGraphVersion, txHex);
+  } catch (err) {
+    throw toError(err, 'validatePeginP2aAnchor');
+  }
 }
 
 export async function createPayoutConnector(
@@ -235,6 +335,7 @@ export async function createPayoutConnector(
   await initWasm();
 
   const connector = new WasmPeginPayoutConnector(
+    params.txGraphVersion,
     params.depositor,
     params.vaultProvider,
     params.vaultKeepers,
@@ -261,6 +362,7 @@ export async function getPeginPayoutScriptInfo(
   await initWasm();
 
   const connector = new WasmPeginPayoutConnector(
+    params.txGraphVersion,
     params.depositor,
     params.vaultProvider,
     params.vaultKeepers,
@@ -284,6 +386,7 @@ export async function getAssertPayoutScriptInfo(
   await initWasm();
 
   const conn = new WasmAssertPayoutNoPayoutConnector(
+    params.txGraphVersion,
     params.claimer,
     params.localChallengers,
     params.universalChallengers,
@@ -309,6 +412,7 @@ export async function getAssertNoPayoutScriptInfo(
   await initWasm();
 
   const conn = new WasmAssertPayoutNoPayoutConnector(
+    params.txGraphVersion,
     params.claimer,
     params.localChallengers,
     params.universalChallengers,
@@ -333,6 +437,7 @@ export async function getChallengeAssertScriptInfo(
   await initWasm();
 
   const conn = new WasmAssertChallengeAssertConnector(
+    params.txGraphVersion,
     params.claimer,
     params.challenger,
     params.claimerWotsKeysJson,
@@ -354,20 +459,20 @@ export async function getChallengeAssertScriptInfo(
 // to `Error` so the JS API surface is consistent with idiomatic JS rejection.
 function toError(err: unknown, fnName: string): Error {
   if (err instanceof Error) return err;
-  const msg = typeof err === "string" ? err : String(err);
+  const msg = typeof err === 'string' ? err : String(err);
   return new Error(`${fnName}: ${msg}`);
 }
 
 /**
  * Derive 32-byte `authAnchor` (OP_RETURN preimage → VP bearer token).
- * @stability frozen — owned by btc-vault Rust (`BTC_VAULT_COMMIT`); rotation breaks VP auth for existing deposits.
+ * @stability frozen — owned by btc-vault Rust via the vault-wasm pin (`VAULT_WASM_COMMIT`); rotation breaks VP auth for existing deposits.
  */
 export async function expandAuthAnchor(root: Uint8Array): Promise<Uint8Array> {
   await initWasm();
   try {
     return wasmExpandAuthAnchor(root);
   } catch (err) {
-    throw toError(err, "expandAuthAnchor");
+    throw toError(err, 'expandAuthAnchor');
   }
 }
 
@@ -383,7 +488,7 @@ export async function expandHashlockSecret(
   try {
     return wasmExpandHashlockSecret(root, htlcVout);
   } catch (err) {
-    throw toError(err, "expandHashlockSecret");
+    throw toError(err, 'expandHashlockSecret');
   }
 }
 
@@ -399,7 +504,7 @@ export async function expandWotsSeed(
   try {
     return wasmExpandWotsSeed(root, htlcVout);
   } catch (err) {
-    throw toError(err, "expandWotsSeed");
+    throw toError(err, 'expandWotsSeed');
   }
 }
 
@@ -430,12 +535,14 @@ export async function deriveVaultId(
 }
 
 function hexToBytes(hex: string): Uint8Array {
-  const clean = hex.startsWith("0x") ? hex.slice(2) : hex;
+  const clean = hex.startsWith('0x') ? hex.slice(2) : hex;
   if (clean.length === 0 || clean.length % 2 !== 0) {
-    throw new Error(`Invalid hex string: expected even length, got ${clean.length}`);
+    throw new Error(
+      `Invalid hex string: expected even length, got ${clean.length}`,
+    );
   }
   if (!/^[0-9a-fA-F]+$/.test(clean)) {
-    throw new Error("Invalid hex string: contains non-hex characters");
+    throw new Error('Invalid hex string: contains non-hex characters');
   }
   const bytes = new Uint8Array(clean.length / 2);
   for (let i = 0; i < bytes.length; i++) {
@@ -450,6 +557,7 @@ export type {
   PrePeginParams,
   PrePeginResult,
   PeginTxResult,
+  PeginP2aAnchorInfo,
   HtlcConnectorParams,
   HtlcConnectorInfo,
   PayoutConnectorParams,
@@ -459,10 +567,18 @@ export type {
   AssertNoPayoutScriptInfo,
   ChallengeAssertConnectorParams,
   ChallengeAssertScriptInfo,
-} from "./types.js";
+} from './types.js';
 
 // Export constants
-export { TAP_INTERNAL_KEY, tapInternalPubkey } from "./constants.js";
+export { TAP_INTERNAL_KEY, tapInternalPubkey } from './constants.js';
+
+// Export boundary value guards (input validation for callers)
+export { assertPositiveBigintArray } from './value-guards.js';
 
 // Re-export WASM classes (mirrors index.ts browser entry)
-export { WasmPrePeginTx, WasmPeginTx, WasmPrePeginHtlcConnector, WasmPeginPayoutConnector };
+export {
+  WasmPrePeginTx,
+  WasmPeginTx,
+  WasmPrePeginHtlcConnector,
+  WasmPeginPayoutConnector,
+};

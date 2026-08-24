@@ -45,7 +45,11 @@ export default defineConfig({
     tsconfigPaths({
       projects: [resolve(__dirname, "./tsconfig.lib.json")],
     }),
-    nodePolyfills({ include: ["buffer", "crypto"] }),
+    // "buffer" is deliberately not included (vault does the same): including it
+    // aliases every bare `buffer` import to a bare shim specifier, which cannot
+    // resolve from a workspace dependency's dist under pnpm. App code keeps the
+    // injected global Buffer; deps that import "buffer" resolve their own copy.
+    nodePolyfills({ include: ["crypto"] }),
     EnvironmentPlugin("all", { prefix: "NEXT_PUBLIC_" }),
     VitePluginRadar({
       analytics: {
@@ -65,7 +69,6 @@ export default defineConfig({
     "import.meta.env.NEXT_PUBLIC_CANONICAL": JSON.stringify(
       process.env.NEXT_PUBLIC_CANONICAL || "https://babylonlabs.io/",
     ),
-    "process.env.NEXT_TELEMETRY_DISABLED": JSON.stringify("1"),
   },
   resolve: {
     alias: {

@@ -11,10 +11,14 @@ export {
   getTargetHealthFactor,
   getUserAccountData,
   getUserPosition,
+  getUserPositionAndAccountData,
+  getUserPositions,
   getUserTotalDebt,
-  hasCollateral,
-  hasDebt,
+  getUserTotalDebts,
 } from "./spoke.js";
+
+// Position-proxy operations
+export { getPositionReserveTotalDebt } from "./positionProxy.js";
 
 // Oracle operations
 export {
@@ -23,6 +27,13 @@ export {
   getReservesPricesSafe,
   type ReservePriceResult,
 } from "./oracle.js";
+
+// Hub operations
+export {
+  getAssetDrawnRatesSafe,
+  type AssetDrawnRateRequest,
+  type AssetDrawnRateResult,
+} from "./hub.js";
 
 // Transaction builders
 export {

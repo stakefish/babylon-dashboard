@@ -1,213 +1,325 @@
 /**
  * DisconnectedOverview Component
  *
- * Marketing / explainer panel rendered in place of the live Overview card
- * when no wallet is connected. Left column: product pitch + Connect CTA +
- * APR stats. Right column: 3-step "how it works" explainer.
+ * Entry / landing screen rendered when no wallet is connected. Left column:
+ * stat chips, product pitch, the live borrow-APR row under a "Current Borrowing
+ * Rates" heading, and the Connect CTA. Right column: one bordered panel of
+ * feature rows separated by hairline dividers; only two rows expand, with
+ * single-open accordion behavior.
  */
 
-import { Avatar, MobileLogo } from "@babylonlabs-io/core-ui";
-import type { ReactNode } from "react";
+import { Avatar } from "@babylonlabs-io/core-ui";
+import { Fragment, useMemo, useState } from "react";
 
-import { CARD_DARK_BG_CLASS } from "@/components/shared/layoutClasses";
+import { BPS_SCALE } from "@/applications/aave/constants";
+import {
+  useVaultSplitParams,
+  type VaultSplitParams,
+} from "@/applications/aave/hooks";
 import { Connect } from "@/components/Wallet";
 import { COPY } from "@/copy";
+import { usePrices } from "@/hooks/usePrices";
+import type { CapSnapshot } from "@/services/deposit";
+import { getCurrencyIconWithFallback } from "@/services/token/tokenService";
+import {
+  formatSatoshisToBtcDisplay,
+  satoshiToBtcNumber,
+} from "@/utils/btcConversion";
+import {
+  formatBasisPointsAsPercent,
+  formatCompactUsd,
+} from "@/utils/formatting";
+
+import { CompetitiveRatesIcon } from "./DisconnectedFeatureCards/CompetitiveRatesIcon";
+import { FastAccessIcon } from "./DisconnectedFeatureCards/FastAccessIcon";
+import { FeatureCard } from "./DisconnectedFeatureCards/FeatureCard";
+import { PartialLiquidationIcon } from "./DisconnectedFeatureCards/PartialLiquidationIcon";
+import { SelfCustodialIcon } from "./DisconnectedFeatureCards/SelfCustodialIcon";
+import { TrustlessIcon } from "./DisconnectedFeatureCards/TrustlessIcon";
+import { useLandingBorrowAprs } from "./useLandingBorrowAprs";
 
 const COPY_OVERVIEW = COPY.overview.disconnected;
 
-interface AprStat {
-  label: string;
-  /** Display value (e.g. "3.7%"). Stat is omitted entirely when undefined. */
-  value: string | undefined;
-  /** Tailwind class for the value's text color. */
-  colorClass: string;
+// Splitting the headline into coloured spans makes the accessible name compute
+// as "B i tcoin", so the heading carries the unsplit sentence as its label.
+const HERO_TITLE = COPY_OVERVIEW.heroTitle;
+const HERO_TITLE_TEXT = `${HERO_TITLE.lead}${HERO_TITLE.accentWord.before}${HERO_TITLE.accentWord.dotted}${HERO_TITLE.accentWord.after}${HERO_TITLE.rest}`;
+
+function formatCapAmount(satoshis: bigint): string {
+  const btc = satoshiToBtcNumber(satoshis);
+  return formatSatoshisToBtcDisplay(satoshis, btc >= 1 ? 2 : 8);
 }
 
-// Stub APR sources. Each entry's `value` should be wired to the real reserve
-// rate (variable borrow APR) once the data layer surfaces it. The three
-// entries below are commented out for now; restoring any one of them (with a
-// real `value`) will make that stat appear in the grid automatically.
-const APR_STATS: AprStat[] = [
-  // {
-  //   label: COPY_OVERVIEW.aprLabels.usdt,
-  //   value: undefined,
-  //   colorClass: "text-[#26A17B]",
-  // },
-  // {
-  //   label: COPY_OVERVIEW.aprLabels.usdc,
-  //   value: undefined,
-  //   colorClass: "text-[#2775CA]",
-  // },
-  // {
-  //   label: COPY_OVERVIEW.aprLabels.wbtc,
-  //   value: undefined,
-  //   colorClass: "text-[#F7931A]",
-  // },
-];
-
-function PanelCard({ children }: { children: ReactNode }) {
-  return (
-    <div
-      className={`flex flex-col rounded-2xl bg-secondary-highlight p-10 ${CARD_DARK_BG_CLASS}`}
-    >
-      {children}
-    </div>
+function capStatValue(
+  capSnapshot: CapSnapshot | null,
+  capError: Error | null,
+): string {
+  if (!capSnapshot || capError) return COPY.common.emptyValue;
+  if (!capSnapshot.hasTotalCap) return COPY_OVERVIEW.stats.capUncapped;
+  return COPY_OVERVIEW.stats.capValue(
+    formatCapAmount(capSnapshot.totalBTC),
+    formatCapAmount(capSnapshot.totalCapBTC),
   );
 }
 
-function BtcBadgeIcon({ badge }: { badge: "down" | "lock" }) {
-  // Light mode: white bg / #DDDDDD border / #666666 glyph.
-  // Dark  mode: #111111 bg / #2F2F2F border / #B0B0B0 glyph.
-  // `currentColor` lets the path inherit the text color set on the wrapper.
+function maxCfStatValue(splitParams: VaultSplitParams | null): string {
+  if (!splitParams) return COPY.common.emptyValue;
+  return formatBasisPointsAsPercent(Math.round(splitParams.CF * BPS_SCALE));
+}
+
+// TVL is the BTC locked across the application priced in USD. Suppressed rather
+// than approximated whenever an input is untrustworthy — a stale or failed
+// oracle round, a zero answer from a fresh one (nothing upstream rejects it),
+// or an errored usage read, whose snapshot falls back to a 0n total. `$0 TVL`
+// on the landing screen reads as a fact rather than as a failure.
+function tvlStatValue(
+  capSnapshot: CapSnapshot | null,
+  capError: Error | null,
+  btcPriceUsd: number | undefined,
+  isBtcPriceUsable: boolean,
+): string {
+  if (
+    !capSnapshot ||
+    capError ||
+    !isBtcPriceUsable ||
+    btcPriceUsd === undefined ||
+    btcPriceUsd <= 0
+  ) {
+    return COPY.common.emptyValue;
+  }
+  return formatCompactUsd(
+    satoshiToBtcNumber(capSnapshot.totalBTC) * btcPriceUsd,
+    true,
+  );
+}
+
+interface StatChipProps {
+  label: string;
+  value: string;
+}
+
+function StatChip({ label, value }: StatChipProps) {
   return (
-    <div className="relative inline-flex h-8 w-8">
-      <img src="/images/btc.png" alt="BTC" className="h-8 w-8 rounded-full" />
-      <div className="absolute -bottom-1 -right-1 flex h-4 w-4 items-center justify-center rounded-full border-[0.5px] border-[#DDDDDD] bg-white text-[#666666] dark:border-[#2F2F2F] dark:bg-[#111111] dark:text-[#B0B0B0]">
-        <svg
-          width="16"
-          height="16"
-          viewBox="0 0 18 18"
-          fill="none"
-          xmlns="http://www.w3.org/2000/svg"
-          aria-hidden="true"
-        >
-          {badge === "down" ? (
-            <path
-              d="M13 9L12.295 8.295L9.5 11.085V5H8.5V11.085L5.71 8.29L5 9L9 13L13 9Z"
-              fill="currentColor"
-            />
-          ) : (
-            <path
-              d="M12 7H11.5V6C11.5 4.62 10.38 3.5 9 3.5C7.62 3.5 6.5 4.62 6.5 6V7H6C5.45 7 5 7.45 5 8V13C5 13.55 5.45 14 6 14H12C12.55 14 13 13.55 13 13V8C13 7.45 12.55 7 12 7ZM7.5 6C7.5 5.17 8.17 4.5 9 4.5C9.83 4.5 10.5 5.17 10.5 6V7H7.5V6ZM12 13H6V8H12V13ZM9 11.5C9.55 11.5 10 11.05 10 10.5C10 9.95 9.55 9.5 9 9.5C8.45 9.5 8 9.95 8 10.5C8 11.05 8.45 11.5 9 11.5Z"
-              fill="currentColor"
+    <span className="inline-flex h-8 items-center gap-1 rounded-lg bg-background-secondary px-3.5 text-sm leading-[1.43] tracking-[0.17px]">
+      <span className="text-accent-secondary">{label}</span>
+      <span className="text-accent-primary">{value}</span>
+    </span>
+  );
+}
+
+interface AprStat {
+  symbol: string;
+  label: string;
+  value: string | undefined;
+}
+
+function AprRow({ stats }: { stats: AprStat[] }) {
+  return (
+    <div className="flex flex-wrap items-center gap-6">
+      {stats.map((stat, i) => (
+        <Fragment key={stat.symbol}>
+          {i > 0 && (
+            <div
+              aria-hidden="true"
+              className="h-12 w-px shrink-0 bg-secondary-strokeLight"
             />
           )}
-        </svg>
-      </div>
-    </div>
-  );
-}
-
-interface StepProps {
-  index: number;
-  icon: ReactNode;
-  title: string;
-  body: string;
-}
-
-function Step({ index, icon, title, body }: StepProps) {
-  return (
-    <div className="flex flex-col items-center gap-3 px-4 text-center">
-      {icon}
-      <div>
-        <span className="text-sm text-accent-secondary">
-          {COPY_OVERVIEW.steps.stepLabel(index)}
-        </span>
-        <h4 className="text-lg font-medium text-accent-primary">{title}</h4>
-        <p className="text-sm text-accent-secondary">{body}</p>
-      </div>
-    </div>
-  );
-}
-
-export function DisconnectedOverview() {
-  return (
-    <PanelCard>
-      <div className="grid grid-cols-1 gap-10 md:grid-cols-2 md:gap-12">
-        {/* Left: product pitch + Connect CTA + APR stats */}
-        <div className="flex flex-col justify-center">
-          <div className="flex items-center gap-4">
-            <span className="[&_svg]:!h-16 [&_svg]:!w-16 [&_svg]:!text-secondary-main dark:[&_svg]:!text-accent-primary">
-              <MobileLogo />
-            </span>
-            <img
-              src="/images/aave.svg"
-              alt="Aave"
-              className="h-16 w-16 rounded-full"
+          <div className="flex items-center gap-3">
+            <Avatar
+              size="large"
+              url={getCurrencyIconWithFallback(undefined, stat.symbol)}
+              alt={stat.symbol}
             />
-          </div>
-
-          <h3 className="mt-10 text-[34px] font-normal leading-tight text-accent-primary">
-            {COPY_OVERVIEW.heroTitle}
-          </h3>
-          <p className="mt-4 text-base text-accent-secondary">
-            {COPY_OVERVIEW.heroBody}
-          </p>
-
-          <div className="mt-8">
-            <Connect text={COPY_OVERVIEW.connectButton} />
-          </div>
-
-          {(() => {
-            const loadedStats = APR_STATS.filter(
-              (s): s is AprStat & { value: string } => s.value !== undefined,
-            );
-            if (loadedStats.length === 0) return null;
-            return (
-              <div className="mt-10 grid grid-cols-3 gap-4">
-                {loadedStats.map((stat, i) => (
-                  <div
-                    key={stat.label}
-                    className={`flex flex-col gap-1 ${i > 0 ? "border-l border-secondary-strokeLight pl-4 dark:border-secondary-strokeDark" : ""}`}
-                  >
-                    <span className="text-xs text-accent-secondary">
-                      {stat.label}
+            <div className="flex flex-col items-center text-center">
+              <span className="text-xs leading-[1.66] tracking-[0.4px] text-accent-secondary">
+                {stat.label}
+              </span>
+              <span className="text-accent-primary">
+                <span className="text-xl leading-[1.6] tracking-[0.15px]">
+                  {stat.value ?? COPY.common.emptyValue}
+                </span>
+                {stat.value !== undefined && (
+                  <>
+                    {" "}
+                    <span className="text-sm leading-[1.43] tracking-[0.17px]">
+                      {COPY_OVERVIEW.aprSuffix}
                     </span>
-                    <span className={`text-3xl font-normal ${stat.colorClass}`}>
-                      {stat.value}
-                    </span>
-                  </div>
-                ))}
-              </div>
-            );
-          })()}
+                  </>
+                )}
+              </span>
+            </div>
+          </div>
+        </Fragment>
+      ))}
+    </div>
+  );
+}
+
+interface DisconnectedOverviewProps {
+  capSnapshot: CapSnapshot | null;
+  capError: Error | null;
+}
+
+export function DisconnectedOverview({
+  capSnapshot,
+  capError,
+}: DisconnectedOverviewProps) {
+  const borrowAprs = useLandingBorrowAprs();
+  const { params: splitParams } = useVaultSplitParams();
+  const { prices, metadata } = usePrices();
+  const [expandedTitle, setExpandedTitle] = useState<string | null>(null);
+
+  const btcPriceUsd = prices["BTC"];
+  const btcMetadata = metadata["BTC"];
+  const isBtcPriceUsable =
+    btcMetadata !== undefined &&
+    !btcMetadata.isStale &&
+    !btcMetadata.fetchFailed;
+
+  const aprStats: AprStat[] = useMemo(
+    () => [
+      {
+        symbol: "USDT",
+        label: COPY_OVERVIEW.aprLabels.usdt,
+        value: borrowAprs.usdt,
+      },
+      {
+        symbol: "USDC",
+        label: COPY_OVERVIEW.aprLabels.usdc,
+        value: borrowAprs.usdc,
+      },
+      {
+        symbol: "WBTC",
+        label: COPY_OVERVIEW.aprLabels.wbtc,
+        value: borrowAprs.wbtc,
+      },
+    ],
+    [borrowAprs.usdt, borrowAprs.usdc, borrowAprs.wbtc],
+  );
+
+  const statChips = useMemo(
+    () => [
+      {
+        label: COPY_OVERVIEW.stats.tvlLabel,
+        value: tvlStatValue(
+          capSnapshot,
+          capError,
+          btcPriceUsd,
+          isBtcPriceUsable,
+        ),
+      },
+      {
+        label: COPY_OVERVIEW.stats.capLabel,
+        value: capStatValue(capSnapshot, capError),
+      },
+      {
+        label: COPY_OVERVIEW.stats.maxCfLabel,
+        value: maxCfStatValue(splitParams),
+      },
+    ],
+    [capSnapshot, capError, splitParams, btcPriceUsd, isBtcPriceUsable],
+  );
+
+  const featureCards = useMemo(() => {
+    const features = COPY_OVERVIEW.features;
+    return [
+      {
+        icon: <CompetitiveRatesIcon />,
+        title: features.competitiveRates.title,
+        body: features.competitiveRates.body,
+      },
+      {
+        icon: <SelfCustodialIcon />,
+        title: features.selfCustodial.title,
+        body: features.selfCustodial.body,
+        expandable: true,
+      },
+      {
+        icon: <FastAccessIcon />,
+        title: features.fastAccess.title,
+        body: features.fastAccess.body,
+      },
+      {
+        icon: <PartialLiquidationIcon />,
+        title: features.partialLiquidation.title,
+        body: features.partialLiquidation.body,
+      },
+      {
+        icon: <TrustlessIcon />,
+        title: features.trustless.title,
+        body: features.trustless.body,
+        expandable: true,
+      },
+    ];
+  }, []);
+
+  return (
+    <div className="grid grid-cols-1 items-start gap-10 md:grid-cols-2 md:gap-12">
+      <div className="flex flex-col">
+        <div className="flex flex-wrap gap-4">
+          {statChips.map((chip) => (
+            <StatChip key={chip.label} label={chip.label} value={chip.value} />
+          ))}
         </div>
 
-        {/* Right: 3-step explainer (in the same panel) */}
-        <div className="flex flex-col gap-6 rounded-2xl bg-surface/40 p-6 dark:bg-black/20">
-          <Step
-            index={1}
-            icon={<BtcBadgeIcon badge="down" />}
-            title={COPY_OVERVIEW.steps.one.title}
-            body={COPY_OVERVIEW.steps.one.body}
-          />
-          <div className="border-t-[0.5px] border-secondary-strokeLight" />
-          <Step
-            index={2}
-            icon={
-              <div className="flex items-center">
-                <Avatar
-                  url="/images/usdt.png"
-                  alt="USDT"
-                  size="medium"
-                  className="h-8 w-8"
-                />
-                <Avatar
-                  url="/images/usdc.png"
-                  alt="USDC"
-                  size="medium"
-                  className="-ml-2 h-8 w-8"
-                />
-                <Avatar
-                  url="/images/wbtc.png"
-                  alt="WBTC"
-                  size="medium"
-                  className="-ml-2 h-8 w-8 bg-white"
-                />
-              </div>
-            }
-            title={COPY_OVERVIEW.steps.two.title}
-            body={COPY_OVERVIEW.steps.two.body}
-          />
-          <div className="border-t-[0.5px] border-secondary-strokeLight" />
-          <Step
-            index={3}
-            icon={<BtcBadgeIcon badge="lock" />}
-            title={COPY_OVERVIEW.steps.three.title}
-            body={COPY_OVERVIEW.steps.three.body}
-          />
+        <h1
+          aria-label={HERO_TITLE_TEXT}
+          className="mt-6 text-[clamp(2rem,5vw,3rem)] font-normal leading-[1.167] text-accent-primary"
+        >
+          {HERO_TITLE.lead}
+          <span className="whitespace-nowrap">
+            {HERO_TITLE.accentWord.before}
+            <span className="relative inline-block text-secondary-main">
+              {HERO_TITLE.accentWord.dotted}
+              <span
+                aria-hidden="true"
+                className="absolute inset-0 select-none text-accent-primary"
+              >
+                {HERO_TITLE.accentWord.dotless}
+              </span>
+            </span>
+            {HERO_TITLE.accentWord.after}
+          </span>
+          {HERO_TITLE.rest}
+        </h1>
+        <p className="mt-3 text-base leading-[1.5] tracking-[0.15px] text-accent-secondary">
+          {COPY_OVERVIEW.heroBody}
+        </p>
+
+        <h2 className="mt-6 text-xl font-normal leading-[1.6] tracking-[0.15px] text-accent-primary">
+          {COPY_OVERVIEW.aprHeading}
+        </h2>
+        <div className="mt-4">
+          <AprRow stats={aprStats} />
+        </div>
+
+        <div className="mt-6">
+          <Connect text={COPY_OVERVIEW.connectButton} />
         </div>
       </div>
-    </PanelCard>
+
+      <div className="divide-y divide-secondary-strokeLight overflow-hidden rounded-lg border border-secondary-strokeLight bg-background-secondary">
+        {featureCards.map((card) => (
+          <FeatureCard
+            key={card.title}
+            icon={card.icon}
+            title={card.title}
+            body={card.body}
+            expandable={card.expandable}
+            expanded={
+              card.expandable ? expandedTitle === card.title : undefined
+            }
+            onToggle={
+              card.expandable
+                ? () =>
+                    setExpandedTitle((current) =>
+                      current === card.title ? null : card.title,
+                    )
+                : undefined
+            }
+          />
+        ))}
+      </div>
+    </div>
   );
 }

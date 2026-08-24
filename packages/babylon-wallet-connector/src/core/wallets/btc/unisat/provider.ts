@@ -277,6 +277,31 @@ export class UnisatProvider implements IBTCProvider {
     return this.walletInfo.publicKeyHex;
   };
 
+  getAccounts = async (): Promise<string[]> => {
+    if (!this.walletInfo)
+      throw new WalletError({
+        code: ERROR_CODES.WALLET_NOT_CONNECTED,
+        message: "Unisat Wallet not connected",
+        wallet: WALLET_PROVIDER_NAME,
+      });
+
+    if (typeof this.provider.getAccounts !== "function") {
+      throw new WalletError({
+        code: ERROR_CODES.WALLET_METHOD_NOT_SUPPORTED,
+        message: "Unisat Wallet does not support getAccounts",
+        wallet: WALLET_PROVIDER_NAME,
+      });
+    }
+
+    // `getAccounts` is the non-interactive read (unlike `requestAccounts`): a
+    // locked wallet resolves with [] without surfacing the unlock popup, which
+    // is what makes it usable as a silent lock-detection poll. Bounded by the
+    // RPC timeout so a stalled extension can't hang the poll.
+    return withTimeout(this.provider.getAccounts(), UNISAT_RPC_TIMEOUT_MS, () =>
+      this.timeoutError("reading its accounts"),
+    );
+  };
+
   signPsbt = async (psbtHex: string, options?: SignPsbtOptions): Promise<string> => {
     if (!this.walletInfo)
       throw new WalletError({
@@ -403,6 +428,10 @@ export class UnisatProvider implements IBTCProvider {
   };
 
   private getSignPsbtDefaultOptions(psbtHex: string, network: Network) {
+    // Decoding a taproot scriptPubKey below needs the curve library, so register
+    // it up front rather than after a failed first attempt.
+    initBTCCurve();
+
     const toSignInputs: any[] = [];
     const psbt = Psbt.fromHex(psbtHex);
     psbt.data.inputs.forEach((input, index) => {
@@ -418,17 +447,11 @@ export class UnisatProvider implements IBTCProvider {
         try {
           addressToBeSigned = btcAddress.fromOutputScript(input.witnessUtxo.script, btcNetwork);
         } catch (error: Error | any) {
-          if (error instanceof Error && error.message.toLowerCase().includes("has no matching address")) {
-            // initialize the BTC curve if not already initialized
-            initBTCCurve();
-            addressToBeSigned = btcAddress.fromOutputScript(input.witnessUtxo.script, btcNetwork);
-          } else {
-            throw new WalletError({
-              code: ERROR_CODES.UNKNOWN_ERROR, // Or a more specific address generation error
-              message: (error as Error)?.message || "Failed to determine address from output script",
-              wallet: WALLET_PROVIDER_NAME,
-            });
-          }
+          throw new WalletError({
+            code: ERROR_CODES.UNKNOWN_ERROR, // Or a more specific address generation error
+            message: (error as Error)?.message || "Failed to determine address from output script",
+            wallet: WALLET_PROVIDER_NAME,
+          });
         }
         // check if the address is a taproot address
         const isTaproot = addressToBeSigned.indexOf("tb1p") === 0 || addressToBeSigned.indexOf("bc1p") === 0;

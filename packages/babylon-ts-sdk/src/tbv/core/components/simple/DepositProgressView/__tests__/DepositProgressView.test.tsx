@@ -1,5 +1,5 @@
-import { render, screen } from "@testing-library/react";
-import { describe, expect, it, vi } from "vitest";
+import { fireEvent, render, screen } from "@testing-library/react";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { COPY } from "@/copy";
 import { DepositFlowStep } from "@/hooks/deposit/depositFlowSteps/types";
@@ -13,6 +13,37 @@ vi.mock("../BtcConfirmationDetailContainer", () => ({
     <div data-testid="btc-confirmation-detail" />
   ),
 }));
+
+// DepositCardShell derives the header estimate from the on-chain confirmation
+// depth; the estimate itself is covered in DepositCardShell.test.tsx.
+vi.mock("@/context/ProtocolParamsContext", () => ({
+  useProtocolParamsContext: () => ({
+    config: { offchainParams: { minPrepeginDepth: 6 } },
+    getOffchainParamsByVersion: () => undefined,
+  }),
+}));
+
+// DepositProgressView self-sources the BTC wallet-lock state to render its
+// unlock notice and pre-sign unlock CTA. Drive it through a mutable mock;
+// default unlocked.
+const mockBtcWalletState = vi.hoisted(() => ({ locked: false }));
+vi.mock("@/context/wallet", () => ({
+  useBTCWallet: () => mockBtcWalletState,
+}));
+
+// The pre-sign unlock CTA delegates to useBtcWalletUnlock; mock it so this
+// suite stays focused on DepositProgressView's rendering. `isUnlocking: false`
+// drives the steady "Unlock wallet" label; the hook's reconnect/logging
+// behavior is its own concern.
+const mockUnlock = vi.hoisted(() => vi.fn());
+vi.mock("@/hooks/useBtcWalletUnlock", () => ({
+  useBtcWalletUnlock: () => ({ unlock: mockUnlock, isUnlocking: false }),
+}));
+
+afterEach(() => {
+  mockBtcWalletState.locked = false;
+  mockUnlock.mockClear();
+});
 
 const baseProps = {
   error: null,
@@ -73,10 +104,10 @@ describe("DepositProgressView", () => {
         screen.queryByText(COPY.deposit.steps.signPayouts),
       ).not.toBeInTheDocument();
 
-      // The finished "Register deposit" group reports 7/7.
+      // The finished "Register deposit" group is hidden (folds into the pill).
       expect(
-        screen.getByText(COPY.deposit.groups.stepCounter(6, 6)),
-      ).toBeInTheDocument();
+        screen.queryByText(COPY.deposit.groups.registerDeposit),
+      ).not.toBeInTheDocument();
     });
   });
 
@@ -117,6 +148,129 @@ describe("DepositProgressView", () => {
       );
 
       expect(screen.getByRole("button", { name: "Sign" })).toBeInTheDocument();
+    });
+  });
+
+  describe("pre-entry state (started=false)", () => {
+    it("keeps completed work visible when entering un-started mid-flow at the WOTS step", () => {
+      // A WOTS re-offer (suppression TTL lapsed) enters here with the whole
+      // "Register deposit" group genuinely done — Pre-PegIn broadcast and
+      // confirmed. That work must not read as zero progress.
+      render(
+        <DepositProgressView
+          {...baseProps}
+          started={false}
+          onSign={vi.fn()}
+          currentStep={DepositFlowStep.SUBMIT_WOTS_KEYS}
+        />,
+      );
+
+      // The finished first group folds into the pill, same as mid-flow.
+      expect(
+        screen.getByText(COPY.deposit.progress.stepsCompleted(1, 4)),
+      ).toBeInTheDocument();
+      expect(
+        screen.queryByText(COPY.deposit.groups.registerDeposit),
+      ).not.toBeInTheDocument();
+
+      // SUBMIT_WOTS_KEYS is visual step 7 → 6 of 15 completed → 40%.
+      expect(screen.getByRole("progressbar")).toHaveAttribute(
+        "aria-valuenow",
+        "40",
+      );
+    });
+
+    it("expands no group before the user clicks, so no step reads as in progress", () => {
+      render(
+        <DepositProgressView
+          {...baseProps}
+          started={false}
+          onSign={vi.fn()}
+          currentStep={DepositFlowStep.SUBMIT_WOTS_KEYS}
+          wotsApprovalHint={COPY.deposit.resume.wotsWalletApprovalHint}
+        />,
+      );
+
+      // The current group renders as a collapsed header above the CTA: its
+      // title gives the CTA context, but no sub-step row exists to spin
+      // while the flow is idle awaiting the click.
+      expect(
+        screen.getByText(COPY.deposit.groups.signWots),
+      ).toBeInTheDocument();
+      expect(
+        screen.queryByText(COPY.deposit.steps.submitWotsKey),
+      ).not.toBeInTheDocument();
+      expect(
+        screen.queryByText(COPY.deposit.resume.wotsWalletApprovalHint),
+      ).not.toBeInTheDocument();
+
+      // Nothing announces "In progress" — the current group has no finished
+      // sub-step, so it reads not-started until the click, visually and to a
+      // screen reader.
+      expect(
+        screen.queryByLabelText(COPY.deposit.a11y.groupStatus.active),
+      ).not.toBeInTheDocument();
+
+      expect(
+        screen.getByRole("button", {
+          name: COPY.deposit.progress.buttons.signTransaction,
+        }),
+      ).toBeInTheDocument();
+    });
+
+    it("keeps the step-1 entry fully collapsed with no progress affordances", () => {
+      // DepositSignContent's entry state: nothing is completed, so the
+      // pre-entry render must look exactly as it always has — four collapsed
+      // group headers, no bar, no pill, no expanded sub-steps.
+      render(
+        <DepositProgressView
+          {...baseProps}
+          started={false}
+          onSign={vi.fn()}
+          currentStep={DepositFlowStep.DERIVE_VAULT_SECRET}
+        />,
+      );
+
+      expect(
+        screen.getByText(COPY.deposit.groups.registerDeposit),
+      ).toBeInTheDocument();
+      expect(
+        screen.queryByText(COPY.deposit.steps.generateSecret),
+      ).not.toBeInTheDocument();
+      expect(screen.queryByRole("progressbar")).not.toBeInTheDocument();
+      expect(screen.queryByText(/steps completed/)).not.toBeInTheDocument();
+
+      // All four groups read not-started — including the first, whose flow
+      // position is "current" but whose work has not begun.
+      expect(
+        screen.getAllByLabelText(COPY.deposit.a11y.groupStatus.upcoming),
+      ).toHaveLength(4);
+    });
+
+    it("keeps a sibling vault's live progress expanded on a split re-offer", () => {
+      // The gate is about the flow's own un-started action. A sibling lane
+      // sitting on a different step is driven by its own polled state — its
+      // wait is genuinely running and must not collapse behind this modal's
+      // idle entry state.
+      render(
+        <DepositProgressView
+          {...baseProps}
+          started={false}
+          onSign={vi.fn()}
+          currentStep={DepositFlowStep.SUBMIT_WOTS_KEYS}
+          vaultCount={2}
+          currentVaultIndex={0}
+          perVaultSteps={[
+            DepositFlowStep.SUBMIT_WOTS_KEYS,
+            DepositFlowStep.AWAIT_PAYOUT_TRANSACTIONS,
+          ]}
+        />,
+      );
+
+      // The sibling's expanded WOTS group shows its active await row.
+      expect(
+        screen.getByText(COPY.deposit.steps.awaitPayoutTransactions),
+      ).toBeInTheDocument();
     });
   });
 
@@ -170,6 +324,32 @@ describe("DepositProgressView", () => {
       const bar = screen.getByRole("progressbar");
       expect(bar).toHaveAttribute("aria-valuenow", "33");
       expect(bar).toHaveAttribute("aria-valuemax", "100");
+    });
+
+    it("uses the laggard per-vault step for split aggregate progress", () => {
+      render(
+        <DepositProgressView
+          {...baseProps}
+          currentStep={DepositFlowStep.AWAIT_VP_VERIFICATION}
+          vaultCount={2}
+          currentVaultIndex={1}
+          perVaultSteps={[
+            DepositFlowStep.SUBMIT_WOTS_KEYS,
+            DepositFlowStep.AWAIT_VP_VERIFICATION,
+          ]}
+        />,
+      );
+
+      expect(
+        screen.getByText(COPY.deposit.progress.stepsCompleted(1, 4)),
+      ).toBeInTheDocument();
+      expect(
+        screen.queryByText(COPY.deposit.progress.stepsCompleted(2, 4)),
+      ).not.toBeInTheDocument();
+      expect(screen.getByRole("progressbar")).toHaveAttribute(
+        "aria-valuenow",
+        "40",
+      );
     });
 
     it("fills the bar fully on the final awaiting-confirmation step", () => {
@@ -346,7 +526,7 @@ describe("DepositProgressView", () => {
   });
 
   describe("complete state", () => {
-    it("collapses all groups with full counters and fills the progress bar", () => {
+    it("hides all groups and fills the progress bar on completion", () => {
       render(
         <DepositProgressView
           {...baseProps}
@@ -355,16 +535,13 @@ describe("DepositProgressView", () => {
         />,
       );
 
+      // Completed groups fold into the pill — no group headers or sub-steps remain.
       expect(
-        screen.getByText(COPY.deposit.groups.stepCounter(6, 6)),
-      ).toBeInTheDocument();
+        screen.queryByText(COPY.deposit.groups.registerDeposit),
+      ).not.toBeInTheDocument();
       expect(
-        screen.getByText(COPY.deposit.groups.stepCounter(4, 4)),
-      ).toBeInTheDocument();
-      expect(
-        screen.getByText(COPY.deposit.groups.stepCounter(3, 3)),
-      ).toBeInTheDocument();
-      // No expanded sub-steps remain.
+        screen.queryByText(COPY.deposit.groups.activateVault),
+      ).not.toBeInTheDocument();
       expect(
         screen.queryByText(COPY.deposit.steps.revealSecret),
       ).not.toBeInTheDocument();
@@ -383,8 +560,9 @@ describe("DepositProgressView", () => {
         />,
       );
 
+      // All four groups are done → the pill reports "4 of 4 steps completed".
       expect(
-        screen.getByText(COPY.deposit.groups.stepCounter(6, 6)),
+        screen.getByText(COPY.deposit.progress.stepsCompleted(4, 4)),
       ).toBeInTheDocument();
       expect(screen.getByRole("progressbar")).toHaveAttribute(
         "aria-valuenow",
@@ -396,7 +574,6 @@ describe("DepositProgressView", () => {
   describe("BTC confirmation detail panel", () => {
     const PRE_PEGIN_TXID =
       "1b2c3d4e5f00000000000000000000000000000000000000000000000000000000";
-    const NOW = new Date("2026-01-01T14:00:00Z").getTime();
 
     it("renders the confirmation detail when the active step is AWAIT_PAYOUT_TRANSACTIONS", () => {
       render(
@@ -404,7 +581,6 @@ describe("DepositProgressView", () => {
           {...baseProps}
           currentStep={DepositFlowStep.AWAIT_PAYOUT_TRANSACTIONS}
           btcConfirmationDetail={{
-            startedAt: NOW,
             prePeginTxid: PRE_PEGIN_TXID,
             requiredDepth: 6,
             depositIds: ["0xvault"],
@@ -421,7 +597,6 @@ describe("DepositProgressView", () => {
           {...baseProps}
           currentStep={DepositFlowStep.AWAIT_BTC_CONFIRMATION}
           btcConfirmationDetail={{
-            startedAt: NOW,
             prePeginTxid: PRE_PEGIN_TXID,
             requiredDepth: 6,
             depositIds: ["0xvault"],
@@ -440,7 +615,6 @@ describe("DepositProgressView", () => {
           {...baseProps}
           currentStep={DepositFlowStep.SUBMIT_WOTS_KEYS}
           btcConfirmationDetail={{
-            startedAt: NOW,
             prePeginTxid: PRE_PEGIN_TXID,
             requiredDepth: 6,
             depositIds: ["0xvault"],
@@ -534,7 +708,7 @@ describe("DepositProgressView", () => {
         <DepositProgressView
           {...baseProps}
           currentStep={DepositFlowStep.RETRIEVE_SECRET}
-          error="boom"
+          error={{ title: "Transaction failed", body: "boom" }}
           terminalMessage="Ready to activate."
         />,
       );
@@ -554,6 +728,441 @@ describe("DepositProgressView", () => {
 
       expect(screen.queryByText("Ready to activate.")).not.toBeInTheDocument();
       expect(screen.getByRole("button", { name: "Done" })).toBeInTheDocument();
+    });
+  });
+
+  describe("wallet-locked notice", () => {
+    it("surfaces the lock title and description when the BTC wallet is locked", () => {
+      mockBtcWalletState.locked = true;
+      render(
+        <DepositProgressView
+          {...baseProps}
+          currentStep={DepositFlowStep.SIGN_PEGIN_BTC}
+        />,
+      );
+
+      expect(screen.getByText(COPY.wallet.locked.title)).toBeInTheDocument();
+      expect(
+        screen.getByText(COPY.wallet.locked.description),
+      ).toBeInTheDocument();
+    });
+
+    it("does not show the lock notice when the BTC wallet is unlocked", () => {
+      render(
+        <DepositProgressView
+          {...baseProps}
+          currentStep={DepositFlowStep.SIGN_PEGIN_BTC}
+        />,
+      );
+
+      expect(
+        screen.queryByText(COPY.wallet.locked.title),
+      ).not.toBeInTheDocument();
+    });
+
+    it("suppresses the lock notice on a completed deposit so it never stacks on the success banner", () => {
+      mockBtcWalletState.locked = true;
+      render(
+        <DepositProgressView
+          {...baseProps}
+          isComplete
+          currentStep={DepositFlowStep.AWAIT_ACTIVATION_CONFIRMATION}
+        />,
+      );
+
+      expect(
+        screen.queryByText(COPY.wallet.locked.title),
+      ).not.toBeInTheDocument();
+    });
+
+    it("suppresses the lock notice at a terminal success milestone so it never stacks on the success banner", () => {
+      mockBtcWalletState.locked = true;
+      render(
+        <DepositProgressView
+          {...baseProps}
+          terminalMessage="Ready to activate."
+          currentStep={DepositFlowStep.AWAIT_PAYOUT_TRANSACTIONS}
+        />,
+      );
+
+      expect(
+        screen.queryByText(COPY.wallet.locked.title),
+      ).not.toBeInTheDocument();
+    });
+
+    it("relabels the pre-sign CTA to an unlock action when the wallet is locked", () => {
+      mockBtcWalletState.locked = true;
+      render(
+        <DepositProgressView
+          {...baseProps}
+          started={false}
+          onSign={vi.fn()}
+          currentStep={DepositFlowStep.SIGN_PEGIN_BTC}
+        />,
+      );
+
+      expect(
+        screen.getByRole("button", { name: COPY.wallet.locked.unlockButton }),
+      ).toBeInTheDocument();
+      expect(
+        screen.queryByText(COPY.deposit.progress.buttons.signTransaction),
+      ).not.toBeInTheDocument();
+    });
+
+    it("runs the unlock action and not the sign flow when the locked pre-sign CTA is clicked", () => {
+      mockBtcWalletState.locked = true;
+      const onSign = vi.fn();
+      render(
+        <DepositProgressView
+          {...baseProps}
+          started={false}
+          onSign={onSign}
+          currentStep={DepositFlowStep.SIGN_PEGIN_BTC}
+        />,
+      );
+
+      fireEvent.click(
+        screen.getByRole("button", { name: COPY.wallet.locked.unlockButton }),
+      );
+
+      expect(mockUnlock).toHaveBeenCalledTimes(1);
+      expect(onSign).not.toHaveBeenCalled();
+    });
+  });
+
+  describe("WOTS wallet-approval hint", () => {
+    it("renders the hint under the active WOTS step when provided", () => {
+      render(
+        <DepositProgressView
+          {...baseProps}
+          currentStep={DepositFlowStep.SUBMIT_WOTS_KEYS}
+          wotsApprovalHint={COPY.deposit.resume.wotsWalletApprovalHint}
+        />,
+      );
+
+      expect(
+        screen.getByText(COPY.deposit.resume.wotsWalletApprovalHint),
+      ).toBeInTheDocument();
+    });
+
+    it("does not render the hint at a non-WOTS step", () => {
+      render(
+        <DepositProgressView
+          {...baseProps}
+          currentStep={DepositFlowStep.SIGN_PEGIN_BTC}
+          wotsApprovalHint={COPY.deposit.resume.wotsWalletApprovalHint}
+        />,
+      );
+
+      expect(
+        screen.queryByText(COPY.deposit.resume.wotsWalletApprovalHint),
+      ).not.toBeInTheDocument();
+    });
+
+    it("does not render the hint when the WOTS step failed", () => {
+      render(
+        <DepositProgressView
+          {...baseProps}
+          currentStep={DepositFlowStep.SUBMIT_WOTS_KEYS}
+          error={{ title: "Transaction failed", body: "boom" }}
+          wotsApprovalHint={COPY.deposit.resume.wotsWalletApprovalHint}
+        />,
+      );
+
+      expect(
+        screen.queryByText(COPY.deposit.resume.wotsWalletApprovalHint),
+      ).not.toBeInTheDocument();
+    });
+
+    it("shows the hint only under the active vault's column in a split deposit", () => {
+      render(
+        <DepositProgressView
+          {...baseProps}
+          currentStep={DepositFlowStep.SUBMIT_WOTS_KEYS}
+          vaultCount={2}
+          currentVaultIndex={0}
+          perVaultSteps={[
+            DepositFlowStep.SUBMIT_WOTS_KEYS,
+            DepositFlowStep.SUBMIT_WOTS_KEYS,
+          ]}
+          wotsApprovalHint={COPY.deposit.resume.wotsWalletApprovalHint}
+        />,
+      );
+
+      expect(
+        screen.getAllByText(COPY.deposit.resume.wotsWalletApprovalHint),
+      ).toHaveLength(1);
+    });
+  });
+
+  describe("error diagnostics", () => {
+    it("copies the raw error when the callout's copy action is used", async () => {
+      const writeText = vi.fn().mockResolvedValue(undefined);
+      Object.assign(navigator, { clipboard: { writeText } });
+
+      render(
+        <DepositProgressView
+          {...baseProps}
+          currentStep={DepositFlowStep.DERIVE_VAULT_SECRET}
+          error={{
+            title: "Transaction failed",
+            body: "An unknown RPC error occurred. header not found",
+            diagnostics: "TransactionExecutionError: ... data: 0x68d177ac",
+          }}
+        />,
+      );
+
+      fireEvent.click(
+        screen.getByRole("button", {
+          name: COPY.deposit.errors.copyDiagnostics,
+        }),
+      );
+
+      expect(writeText).toHaveBeenCalledWith(
+        "TransactionExecutionError: ... data: 0x68d177ac",
+      );
+      expect(
+        await screen.findByRole("button", {
+          name: COPY.deposit.errors.diagnosticsCopied,
+        }),
+      ).toBeInTheDocument();
+    });
+
+    it("says so instead of claiming success when the clipboard refuses", async () => {
+      // Denied permission or an insecure context: a false "Copied" would send
+      // the reporter off to paste nothing.
+      const writeText = vi.fn().mockRejectedValue(new Error("denied"));
+      Object.assign(navigator, { clipboard: { writeText } });
+
+      render(
+        <DepositProgressView
+          {...baseProps}
+          currentStep={DepositFlowStep.DERIVE_VAULT_SECRET}
+          error={{
+            title: "Transaction failed",
+            body: "An unknown RPC error occurred.",
+            diagnostics: "TransactionExecutionError: ...",
+          }}
+        />,
+      );
+
+      fireEvent.click(
+        screen.getByRole("button", {
+          name: COPY.deposit.errors.copyDiagnostics,
+        }),
+      );
+
+      expect(
+        await screen.findByRole("button", {
+          name: COPY.deposit.errors.diagnosticsCopyFailed,
+        }),
+      ).toBeInTheDocument();
+      expect(
+        screen.queryByRole("button", {
+          name: COPY.deposit.errors.diagnosticsCopied,
+        }),
+      ).not.toBeInTheDocument();
+      // "copy manually" is only actionable if the text is actually on screen.
+      expect(
+        screen.getByText("TransactionExecutionError: ..."),
+      ).toBeInTheDocument();
+    });
+
+    it("keeps the raw diagnostics out of the callout until a copy fails", () => {
+      render(
+        <DepositProgressView
+          {...baseProps}
+          currentStep={DepositFlowStep.DERIVE_VAULT_SECRET}
+          error={{
+            title: "Transaction failed",
+            body: "An unknown RPC error occurred.",
+            diagnostics: "TransactionExecutionError: ... data: 0x68d177ac",
+          }}
+        />,
+      );
+
+      expect(screen.queryByText(/0x68d177ac/)).not.toBeInTheDocument();
+    });
+
+    it("reports failure when the clipboard API is unavailable", async () => {
+      Object.assign(navigator, { clipboard: undefined });
+
+      render(
+        <DepositProgressView
+          {...baseProps}
+          currentStep={DepositFlowStep.DERIVE_VAULT_SECRET}
+          error={{
+            title: "Transaction failed",
+            body: "An unknown RPC error occurred.",
+            diagnostics: "TransactionExecutionError: ...",
+          }}
+        />,
+      );
+
+      fireEvent.click(
+        screen.getByRole("button", {
+          name: COPY.deposit.errors.copyDiagnostics,
+        }),
+      );
+
+      expect(
+        await screen.findByRole("button", {
+          name: COPY.deposit.errors.diagnosticsCopyFailed,
+        }),
+      ).toBeInTheDocument();
+    });
+
+    it("offers no copy action when the error carries no diagnostics", () => {
+      render(
+        <DepositProgressView
+          {...baseProps}
+          currentStep={DepositFlowStep.DERIVE_VAULT_SECRET}
+          error={{ title: "Transaction rejected", body: "You declined." }}
+        />,
+      );
+
+      expect(
+        screen.queryByRole("button", {
+          name: COPY.deposit.errors.copyDiagnostics,
+        }),
+      ).not.toBeInTheDocument();
+    });
+  });
+  describe("device signing cancellation", () => {
+    it("keeps the processing button disabled with the signing label when cancellation is unavailable", () => {
+      // Pin: without canCancelSigning the processing state renders exactly as
+      // it always has — no cancel affordance, button disabled.
+      render(
+        <DepositProgressView
+          {...baseProps}
+          currentStep={DepositFlowStep.SIGN_DEPOSITOR_GRAPH}
+          isProcessing
+          canClose={false}
+        />,
+      );
+
+      expect(
+        screen.getByRole("button", {
+          name: COPY.deposit.progress.buttons.sign,
+        }),
+      ).toBeDisabled();
+      expect(
+        screen.queryByText(COPY.deposit.progress.buttons.cancelSigning),
+      ).not.toBeInTheDocument();
+    });
+
+    it("enables a Cancel signing button while processing when cancellation is available", () => {
+      const onCancelSigning = vi.fn();
+      render(
+        <DepositProgressView
+          {...baseProps}
+          currentStep={DepositFlowStep.SIGN_DEPOSITOR_GRAPH}
+          isProcessing
+          canClose={false}
+          canCancelSigning
+          onCancelSigning={onCancelSigning}
+        />,
+      );
+
+      const button = screen.getByRole("button", {
+        name: COPY.deposit.progress.buttons.cancelSigning,
+      });
+      expect(button).toBeEnabled();
+      // No notice until the user actually requests the cancel.
+      expect(
+        screen.queryByText(COPY.deposit.progress.cancelRequestedNotice),
+      ).not.toBeInTheDocument();
+
+      fireEvent.click(button);
+      expect(onCancelSigning).toHaveBeenCalledTimes(1);
+    });
+
+    it("disables the button and shows the finish-on-device notice once cancellation is requested", () => {
+      render(
+        <DepositProgressView
+          {...baseProps}
+          currentStep={DepositFlowStep.SIGN_DEPOSITOR_GRAPH}
+          isProcessing
+          canClose={false}
+          canCancelSigning
+          cancelSigningRequested
+          onCancelSigning={vi.fn()}
+        />,
+      );
+
+      expect(
+        screen.getByRole("button", {
+          name: COPY.deposit.progress.buttons.cancelSigning,
+        }),
+      ).toBeDisabled();
+      expect(
+        screen.getByText(COPY.deposit.progress.cancelRequestedNotice),
+      ).toBeInTheDocument();
+    });
+
+    it("offers no cancel affordance outside the processing state", () => {
+      render(
+        <DepositProgressView
+          {...baseProps}
+          currentStep={DepositFlowStep.SIGN_DEPOSITOR_GRAPH}
+          canCancelSigning
+          onCancelSigning={vi.fn()}
+        />,
+      );
+
+      expect(
+        screen.getByRole("button", {
+          name: COPY.deposit.progress.buttons.sign,
+        }),
+      ).toBeInTheDocument();
+      expect(
+        screen.queryByText(COPY.deposit.progress.buttons.cancelSigning),
+      ).not.toBeInTheDocument();
+    });
+  });
+
+  describe("Ethereum confirmation panel", () => {
+    it("renders the live counter under the ETH registration step while the gate holds", () => {
+      render(
+        <DepositProgressView
+          {...baseProps}
+          currentStep={DepositFlowStep.SUBMIT_PEGIN}
+          ethConfirmationDetail={{ confirmations: 3, required: 8 }}
+        />,
+      );
+
+      expect(
+        screen.getByText(COPY.deposit.ethConfirmation.rationale),
+      ).toBeInTheDocument();
+      expect(screen.getAllByText("3 of 8").length).toBeGreaterThan(0);
+    });
+
+    it("renders nothing extra on the ETH step before the gate starts counting", () => {
+      // Step 4 also covers the wallet popup and the receipt wait.
+      render(
+        <DepositProgressView
+          {...baseProps}
+          currentStep={DepositFlowStep.SUBMIT_PEGIN}
+        />,
+      );
+
+      expect(
+        screen.queryByText(COPY.deposit.ethConfirmation.rationale),
+      ).not.toBeInTheDocument();
+    });
+
+    it("does not render the panel on unrelated steps", () => {
+      render(
+        <DepositProgressView
+          {...baseProps}
+          currentStep={DepositFlowStep.SIGN_POP}
+          ethConfirmationDetail={{ confirmations: 3, required: 8 }}
+        />,
+      );
+
+      expect(
+        screen.queryByText(COPY.deposit.ethConfirmation.rationale),
+      ).not.toBeInTheDocument();
     });
   });
 });
