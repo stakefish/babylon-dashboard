@@ -1,7 +1,13 @@
 @import "react-tooltip/dist/react-tooltip.css";
 @import "react-toastify/dist/ReactToastify.css";
-@import "@babylonlabs-io/core-ui/style.css";
-@import "@babylonlabs-io/wallet-connector/style.css";
+/* Layered deliberately. Both ship a full Tailwind v3 build, preflight included,
+   and that preflight carries `*,::before,::after{border-color:#e5e7eb}`.
+   Unlayered CSS outranks every @layer, so left bare these would beat the
+   utilities Tailwind v4 emits into `layer(utilities)` and every
+   `border-<token>` class in the app would silently render as gray-200. Under v3
+   this did not bite: our own utilities were unlayered too and won on order. */
+@import "@babylonlabs-io/core-ui/style.css" layer(components);
+@import "@babylonlabs-io/wallet-connector/style.css" layer(components);
 /* Pulls in `@import "tailwindcss"` itself, plus the kit's typography utilities
    (text-h1 … text-tag3), the trout…whaleShark breakpoints, the shadow/spacing
    scales and its keyframes. Replaces the `presets` entry that Tailwind v4
@@ -173,7 +179,7 @@ body > .tomo-social {
 }
 
 .bbn-list-value {
-  @apply text-itemPrimaryDefault font-mono font-semibold text-desktopCallout leading-[1.428] whitespace-nowrap
+  @apply text-itemPrimaryDefault font-mono font-semibold text-desktopCallout leading-[1.428] whitespace-nowrap;
 }
 
 .bbn-list {
@@ -205,13 +211,12 @@ body > .tomo-social {
   @apply rounded-none;
 }
 
-.sf-tabs [role="tablist"] button[aria-selected=true] {
+.sf-tabs [role="tablist"] button[aria-selected="true"] {
   @apply border-b-transparent bg-backgroundPrimaryDefault text-backgroundPrimaryOnDefault;
 }
 
 .sf-tabs .bbn-subsection-contained {
   @apply bg-transparent border border-itemPrimaryMute !rounded-none;
-
 }
 
 .bbn-subsection {
