@@ -12,6 +12,7 @@ import { useMemo, useState } from "react";
 import { useLocation } from "react-router";
 import { twMerge } from "tailwind-merge";
 import { Icon } from "@stakefish/ui-kit";
+import { Connect as ConnectIcon } from "@stakefish/ui-kit/icons";
 
 import { getNetworkConfigBBN } from "@/ui/common/config/network/bbn";
 import { getNetworkConfigBTC } from "@/ui/common/config/network/btc";
@@ -156,7 +157,7 @@ export const Connect: React.FC<ConnectProps> = ({
           disabled={isLoading}
           data-testid="connect-wallets-button"
         >
-          <Icon iconKey="connect" size={12} />
+          <Icon icon={ConnectIcon} size={12} />
           <span className="hidden md:flex">{buttonContent}</span>
         </Button>
 

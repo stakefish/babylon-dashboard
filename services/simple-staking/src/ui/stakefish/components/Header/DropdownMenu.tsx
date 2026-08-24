@@ -3,6 +3,7 @@
 import type { ButtonProps } from "@stakefish/ui-kit";
 import type { Dispatch, SetStateAction } from "react";
 import { Button, DropdownNav } from "@stakefish/ui-kit";
+import { Close, Menu } from "@stakefish/ui-kit/icons";
 import { useEffect } from "react";
 import { useIsMobile } from "@babylonlabs-io/core-ui";
 import { NavLink } from "react-router";
@@ -34,7 +35,7 @@ export const DropdownMenu = ({
             variant="outline"
             color="secondary"
             className="ring-1 ring-inset !p-2"
-            icon={{ iconKey: isOpen ? "close" : "menu", size: 16 }}
+            icon={{ icon: isOpen ? Close : Menu, size: 16 }}
             onClick={() => setIsOpen(!isOpen)}
             {...buttonProps}
           />

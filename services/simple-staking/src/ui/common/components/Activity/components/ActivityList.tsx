@@ -1,5 +1,6 @@
 import { useCallback, useState } from "react";
 import { Icon } from "@stakefish/ui-kit";
+import { AlertFilled } from "@stakefish/ui-kit/icons";
 
 import { ExpansionHistoryModal } from "@/ui/common/components/ExpansionHistory/ExpansionHistoryModal";
 import { getNetworkConfig } from "@/ui/common/config/network";
@@ -75,7 +76,7 @@ export function ActivityList() {
     return (
       <div className="flex flex-col items-center justify-center gap-4 py-6 text-center text-accent-primary">
         <Icon
-          iconKey="alertFilled"
+          icon={AlertFilled}
           size={20}
           className="text-itemSecondaryDefault block mx-auto [&_svg]:size-[40px] !size-[40px]"
         />

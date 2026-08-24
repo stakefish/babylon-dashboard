@@ -1,5 +1,6 @@
 import { useCallback } from "react";
 import { Button, useThemeSync } from "@stakefish/ui-kit";
+import { Moon, Sun } from "@stakefish/ui-kit/icons";
 
 import { useAppState } from "@/ui/common/state";
 
@@ -15,7 +16,7 @@ export const ThemeToggler = () => {
   return (
     <Button
       size="sm"
-      icon={{ iconKey: theme === "light" ? "moon" : "sun", size: 16 }}
+      icon={{ icon: theme === "light" ? Moon : Sun, size: 16 }}
       onClick={toggleTheme}
       variant="outline"
       color="secondary"

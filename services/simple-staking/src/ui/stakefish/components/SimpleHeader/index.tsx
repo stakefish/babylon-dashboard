@@ -5,6 +5,7 @@ import {
   type ButtonProps,
   cx,
 } from "@stakefish/ui-kit";
+import { ChevronRight } from "@stakefish/ui-kit/icons";
 import { useIsMobile } from "@babylonlabs-io/core-ui";
 
 export interface HeaderProps {
@@ -40,7 +41,7 @@ export const Header = ({
       <Button
         size="sm"
         href="/"
-        endIcon={{ iconKey: "chevronRight", size: isMobile ? 16 : 14 }}
+        endIcon={{ icon: ChevronRight, size: isMobile ? 16 : 14 }}
         tabIndex={0}
         {...activeButtonProps}
       >

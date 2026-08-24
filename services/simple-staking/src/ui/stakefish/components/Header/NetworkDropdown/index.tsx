@@ -1,5 +1,10 @@
 import { useState } from "react";
 import { Button, Dropdown, cx } from "@stakefish/ui-kit";
+import {
+  CheckCircleFilled,
+  ChevronDown,
+  ChevronUp,
+} from "@stakefish/ui-kit/icons";
 
 import { dashboardNavs, ProtocolVariants } from "./utils";
 
@@ -20,9 +25,9 @@ export const NetworkDropdown = () => {
             application
             size="sm"
             color="secondary"
-            startIcon={{ iconKey: dashboardNavs["babylon"].logo, size: 14 }}
+            startIcon={{ icon: dashboardNavs["babylon"].logo, size: 14 }}
             endIcon={{
-              iconKey: isOpen ? "chevronUp" : "chevronDown",
+              icon: isOpen ? ChevronUp : ChevronDown,
               size: 14,
             }}
             className={cx(
@@ -48,7 +53,7 @@ export const NetworkDropdown = () => {
                 variant="menuItem"
                 endIcon={
                   isConnected
-                    ? { iconKey: "checkCircleFilled", size: 14 }
+                    ? { icon: CheckCircleFilled, size: 14 }
                     : undefined
                 }
                 disabled={isConnected}

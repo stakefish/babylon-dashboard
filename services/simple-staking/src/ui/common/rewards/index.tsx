@@ -12,6 +12,7 @@ import { useWalletConnect } from "@babylonlabs-io/wallet-connector";
 import { useMemo, useState, useEffect, useRef } from "react";
 import { useNavigate } from "react-router";
 import { Icon } from "@stakefish/ui-kit";
+import { Connect } from "@stakefish/ui-kit/icons";
 
 import { Content } from "@/ui/common/components/Content/Content";
 import { Section } from "@/ui/common/components/Section/Section";
@@ -119,7 +120,7 @@ function RewardsPageContent() {
     return (
       <div className="flex flex-col gap-2">
         <Icon
-          iconKey="connect"
+          icon={Connect}
           size={48}
           className="text-itemSecondaryDefault mx-auto"
         />
