@@ -2,11 +2,35 @@
 @import "react-toastify/dist/ReactToastify.css";
 @import "@babylonlabs-io/core-ui/style.css";
 @import "@babylonlabs-io/wallet-connector/style.css";
+/* Pulls in `@import "tailwindcss"` itself, plus the kit's typography utilities
+   (text-h1 … text-tag3), the trout…whaleShark breakpoints, the shadow/spacing
+   scales and its keyframes. Replaces the `presets` entry that Tailwind v4
+   dropped, so it has to come before anything that @applies those utilities. */
+@import "@stakefish/ui-kit/styles/init.css";
+@import "./stakefish/theme/tokens.css";
 @import "./stakefish.css";
 
-@tailwind base;
-@tailwind components;
-@tailwind utilities;
+/* Replaces tailwind.config.ts's `content` array. ui-kit declares its own
+   sources from inside init.css, so it is deliberately absent here. */
+@source "./**/*.{js,ts,jsx,tsx,mdx}";
+@source "../../../../packages/babylon-core-ui/src/**/*.{js,ts,jsx,tsx}";
+@source "../../../../packages/babylon-wallet-connector/src/**/*.{js,ts,jsx,tsx}";
+
+/* ui-kit's init.css points `dark:` at `.dark-theme`. This app themes with
+   next-themes `attribute="class"`, which writes `.dark` on <html>, and
+   core-ui's prebuilt CSS keys off `.dark` / [data-theme] too, so redefine the
+   variant rather than restyling both sides. Last definition wins. */
+@custom-variant dark (&:where(.dark, [data-theme="dark"], .dark *, [data-theme="dark"] *));
+
+/* tailwind.config.ts replaced Tailwind's default `screens` wholesale; these are
+   the five it redefined. The named trout…whaleShark set comes from ui-kit. */
+@theme {
+  --breakpoint-sm: 641px;
+  --breakpoint-md: 768px;
+  --breakpoint-lg: 1024px;
+  --breakpoint-xl: 1240px;
+  --breakpoint-2xl: 1440px;
+}
 
 html {
   @apply bg-surface;
