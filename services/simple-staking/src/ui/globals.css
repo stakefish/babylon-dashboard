@@ -1,18 +1,34 @@
-@import "react-tooltip/dist/react-tooltip.css";
-@import "react-toastify/dist/ReactToastify.css";
-/* Layered deliberately. Both ship a full Tailwind v3 build, preflight included,
-   and that preflight carries `*,::before,::after{border-color:#e5e7eb}`.
-   Unlayered CSS outranks every @layer, so left bare these would beat the
-   utilities Tailwind v4 emits into `layer(utilities)` and every
-   `border-<token>` class in the app would silently render as gray-200. Under v3
-   this did not bite: our own utilities were unlayered too and won on order. */
-@import "@babylonlabs-io/core-ui/style.css" layer(components);
-@import "@babylonlabs-io/wallet-connector/style.css" layer(components);
+/* Vendor CSS goes in `layer(base)`, and the reasoning is worth keeping.
+
+   Both ship a full Tailwind v3 build, preflight included. Left UNLAYERED their
+   preflight (`*,::before,::after{border-color:#e5e7eb}`) outranks every @layer,
+   so the `border-<token>` utilities Tailwind v4 emits into `layer(utilities)`
+   lose and render gray-200.
+
+   `layer(components)` looked like the fix but inverts the layer order:
+   wallet-connector's CSS contains its own @import (Poppins), bundlers hoist
+   every @import to the top of the output, and the hoisted line keeps the
+   layer() annotation - so `components` is created before Tailwind's
+   `@layer theme, base, components, utilities` is ever seen. A layer is ordered
+   by first mention, so `components` became the LOWEST layer, beneath `base`,
+   and base's preflight (`*{border:0 solid}`) then erased every border core-ui
+   draws on cards, subsections and accordions.
+
+   `base` is immune to that: the hoist makes it the lowest layer, which is
+   exactly where a reset layer belongs. Vendor component rules then sit in the
+   same layer as Tailwind's preflight and win on specificity (`.bbn-card` beats
+   `*`), while our utilities in `layer(utilities)` still override them. The
+   `.bbn-*` overrides in globals.css are unlayered and win over both. */
+@import "@babylonlabs-io/core-ui/style.css" layer(base);
+@import "@babylonlabs-io/wallet-connector/style.css" layer(base);
+
 /* Pulls in `@import "tailwindcss"` itself, plus the kit's typography utilities
    (text-h1 … text-tag3), the trout…whaleShark breakpoints, the shadow/spacing
-   scales and its keyframes. Replaces the `presets` entry that Tailwind v4
-   dropped, so it has to come before anything that @applies those utilities. */
+   scales and its keyframes - replacing the `presets` Tailwind v4 dropped. */
 @import "@stakefish/ui-kit/styles/init.css";
+
+@import "react-tooltip/dist/react-tooltip.css";
+@import "react-toastify/dist/ReactToastify.css";
 @import "./stakefish/theme/tokens.css";
 @import "./stakefish.css";
 
