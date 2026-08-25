@@ -158,7 +158,7 @@ export const Connect: React.FC<ConnectProps> = ({
           data-testid="connect-wallets-button"
         >
           <Icon icon={ConnectIcon} size={12} />
-          <span className="hidden md:flex">{buttonContent}</span>
+          <span className="text-callout hidden md:flex">{buttonContent}</span>
         </Button>
 
         {/* <SettingMenuWrapper /> */}

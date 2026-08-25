@@ -216,7 +216,7 @@ body > .tomo-social {
 }
 
 .sf-tabs [role="tablist"] {
-  @apply gap-0 flex items-center relative z-[2] *:inline-flex *:items-center *:justify-center *:whitespace-nowrap *:px-3.5 *:py-1.5 *:text-itemSecondaryDefault *:!text-callout *:font-semibold *:uppercase after:absolute after:z-[-1] after:border-b after:border-solid after:border-itemSecondaryMute after:bottom-0 after:inset-x-0 mb-4;
+  @apply gap-0 flex items-center relative z-1 *:inline-flex *:items-center *:justify-center *:whitespace-nowrap *:px-3.5 *:py-1.5 *:text-itemSecondaryDefault *:!text-callout *:font-semibold *:uppercase after:absolute after:z-[-1] after:border-b after:border-solid after:border-itemSecondaryMute after:bottom-0 after:inset-x-0 mb-4;
 }
 
 .sf-tabs [role="tablist"] button {

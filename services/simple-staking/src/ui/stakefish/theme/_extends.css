@@ -1,4 +1,3 @@
-
 .loading-icon {
   svg {
     @apply w-full;
@@ -102,7 +101,7 @@ body {
   @apply text-body4 font-sans;
 
   label {
-  @apply border-itemPrimaryMute bg-backgroundSecondaryDefault;
+    @apply border-itemPrimaryMute bg-backgroundSecondaryDefault;
 
     .bbn-switcher {
       @apply mt-0.5;
@@ -190,7 +189,7 @@ body {
     @apply font-semibold uppercase bg-backgroundInverseDefault text-backgroundInverseOnDefault hover:bg-backgroundInverseActive hover:text-backgroundInverseOnActive focus-visible:bg-backgroundInverseActive disabled:!text-backgroundInverseOnMute/100 disabled:opacity-100;
   }
   &.bbn-btn-outlined {
-    @apply font-semibold uppercase bg-transparent text-itemPrimaryDefault border-itemPrimaryDefault;
+    @apply font-semibold uppercase bg-transparent text-itemPrimaryDefault border border-itemPrimaryDefault;
   }
 }
 
@@ -233,7 +232,7 @@ body {
   }
 }
 
-.bbn-avatar-group>:not([hidden])~:not([hidden]) {
+.bbn-avatar-group > :not([hidden]) ~ :not([hidden]) {
   margin-left: 6px;
 }
 
@@ -257,4 +256,8 @@ body {
 
 .bbn-toggle-control-active {
   --tw-translate-x: 18px;
+}
+
+.portal-root {
+  @apply z-100;
 }
