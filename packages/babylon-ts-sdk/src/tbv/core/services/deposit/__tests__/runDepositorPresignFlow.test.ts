@@ -1,3 +1,4 @@
+import { Transaction } from "bitcoinjs-lib";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { BitcoinWallet } from "../../../../../shared/wallets/interfaces";
@@ -17,6 +18,7 @@ import {
   runDepositorPresignFlow,
   type PayoutSigningContext,
 } from "../runDepositorPresignFlow";
+import { signDepositorGraph } from "../signDepositorGraph";
 
 // ---------------------------------------------------------------------------
 // Mocks — we test the orchestration, not PSBT internals or PayoutManager
@@ -58,19 +60,66 @@ vi.mock("../../../primitives/utils/bitcoin", () => ({
   deriveBip86ScriptPubKeyHex: (xOnlyPubkey: string) => `0x5120${xOnlyPubkey}`,
 }));
 
-vi.mock("bitcoinjs-lib", () => ({
-  payments: {
-    p2tr: ({ internalPubkey }: { internalPubkey: Buffer }) => ({
-      output: Buffer.from("5120" + internalPubkey.toString("hex"), "hex"),
-    }),
-  },
+// The fingerprint's own encoding is covered in graphFingerprint.test.ts; here
+// only when it is taken and what it is given matter.
+const fingerprintCalls = vi.hoisted(() => [] as unknown[]);
+const PRESIGN_FINGERPRINT = vi.hoisted(() => "f1".repeat(32));
+// Set to make the next fingerprint call reject the served set.
+const fingerprintFailure = vi.hoisted(() => ({ next: null as Error | null }));
+const linkageCalls = vi.hoisted(() => [] as unknown[]);
+// Set to make the next Claim/Assert linkage check reject the served chain.
+const linkageFailure = vi.hoisted(() => ({ next: null as Error | null }));
+type LinkageValidator =
+  (typeof import("../graphFingerprint"))["assertPresignAssertSpendsClaim"];
+const linkageImplementation = vi.hoisted(() => ({
+  current: null as null | LinkageValidator,
 }));
+vi.mock("../graphFingerprint", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../graphFingerprint")>();
+  return {
+    ...actual,
+    assertPresignAssertSpendsClaim: (
+      args: Parameters<LinkageValidator>[0],
+    ) => {
+      linkageCalls.push(args);
+      const failure = linkageFailure.next;
+      if (failure) {
+        linkageFailure.next = null;
+        throw failure;
+      }
+      linkageImplementation.current?.(args);
+    },
+    fingerprintPresignTxSet: (args: unknown) => {
+      fingerprintCalls.push(args);
+      const failure = fingerprintFailure.next;
+      if (failure) {
+        fingerprintFailure.next = null;
+        throw failure;
+      }
+      return PRESIGN_FINGERPRINT;
+    },
+  };
+});
+
+vi.mock("bitcoinjs-lib", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("bitcoinjs-lib")>();
+  return {
+    ...actual,
+    payments: {
+      ...actual.payments,
+      p2tr: ({ internalPubkey }: { internalPubkey: Buffer }) => ({
+        output: Buffer.from("5120" + internalPubkey.toString("hex"), "hex"),
+      }),
+    },
+  };
+});
 
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
 
 const VALID_TXID = "a".repeat(64);
+const VALID_VAULT_ID = `0x${"9".repeat(64)}`;
 const DEPOSITOR_PK = "d".repeat(64);
 const VP_PUBKEY = "e".repeat(64);
 const VK_PUBKEY = "f".repeat(64);
@@ -79,9 +128,10 @@ const CHALLENGER_PK = "c".repeat(64);
 function createMockStatusReader(statuses: DaemonStatus[]): PeginStatusReader {
   let callIdx = 0;
   return {
-    getPeginStatus: vi.fn(
+    getPeginStatusByVaultId: vi.fn(
       async (): Promise<GetPeginStatusResponse> => ({
         pegin_txid: VALID_TXID,
+        vault_id: VALID_VAULT_ID,
         status: statuses[callIdx++] ?? DaemonStatus.PENDING_INGESTION,
         progress: {},
         health_info: "ok",
@@ -181,7 +231,9 @@ const DEPOSIT_TERMS: DepositTerms = {
   ],
 };
 
-function createSigningContext(): PayoutSigningContext {
+function createSigningContext(
+  overrides: Partial<PayoutSigningContext> = {},
+): PayoutSigningContext {
   return {
     // Un-rotated operator set: the registry backfills BIP-86, so these match
     // what local derivation would produce. Threaded through to buildPayoutPsbt,
@@ -206,6 +258,51 @@ function createSigningContext(): PayoutSigningContext {
     registeredPayoutScriptPubKey: "0x5120" + DEPOSITOR_PK,
     commissionBps: 50,
     protocolFeeRate: 2n,
+    ...overrides,
+  };
+}
+
+function createRealLinkageChain(claimOutputCount = 1): {
+  peginTxHex: string;
+  claimTxHex: string;
+  assertTxHex: string;
+} {
+  const peginTx = new Transaction();
+  peginTx.version = 2;
+  peginTx.addInput(Buffer.alloc(32, 1), 0);
+  peginTx.addOutput(Buffer.from([0x51]), 2_000);
+  peginTx.addOutput(Buffer.from([0x51]), 1_000);
+
+  // A VP/VK Claim is funded from the claimer's own wallet, not from PegIn:1.
+  const claimTx = new Transaction();
+  claimTx.version = 2;
+  claimTx.addInput(Buffer.alloc(32, 9), 0);
+  for (let i = 0; i < claimOutputCount; i += 1) {
+    claimTx.addOutput(Buffer.from([0x51]), 900 - i);
+  }
+
+  const assertTx = new Transaction();
+  assertTx.version = 2;
+  assertTx.addInput(claimTx.getHash(), 0);
+  assertTx.addOutput(Buffer.from([0x51]), 800);
+
+  return {
+    peginTxHex: peginTx.toHex(),
+    claimTxHex: claimTx.toHex(),
+    assertTxHex: assertTx.toHex(),
+  };
+}
+
+function realClaimerTransactions(
+  claimerPubkey: string,
+  chain: ReturnType<typeof createRealLinkageChain>,
+): ClaimerTransactions {
+  return {
+    claimer_pubkey: claimerPubkey,
+    claim_tx: { tx_hex: chain.claimTxHex },
+    assert_tx: { tx_hex: chain.assertTxHex },
+    payout_tx: { tx_hex: "deadbeef" },
+    payout_psbt: "mock_psbt",
   };
 }
 
@@ -216,6 +313,7 @@ function createSigningContext(): PayoutSigningContext {
 describe("runDepositorPresignFlow", () => {
   beforeEach(() => {
     vi.useFakeTimers();
+    linkageImplementation.current = null;
   });
 
   afterEach(() => {
@@ -230,8 +328,10 @@ describe("runDepositorPresignFlow", () => {
       statusReader: reader,
       presignClient,
       btcWallet: createMockWallet(),
+      vaultId: VALID_VAULT_ID,
       peginTxid: VALID_TXID,
       depositorPk: DEPOSITOR_PK,
+      recordGraphFingerprint: vi.fn(),
       signingContext: createSigningContext(),
     });
 
@@ -249,8 +349,10 @@ describe("runDepositorPresignFlow", () => {
       statusReader: reader,
       presignClient,
       btcWallet: createMockWallet(),
+      vaultId: VALID_VAULT_ID,
       peginTxid: VALID_TXID,
       depositorPk: DEPOSITOR_PK,
+      recordGraphFingerprint: vi.fn(),
       signingContext: createSigningContext(),
     });
 
@@ -269,8 +371,10 @@ describe("runDepositorPresignFlow", () => {
       statusReader: reader,
       presignClient,
       btcWallet: createMockWallet(),
+      vaultId: VALID_VAULT_ID,
       peginTxid: VALID_TXID,
       depositorPk: DEPOSITOR_PK,
+      recordGraphFingerprint: vi.fn(),
       signingContext: createSigningContext(),
     });
 
@@ -278,6 +382,275 @@ describe("runDepositorPresignFlow", () => {
       presignClient.requestDepositorPresignTransactions,
     ).not.toHaveBeenCalled();
     expect(presignClient.submitDepositorPresignatures).not.toHaveBeenCalled();
+  });
+
+  it("does not record a fingerprint when the VP is already past payout signing", async () => {
+    const recordGraphFingerprint = vi.fn();
+
+    await runDepositorPresignFlow({
+      statusReader: createMockStatusReader([DaemonStatus.ACTIVATED]),
+      presignClient: createMockPresignClient(),
+      btcWallet: createMockWallet(),
+      vaultId: VALID_VAULT_ID,
+      peginTxid: VALID_TXID,
+      depositorPk: DEPOSITOR_PK,
+      recordGraphFingerprint,
+      signingContext: createSigningContext(),
+    });
+
+    expect(recordGraphFingerprint).not.toHaveBeenCalled();
+  });
+
+  it("records the fingerprint after signing and before submitting", async () => {
+    fingerprintCalls.length = 0;
+    const presignClient = createMockPresignClient();
+    const signingContext = createSigningContext();
+    const graphSignsBefore = vi.mocked(signDepositorGraph).mock.calls.length;
+    const recordGraphFingerprint = vi.fn(() => {
+      expect(vi.mocked(signDepositorGraph).mock.calls).toHaveLength(
+        graphSignsBefore + 1,
+      );
+      expect(presignClient.submitDepositorPresignatures).not.toHaveBeenCalled();
+    });
+
+    await runDepositorPresignFlow({
+      statusReader: createMockStatusReader([
+        DaemonStatus.PENDING_DEPOSITOR_SIGNATURES,
+      ]),
+      presignClient,
+      btcWallet: createMockWallet(),
+      vaultId: VALID_VAULT_ID,
+      peginTxid: VALID_TXID,
+      depositorPk: DEPOSITOR_PK,
+      recordGraphFingerprint,
+      signingContext,
+    });
+
+    expect(recordGraphFingerprint).toHaveBeenCalledExactlyOnceWith(
+      PRESIGN_FINGERPRINT,
+    );
+    // The PegIn is the depositor's own, not a value from the VP response.
+    expect(fingerprintCalls).toEqual([
+      expect.objectContaining({
+        peginTxid: VALID_TXID,
+        peginTxHex: signingContext.peginTxHex,
+        claimTxHex: "deadbeef",
+      }),
+    ]);
+    expect(presignClient.submitDepositorPresignatures).toHaveBeenCalledOnce();
+  });
+
+  it("submits nothing when the fingerprint cannot be recorded", async () => {
+    const presignClient = createMockPresignClient();
+
+    await expect(
+      runDepositorPresignFlow({
+        statusReader: createMockStatusReader([
+          DaemonStatus.PENDING_DEPOSITOR_SIGNATURES,
+        ]),
+        presignClient,
+        btcWallet: createMockWallet(),
+        vaultId: VALID_VAULT_ID,
+        peginTxid: VALID_TXID,
+        depositorPk: DEPOSITOR_PK,
+        recordGraphFingerprint: vi.fn(async () => {
+          throw new Error("storage full");
+        }),
+        signingContext: createSigningContext(),
+      }),
+    ).rejects.toThrow("storage full");
+
+    expect(presignClient.submitDepositorPresignatures).not.toHaveBeenCalled();
+  });
+
+  it("keeps an earlier record when the served set fails a check", async () => {
+    // A re-run that the VP serves a bad set for must not replace the record
+    // of a set this depositor already signed and submitted.
+    const recordGraphFingerprint = vi.fn();
+
+    await expect(
+      runDepositorPresignFlow({
+        statusReader: createMockStatusReader([
+          DaemonStatus.PENDING_DEPOSITOR_SIGNATURES,
+        ]),
+        // No claimer entries: the on-chain VP/VK set cannot match.
+        presignClient: createMockPresignClient({ txs: [] }),
+        btcWallet: createMockWallet(),
+        vaultId: VALID_VAULT_ID,
+        peginTxid: VALID_TXID,
+        depositorPk: DEPOSITOR_PK,
+        recordGraphFingerprint,
+        signingContext: createSigningContext(),
+      }),
+    ).rejects.toThrow();
+
+    expect(recordGraphFingerprint).not.toHaveBeenCalled();
+  });
+
+  it("rejects a set that fails fingerprint validation before any signing prompt", async () => {
+    // The fingerprint also checks the PegIn txid and the Claim shape. Those
+    // checks must run before the wallet signs anything.
+    fingerprintFailure.next = new Error("claim_tx must have exactly one input");
+    const presignClient = createMockPresignClient();
+    const btcWallet = createMockWallet();
+    const graphSignsBefore = vi.mocked(signDepositorGraph).mock.calls.length;
+    const payoutSignsBefore = capturedPayoutInputs.length;
+    const recordGraphFingerprint = vi.fn();
+
+    await expect(
+      runDepositorPresignFlow({
+        statusReader: createMockStatusReader([
+          DaemonStatus.PENDING_DEPOSITOR_SIGNATURES,
+        ]),
+        presignClient,
+        btcWallet,
+        vaultId: VALID_VAULT_ID,
+        peginTxid: VALID_TXID,
+        depositorPk: DEPOSITOR_PK,
+        recordGraphFingerprint,
+        signingContext: createSigningContext(),
+      }),
+    ).rejects.toThrow("claim_tx must have exactly one input");
+
+    expect(capturedPayoutInputs).toHaveLength(payoutSignsBefore);
+    expect(vi.mocked(signDepositorGraph).mock.calls).toHaveLength(
+      graphSignsBefore,
+    );
+    expect(recordGraphFingerprint).not.toHaveBeenCalled();
+    expect(presignClient.submitDepositorPresignatures).not.toHaveBeenCalled();
+  });
+
+  it("checks that every claimer Assert spends its own Claim", async () => {
+    linkageCalls.length = 0;
+    const signingContext = createSigningContext();
+
+    await runDepositorPresignFlow({
+      statusReader: createMockStatusReader([
+        DaemonStatus.PENDING_DEPOSITOR_SIGNATURES,
+      ]),
+      presignClient: createMockPresignClient(),
+      btcWallet: createMockWallet(),
+      vaultId: VALID_VAULT_ID,
+      peginTxid: VALID_TXID,
+      depositorPk: DEPOSITOR_PK,
+      recordGraphFingerprint: vi.fn(),
+      signingContext,
+    });
+
+    expect(linkageCalls).toEqual([
+      {
+        claimTxHex: "deadbeef",
+        assertTxHex: "deadbeef",
+        path: "txs[0]",
+      },
+      {
+        claimTxHex: "deadbeef",
+        assertTxHex: "deadbeef",
+        path: "txs[1]",
+      },
+    ]);
+  });
+
+  it("rejects a malformed claimer chain before any payout or depositor signing prompt", async () => {
+    linkageFailure.next = new Error(
+      "txs[0].assert_tx input 0 must spend its Claim output 0",
+    );
+    const presignClient = createMockPresignClient();
+    const graphSignsBefore = vi.mocked(signDepositorGraph).mock.calls.length;
+    const payoutSignsBefore = capturedPayoutInputs.length;
+
+    await expect(
+      runDepositorPresignFlow({
+        statusReader: createMockStatusReader([
+          DaemonStatus.PENDING_DEPOSITOR_SIGNATURES,
+        ]),
+        presignClient,
+        btcWallet: createMockWallet(),
+        vaultId: VALID_VAULT_ID,
+        peginTxid: VALID_TXID,
+        depositorPk: DEPOSITOR_PK,
+        recordGraphFingerprint: vi.fn(),
+        signingContext: createSigningContext(),
+      }),
+    ).rejects.toThrow("txs[0].assert_tx input 0");
+
+    expect(capturedPayoutInputs).toHaveLength(payoutSignsBefore);
+    expect(vi.mocked(signDepositorGraph).mock.calls).toHaveLength(
+      graphSignsBefore,
+    );
+    expect(presignClient.submitDepositorPresignatures).not.toHaveBeenCalled();
+  });
+
+  it("uses the real linkage validator for every claimer before approval or signing", async () => {
+    const actualGraphFingerprint = await vi.importActual<
+      typeof import("../graphFingerprint")
+    >("../graphFingerprint");
+    linkageImplementation.current =
+      actualGraphFingerprint.assertPresignAssertSpendsClaim;
+
+    // txs[0] is an honest wallet-funded Claim and must pass; txs[1] fails.
+    const validChain = createRealLinkageChain();
+    const zeroOutputChain = createRealLinkageChain(0);
+    const wallet = createCapabilityWallet();
+    const presignClient = createMockPresignClient({
+      txs: [
+        realClaimerTransactions(VP_PUBKEY, validChain),
+        realClaimerTransactions(VK_PUBKEY, zeroOutputChain),
+      ],
+    });
+    const recordGraphFingerprint = vi.fn();
+    const graphSignsBefore = vi.mocked(signDepositorGraph).mock.calls.length;
+
+    await expect(
+      runDepositorPresignFlow({
+        statusReader: createMockStatusReader([
+          DaemonStatus.PENDING_DEPOSITOR_SIGNATURES,
+        ]),
+        presignClient,
+        btcWallet: wallet,
+        vaultId: VALID_VAULT_ID,
+        peginTxid: VALID_TXID,
+        depositorPk: DEPOSITOR_PK,
+        recordGraphFingerprint,
+        signingContext: createSigningContext({
+          peginTxHex: validChain.peginTxHex,
+        }),
+        depositTerms: DEPOSIT_TERMS,
+      }),
+    ).rejects.toThrow(/txs\[1\]\.claim_tx must have output 0/);
+
+    expect(wallet.approveDepositTerms).not.toHaveBeenCalled();
+    expect(wallet.signPsbts).not.toHaveBeenCalled();
+    expect(wallet.signPsbt).not.toHaveBeenCalled();
+    expect(vi.mocked(signDepositorGraph).mock.calls).toHaveLength(
+      graphSignsBefore,
+    );
+    expect(recordGraphFingerprint).not.toHaveBeenCalled();
+    expect(presignClient.submitDepositorPresignatures).not.toHaveBeenCalled();
+  });
+
+  it("keeps an earlier record when the depositor declines to sign", async () => {
+    vi.mocked(signDepositorGraph).mockRejectedValueOnce(
+      new Error("User rejected"),
+    );
+    const recordGraphFingerprint = vi.fn();
+
+    await expect(
+      runDepositorPresignFlow({
+        statusReader: createMockStatusReader([
+          DaemonStatus.PENDING_DEPOSITOR_SIGNATURES,
+        ]),
+        presignClient: createMockPresignClient(),
+        btcWallet: createMockWallet(),
+        vaultId: VALID_VAULT_ID,
+        peginTxid: VALID_TXID,
+        depositorPk: DEPOSITOR_PK,
+        recordGraphFingerprint,
+        signingContext: createSigningContext(),
+      }),
+    ).rejects.toThrow("User rejected");
+
+    expect(recordGraphFingerprint).not.toHaveBeenCalled();
   });
 
   it("fetches presign txs, signs, and submits when VP is ready", async () => {
@@ -291,8 +664,10 @@ describe("runDepositorPresignFlow", () => {
       statusReader: reader,
       presignClient,
       btcWallet: wallet,
+      vaultId: VALID_VAULT_ID,
       peginTxid: VALID_TXID,
       depositorPk: DEPOSITOR_PK,
+      recordGraphFingerprint: vi.fn(),
       signingContext: createSigningContext(),
     });
 
@@ -329,8 +704,10 @@ describe("runDepositorPresignFlow", () => {
       statusReader: reader,
       presignClient,
       btcWallet: createMockWallet(),
+      vaultId: VALID_VAULT_ID,
       peginTxid: VALID_TXID,
       depositorPk: DEPOSITOR_PK,
+      recordGraphFingerprint: vi.fn(),
       signingContext: createSigningContext(),
     });
 
@@ -352,8 +729,10 @@ describe("runDepositorPresignFlow", () => {
       statusReader: reader,
       presignClient,
       btcWallet: createMockWallet(),
+      vaultId: VALID_VAULT_ID,
       peginTxid: VALID_TXID,
       depositorPk: DEPOSITOR_PK,
+      recordGraphFingerprint: vi.fn(),
       signingContext: createSigningContext(),
       onProgress,
     });
@@ -411,8 +790,10 @@ describe("runDepositorPresignFlow", () => {
       statusReader: reader,
       presignClient,
       btcWallet: createMockWallet(),
+      vaultId: VALID_VAULT_ID,
       peginTxid: VALID_TXID,
       depositorPk: DEPOSITOR_PK,
+      recordGraphFingerprint: vi.fn(),
       signingContext: createSigningContext(),
     });
 
@@ -435,8 +816,10 @@ describe("runDepositorPresignFlow", () => {
         statusReader: createMockStatusReader([]),
         presignClient: createMockPresignClient(),
         btcWallet: createMockWallet(),
+        vaultId: VALID_VAULT_ID,
         peginTxid: VALID_TXID,
         depositorPk: DEPOSITOR_PK,
+        recordGraphFingerprint: vi.fn(),
         signingContext: createSigningContext(),
         signal: controller.signal,
       }),
@@ -483,8 +866,10 @@ describe("runDepositorPresignFlow", () => {
         statusReader: reader,
         presignClient,
         btcWallet: wallet,
+        vaultId: VALID_VAULT_ID,
         peginTxid: VALID_TXID,
         depositorPk: DEPOSITOR_PK,
+        recordGraphFingerprint: vi.fn(),
         signingContext: createSigningContext(),
       });
       return { promise, presignClient, wallet };
@@ -595,8 +980,10 @@ describe("runDepositorPresignFlow", () => {
       statusReader: reader,
       presignClient: createMockPresignClient(),
       btcWallet: createMockWallet(),
+      vaultId: VALID_VAULT_ID,
       peginTxid: VALID_TXID,
       depositorPk: DEPOSITOR_PK,
+      recordGraphFingerprint: vi.fn(),
       signingContext: context,
     });
 
@@ -617,7 +1004,37 @@ describe("runDepositorPresignFlow", () => {
   });
 
   describe("deposit terms approval", () => {
-    it("approves the deposit terms before fetching presign transactions", async () => {
+    it("opens no signing prompt when the user cancels during approval", async () => {
+      const controller = new AbortController();
+      const wallet = createCapabilityWallet(() => controller.abort());
+      const payoutSignsBefore = capturedPayoutInputs.length;
+      const graphSignsBefore = vi.mocked(signDepositorGraph).mock.calls.length;
+
+      await expect(
+        runDepositorPresignFlow({
+          statusReader: createMockStatusReader([
+            DaemonStatus.PENDING_DEPOSITOR_SIGNATURES,
+          ]),
+          presignClient: createMockPresignClient(),
+          btcWallet: wallet,
+          vaultId: VALID_VAULT_ID,
+          peginTxid: VALID_TXID,
+          depositorPk: DEPOSITOR_PK,
+          recordGraphFingerprint: vi.fn(),
+          signingContext: createSigningContext(),
+          depositTerms: DEPOSIT_TERMS,
+          signal: controller.signal,
+        }),
+      ).rejects.toThrow();
+
+      expect(wallet.approveDepositTerms).toHaveBeenCalledOnce();
+      expect(capturedPayoutInputs).toHaveLength(payoutSignsBefore);
+      expect(vi.mocked(signDepositorGraph).mock.calls).toHaveLength(
+        graphSignsBefore,
+      );
+    });
+
+    it("validates the VP response before approving the deposit terms", async () => {
       const callLog: string[] = [];
       const wallet = createCapabilityWallet(() => callLog.push("approve"));
       const reader = createMockStatusReader([
@@ -639,15 +1056,89 @@ describe("runDepositorPresignFlow", () => {
         statusReader: reader,
         presignClient,
         btcWallet: wallet,
+        vaultId: VALID_VAULT_ID,
         peginTxid: VALID_TXID,
         depositorPk: DEPOSITOR_PK,
+        recordGraphFingerprint: vi.fn(),
         signingContext: createSigningContext(),
         depositTerms: DEPOSIT_TERMS,
       });
 
-      expect(callLog).toEqual(["approve", "presign"]);
+      expect(callLog).toEqual(["presign", "approve"]);
       expect(wallet.approveDepositTerms).toHaveBeenCalledOnce();
       expect(wallet.approveDepositTerms).toHaveBeenCalledWith(DEPOSIT_TERMS);
+    });
+
+    it("validates then approves, in that order, when the wallet exposes validateDepositTerms", async () => {
+      const callLog: string[] = [];
+      const wallet = Object.assign(
+        createCapabilityWallet(() => callLog.push("approve")),
+        {
+          validateDepositTerms: vi.fn(async () => {
+            callLog.push("validate");
+          }),
+        },
+      );
+      const reader = createMockStatusReader([
+        DaemonStatus.PENDING_DEPOSITOR_SIGNATURES,
+      ]);
+      const basePresignClient = createMockPresignClient();
+      const presignClient: PresignClient = {
+        ...basePresignClient,
+        requestDepositorPresignTransactions: vi.fn(async (request, signal) => {
+          callLog.push("presign");
+          return basePresignClient.requestDepositorPresignTransactions(
+            request,
+            signal,
+          );
+        }),
+      };
+
+      await runDepositorPresignFlow({
+        statusReader: reader,
+        presignClient,
+        btcWallet: wallet,
+        vaultId: VALID_VAULT_ID,
+        peginTxid: VALID_TXID,
+        depositorPk: DEPOSITOR_PK,
+        recordGraphFingerprint: vi.fn(),
+        signingContext: createSigningContext(),
+        depositTerms: DEPOSIT_TERMS,
+      });
+
+      expect(callLog).toEqual(["presign", "validate", "approve"]);
+      expect(wallet.validateDepositTerms).toHaveBeenCalledWith(DEPOSIT_TERMS);
+    });
+
+    it("fetches and validates the graph before a device terms check rejects", async () => {
+      const wallet = Object.assign(createCapabilityWallet(), {
+        validateDepositTerms: vi.fn(async () => {
+          throw new Error("Deposit terms outside the device-supported range");
+        }),
+      });
+      const reader = createMockStatusReader([
+        DaemonStatus.PENDING_DEPOSITOR_SIGNATURES,
+      ]);
+      const presignClient = createMockPresignClient();
+
+      await expect(
+        runDepositorPresignFlow({
+          statusReader: reader,
+          presignClient,
+          btcWallet: wallet,
+          vaultId: VALID_VAULT_ID,
+          peginTxid: VALID_TXID,
+          depositorPk: DEPOSITOR_PK,
+          recordGraphFingerprint: vi.fn(),
+          signingContext: createSigningContext(),
+          depositTerms: DEPOSIT_TERMS,
+        }),
+      ).rejects.toThrow(/device-supported range/);
+
+      expect(wallet.approveDepositTerms).not.toHaveBeenCalled();
+      expect(
+        presignClient.requestDepositorPresignTransactions,
+      ).toHaveBeenCalledOnce();
     });
 
     it("throws for capability wallets when no depositTerms is provided", async () => {
@@ -662,8 +1153,10 @@ describe("runDepositorPresignFlow", () => {
           statusReader: reader,
           presignClient,
           btcWallet: wallet,
+          vaultId: VALID_VAULT_ID,
           peginTxid: VALID_TXID,
           depositorPk: DEPOSITOR_PK,
+          recordGraphFingerprint: vi.fn(),
           signingContext: createSigningContext(),
         }),
       ).rejects.toThrow(/deposit terms/i);
@@ -692,8 +1185,10 @@ describe("runDepositorPresignFlow", () => {
             statusReader: reader,
             presignClient: createMockPresignClient(),
             btcWallet: wallet,
+            vaultId: VALID_VAULT_ID,
             peginTxid: VALID_TXID,
             depositorPk: DEPOSITOR_PK,
+            recordGraphFingerprint: vi.fn(),
             signingContext: { ...createSigningContext(), ...override },
             depositTerms: DEPOSIT_TERMS,
           }),
@@ -719,8 +1214,10 @@ describe("runDepositorPresignFlow", () => {
           statusReader: reader,
           presignClient,
           btcWallet: wallet,
+          vaultId: VALID_VAULT_ID,
           peginTxid: VALID_TXID,
           depositorPk: DEPOSITOR_PK,
+          recordGraphFingerprint: vi.fn(),
           signingContext: {
             ...createSigningContext(),
             vaultKeeperBtcPubkeys: ["ab".repeat(32)],
@@ -744,8 +1241,10 @@ describe("runDepositorPresignFlow", () => {
           statusReader: reader,
           presignClient,
           btcWallet: wallet,
+          vaultId: VALID_VAULT_ID,
           peginTxid: VALID_TXID,
           depositorPk: DEPOSITOR_PK,
+          recordGraphFingerprint: vi.fn(),
           signingContext: {
             ...createSigningContext(),
             vaultProviderBtcPubkey: "cd".repeat(32),
@@ -771,8 +1270,10 @@ describe("runDepositorPresignFlow", () => {
           statusReader: reader,
           presignClient,
           btcWallet: wallet,
+          vaultId: VALID_VAULT_ID,
           peginTxid: VALID_TXID,
           depositorPk: DEPOSITOR_PK,
+          recordGraphFingerprint: vi.fn(),
           signingContext: { ...createSigningContext(), protocolFeeRate: 3n },
           depositTerms: DEPOSIT_TERMS, // protocolFeeRate: 2n
         }),
@@ -794,8 +1295,10 @@ describe("runDepositorPresignFlow", () => {
         statusReader: reader,
         presignClient,
         btcWallet: wallet,
+        vaultId: VALID_VAULT_ID,
         peginTxid: VALID_TXID,
         depositorPk: DEPOSITOR_PK,
+        recordGraphFingerprint: vi.fn(),
         signingContext: createSigningContext(),
       });
 
@@ -816,8 +1319,10 @@ describe("runDepositorPresignFlow", () => {
         statusReader: reader,
         presignClient,
         btcWallet: wallet,
+        vaultId: VALID_VAULT_ID,
         peginTxid: VALID_TXID,
         depositorPk: DEPOSITOR_PK,
+        recordGraphFingerprint: vi.fn(),
         signingContext: createSigningContext(),
         depositTerms: DEPOSIT_TERMS,
       });

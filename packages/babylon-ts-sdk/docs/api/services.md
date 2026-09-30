@@ -7,6 +7,347 @@ Callers own the wallet; services own the orchestration.
 
 ## Classes
 
+### ChallengerSetMismatchError
+
+Defined in: [packages/babylon-ts-sdk/src/tbv/core/services/delegated-claim/challengerBinding.ts](https://github.com/babylonlabs-io/babylon-toolkit/blob/main/packages/babylon-ts-sdk/src/tbv/core/services/delegated-claim/challengerBinding.ts)
+
+**`Experimental`**
+
+Thrown when the graph's challengers are not the vault's challengers.
+
+#### Extends
+
+- `Error`
+
+#### Constructors
+
+##### Constructor
+
+```ts
+new ChallengerSetMismatchError(missing, unexpected): ChallengerSetMismatchError;
+```
+
+Defined in: [packages/babylon-ts-sdk/src/tbv/core/services/delegated-claim/challengerBinding.ts](https://github.com/babylonlabs-io/babylon-toolkit/blob/main/packages/babylon-ts-sdk/src/tbv/core/services/delegated-claim/challengerBinding.ts)
+
+**`Experimental`**
+
+###### Parameters
+
+###### missing
+
+`string`[]
+
+Challengers the vault has that the graph left out.
+
+###### unexpected
+
+`string`[]
+
+Challengers the graph lists that the vault does not have.
+
+###### Returns
+
+[`ChallengerSetMismatchError`](#challengersetmismatcherror)
+
+###### Overrides
+
+```ts
+Error.constructor
+```
+
+#### Properties
+
+##### missing
+
+```ts
+readonly missing: string[];
+```
+
+Defined in: [packages/babylon-ts-sdk/src/tbv/core/services/delegated-claim/challengerBinding.ts](https://github.com/babylonlabs-io/babylon-toolkit/blob/main/packages/babylon-ts-sdk/src/tbv/core/services/delegated-claim/challengerBinding.ts)
+
+**`Experimental`**
+
+Challengers the vault has that the graph left out.
+
+##### unexpected
+
+```ts
+readonly unexpected: string[];
+```
+
+Defined in: [packages/babylon-ts-sdk/src/tbv/core/services/delegated-claim/challengerBinding.ts](https://github.com/babylonlabs-io/babylon-toolkit/blob/main/packages/babylon-ts-sdk/src/tbv/core/services/delegated-claim/challengerBinding.ts)
+
+**`Experimental`**
+
+Challengers the graph lists that the vault does not have.
+
+***
+
+### PayoutDestinationError
+
+Defined in: [packages/babylon-ts-sdk/src/tbv/core/services/delegated-claim/payoutBinding.ts](https://github.com/babylonlabs-io/babylon-toolkit/blob/main/packages/babylon-ts-sdk/src/tbv/core/services/delegated-claim/payoutBinding.ts)
+
+**`Experimental`**
+
+Thrown when a Payout does not pay the vault's registered destination.
+
+#### Extends
+
+- `Error`
+
+#### Constructors
+
+##### Constructor
+
+```ts
+new PayoutDestinationError(expectedScriptHex, actualScriptHex): PayoutDestinationError;
+```
+
+Defined in: [packages/babylon-ts-sdk/src/tbv/core/services/delegated-claim/payoutBinding.ts](https://github.com/babylonlabs-io/babylon-toolkit/blob/main/packages/babylon-ts-sdk/src/tbv/core/services/delegated-claim/payoutBinding.ts)
+
+**`Experimental`**
+
+###### Parameters
+
+###### expectedScriptHex
+
+`string`
+
+The vault's registered payout scriptPubKey, hex.
+
+###### actualScriptHex
+
+`string`
+
+The scriptPubKey the Payout actually pays, hex.
+
+###### Returns
+
+[`PayoutDestinationError`](#payoutdestinationerror)
+
+###### Overrides
+
+```ts
+Error.constructor
+```
+
+#### Properties
+
+##### expectedScriptHex
+
+```ts
+readonly expectedScriptHex: string;
+```
+
+Defined in: [packages/babylon-ts-sdk/src/tbv/core/services/delegated-claim/payoutBinding.ts](https://github.com/babylonlabs-io/babylon-toolkit/blob/main/packages/babylon-ts-sdk/src/tbv/core/services/delegated-claim/payoutBinding.ts)
+
+**`Experimental`**
+
+The vault's registered payout scriptPubKey, hex.
+
+##### actualScriptHex
+
+```ts
+readonly actualScriptHex: string;
+```
+
+Defined in: [packages/babylon-ts-sdk/src/tbv/core/services/delegated-claim/payoutBinding.ts](https://github.com/babylonlabs-io/babylon-toolkit/blob/main/packages/babylon-ts-sdk/src/tbv/core/services/delegated-claim/payoutBinding.ts)
+
+**`Experimental`**
+
+The scriptPubKey the Payout actually pays, hex.
+
+***
+
+### ArtifactsVaultMismatchError
+
+Defined in: [packages/babylon-ts-sdk/src/tbv/core/services/delegated-claim/readWatchtowerArtifacts.ts](https://github.com/babylonlabs-io/babylon-toolkit/blob/main/packages/babylon-ts-sdk/src/tbv/core/services/delegated-claim/readWatchtowerArtifacts.ts)
+
+**`Experimental`**
+
+Thrown when an artifacts file does not describe the vault being claimed.
+
+#### Extends
+
+- `Error`
+
+#### Constructors
+
+##### Constructor
+
+```ts
+new ArtifactsVaultMismatchError(expectedVaultId, actualVaultId): ArtifactsVaultMismatchError;
+```
+
+Defined in: [packages/babylon-ts-sdk/src/tbv/core/services/delegated-claim/readWatchtowerArtifacts.ts](https://github.com/babylonlabs-io/babylon-toolkit/blob/main/packages/babylon-ts-sdk/src/tbv/core/services/delegated-claim/readWatchtowerArtifacts.ts)
+
+**`Experimental`**
+
+###### Parameters
+
+###### expectedVaultId
+
+`string`
+
+###### actualVaultId
+
+`string`
+
+###### Returns
+
+[`ArtifactsVaultMismatchError`](#artifactsvaultmismatcherror)
+
+###### Overrides
+
+```ts
+Error.constructor
+```
+
+#### Properties
+
+##### expectedVaultId
+
+```ts
+readonly expectedVaultId: string;
+```
+
+Defined in: [packages/babylon-ts-sdk/src/tbv/core/services/delegated-claim/readWatchtowerArtifacts.ts](https://github.com/babylonlabs-io/babylon-toolkit/blob/main/packages/babylon-ts-sdk/src/tbv/core/services/delegated-claim/readWatchtowerArtifacts.ts)
+
+**`Experimental`**
+
+##### actualVaultId
+
+```ts
+readonly actualVaultId: string;
+```
+
+Defined in: [packages/babylon-ts-sdk/src/tbv/core/services/delegated-claim/readWatchtowerArtifacts.ts](https://github.com/babylonlabs-io/babylon-toolkit/blob/main/packages/babylon-ts-sdk/src/tbv/core/services/delegated-claim/readWatchtowerArtifacts.ts)
+
+**`Experimental`**
+
+***
+
+### VaultIdBindingError
+
+Defined in: [packages/babylon-ts-sdk/src/tbv/core/services/delegated-claim/vaultIdBinding.ts](https://github.com/babylonlabs-io/babylon-toolkit/blob/main/packages/babylon-ts-sdk/src/tbv/core/services/delegated-claim/vaultIdBinding.ts)
+
+**`Experimental`**
+
+Thrown when a graph does not belong to the vault it is presented for.
+
+#### Extends
+
+- `Error`
+
+#### Constructors
+
+##### Constructor
+
+```ts
+new VaultIdBindingError(
+   expectedVaultId, 
+   derivedVaultId, 
+   peginTxid): VaultIdBindingError;
+```
+
+Defined in: [packages/babylon-ts-sdk/src/tbv/core/services/delegated-claim/vaultIdBinding.ts](https://github.com/babylonlabs-io/babylon-toolkit/blob/main/packages/babylon-ts-sdk/src/tbv/core/services/delegated-claim/vaultIdBinding.ts)
+
+**`Experimental`**
+
+###### Parameters
+
+###### expectedVaultId
+
+`string`
+
+###### derivedVaultId
+
+`string`
+
+###### peginTxid
+
+`string`
+
+###### Returns
+
+[`VaultIdBindingError`](#vaultidbindingerror)
+
+###### Overrides
+
+```ts
+Error.constructor
+```
+
+#### Properties
+
+##### expectedVaultId
+
+```ts
+readonly expectedVaultId: string;
+```
+
+Defined in: [packages/babylon-ts-sdk/src/tbv/core/services/delegated-claim/vaultIdBinding.ts](https://github.com/babylonlabs-io/babylon-toolkit/blob/main/packages/babylon-ts-sdk/src/tbv/core/services/delegated-claim/vaultIdBinding.ts)
+
+**`Experimental`**
+
+##### derivedVaultId
+
+```ts
+readonly derivedVaultId: string;
+```
+
+Defined in: [packages/babylon-ts-sdk/src/tbv/core/services/delegated-claim/vaultIdBinding.ts](https://github.com/babylonlabs-io/babylon-toolkit/blob/main/packages/babylon-ts-sdk/src/tbv/core/services/delegated-claim/vaultIdBinding.ts)
+
+**`Experimental`**
+
+##### peginTxid
+
+```ts
+readonly peginTxid: string;
+```
+
+Defined in: [packages/babylon-ts-sdk/src/tbv/core/services/delegated-claim/vaultIdBinding.ts](https://github.com/babylonlabs-io/babylon-toolkit/blob/main/packages/babylon-ts-sdk/src/tbv/core/services/delegated-claim/vaultIdBinding.ts)
+
+**`Experimental`**
+
+***
+
+### GraphFingerprintError
+
+Defined in: [packages/babylon-ts-sdk/src/tbv/core/services/deposit/graphFingerprint.ts](https://github.com/babylonlabs-io/babylon-toolkit/blob/main/packages/babylon-ts-sdk/src/tbv/core/services/deposit/graphFingerprint.ts)
+
+#### Extends
+
+- `Error`
+
+#### Constructors
+
+##### Constructor
+
+```ts
+new GraphFingerprintError(message): GraphFingerprintError;
+```
+
+Defined in: [packages/babylon-ts-sdk/src/tbv/core/services/deposit/graphFingerprint.ts](https://github.com/babylonlabs-io/babylon-toolkit/blob/main/packages/babylon-ts-sdk/src/tbv/core/services/deposit/graphFingerprint.ts)
+
+###### Parameters
+
+###### message
+
+`string`
+
+###### Returns
+
+[`GraphFingerprintError`](#graphfingerprinterror)
+
+###### Overrides
+
+```ts
+Error.constructor
+```
+
+***
+
 ### PeginRegistrationMissingError
 
 Defined in: [packages/babylon-ts-sdk/src/tbv/core/services/deposit/peginRegistrationDepth.ts](https://github.com/babylonlabs-io/babylon-toolkit/blob/main/packages/babylon-ts-sdk/src/tbv/core/services/deposit/peginRegistrationDepth.ts)
@@ -76,6 +417,57 @@ Defined in: [packages/babylon-ts-sdk/src/tbv/core/services/deposit/peginRegistra
 ###### Returns
 
 [`PeginRegistrationNotFinalError`](#peginregistrationnotfinalerror)
+
+###### Overrides
+
+```ts
+Error.constructor
+```
+
+***
+
+### ApplicationEntryPointMismatchError
+
+Defined in: [packages/babylon-ts-sdk/src/tbv/core/services/deposit/validateOnChainParticipantKeys.ts](https://github.com/babylonlabs-io/babylon-toolkit/blob/main/packages/babylon-ts-sdk/src/tbv/core/services/deposit/validateOnChainParticipantKeys.ts)
+
+The application entry point the caller passed cannot be used, either because
+the registry says this vault provider serves a different one, or because the
+value is not a well-formed address so no comparison is possible.
+
+Both are a deployment or configuration fault — not chain drift, and not
+anything a depositor can act on. One class covers both because the caller's
+recovery is identical and the distinction only matters in a bug report, which
+the message carries.
+
+It is typed only so the consuming app can recognise it and show its own
+generic copy: the messages name addresses and the protocol values at stake,
+which belongs in that bug report rather than in front of a depositor. An
+untyped `Error` would be rendered verbatim as the callout body by the
+mapper's last-resort bucket.
+
+#### Extends
+
+- `Error`
+
+#### Constructors
+
+##### Constructor
+
+```ts
+new ApplicationEntryPointMismatchError(message): ApplicationEntryPointMismatchError;
+```
+
+Defined in: [packages/babylon-ts-sdk/src/tbv/core/services/deposit/validateOnChainParticipantKeys.ts](https://github.com/babylonlabs-io/babylon-toolkit/blob/main/packages/babylon-ts-sdk/src/tbv/core/services/deposit/validateOnChainParticipantKeys.ts)
+
+###### Parameters
+
+###### message
+
+`string`
+
+###### Returns
+
+[`ApplicationEntryPointMismatchError`](#applicationentrypointmismatcherror)
 
 ###### Overrides
 
@@ -174,6 +566,83 @@ Defined in: [packages/babylon-ts-sdk/src/tbv/core/services/deposit/verifyRegiste
 ```ts
 Error.constructor
 ```
+
+***
+
+### ReclaimUneconomicalError
+
+Defined in: [packages/babylon-ts-sdk/src/tbv/core/services/reclaim/errors.ts](https://github.com/babylonlabs-io/babylon-toolkit/blob/main/packages/babylon-ts-sdk/src/tbv/core/services/reclaim/errors.ts)
+
+Thrown when the fee would consume too much of the swept reserve — either the
+per-vbyte rate exceeds the safety ceiling, or the absolute fee exceeds the
+fraction cap.
+
+Distinct from a generic error because the caller's response differs: nothing
+is at risk and nothing expires. The reserve simply stays where it is until
+fee rates fall, and the UI should say so rather than presenting a failure.
+
+#### Extends
+
+- `Error`
+
+#### Constructors
+
+##### Constructor
+
+```ts
+new ReclaimUneconomicalError(
+   message, 
+   feeSats, 
+   sweptTotalSats): ReclaimUneconomicalError;
+```
+
+Defined in: [packages/babylon-ts-sdk/src/tbv/core/services/reclaim/errors.ts](https://github.com/babylonlabs-io/babylon-toolkit/blob/main/packages/babylon-ts-sdk/src/tbv/core/services/reclaim/errors.ts)
+
+###### Parameters
+
+###### message
+
+`string`
+
+###### feeSats
+
+`bigint`
+
+###### sweptTotalSats
+
+`bigint`
+
+###### Returns
+
+[`ReclaimUneconomicalError`](#reclaimuneconomicalerror)
+
+###### Overrides
+
+```ts
+Error.constructor
+```
+
+#### Properties
+
+##### feeSats
+
+```ts
+readonly feeSats: bigint;
+```
+
+Defined in: [packages/babylon-ts-sdk/src/tbv/core/services/reclaim/errors.ts](https://github.com/babylonlabs-io/babylon-toolkit/blob/main/packages/babylon-ts-sdk/src/tbv/core/services/reclaim/errors.ts)
+
+Fee the reclaim would have paid, in satoshis.
+
+##### sweptTotalSats
+
+```ts
+readonly sweptTotalSats: bigint;
+```
+
+Defined in: [packages/babylon-ts-sdk/src/tbv/core/services/reclaim/errors.ts](https://github.com/babylonlabs-io/babylon-toolkit/blob/main/packages/babylon-ts-sdk/src/tbv/core/services/reclaim/errors.ts)
+
+Sum of the reserves the reclaim would have swept, in satoshis.
 
 ***
 
@@ -480,6 +949,732 @@ cancellation support for that window.
 
 ***
 
+### AssembleWatchtowerArtifactsParams
+
+Defined in: [packages/babylon-ts-sdk/src/tbv/core/services/delegated-claim/assembleWatchtowerArtifacts.ts](https://github.com/babylonlabs-io/babylon-toolkit/blob/main/packages/babylon-ts-sdk/src/tbv/core/services/delegated-claim/assembleWatchtowerArtifacts.ts)
+
+**`Experimental`**
+
+Everything one delegated-claim signing session needs.
+
+#### Properties
+
+##### btcWallet
+
+```ts
+btcWallet: BitcoinWallet;
+```
+
+Defined in: [packages/babylon-ts-sdk/src/tbv/core/services/delegated-claim/assembleWatchtowerArtifacts.ts](https://github.com/babylonlabs-io/babylon-toolkit/blob/main/packages/babylon-ts-sdk/src/tbv/core/services/delegated-claim/assembleWatchtowerArtifacts.ts)
+
+**`Experimental`**
+
+Wallet holding the depositor key the graph was built with.
+
+##### depositorPublicKey
+
+```ts
+depositorPublicKey: string;
+```
+
+Defined in: [packages/babylon-ts-sdk/src/tbv/core/services/delegated-claim/assembleWatchtowerArtifacts.ts](https://github.com/babylonlabs-io/babylon-toolkit/blob/main/packages/babylon-ts-sdk/src/tbv/core/services/delegated-claim/assembleWatchtowerArtifacts.ts)
+
+**`Experimental`**
+
+Depositor's BTC public key (compressed or x-only hex).
+
+##### btcNetwork
+
+```ts
+btcNetwork: Network;
+```
+
+Defined in: [packages/babylon-ts-sdk/src/tbv/core/services/delegated-claim/assembleWatchtowerArtifacts.ts](https://github.com/babylonlabs-io/babylon-toolkit/blob/main/packages/babylon-ts-sdk/src/tbv/core/services/delegated-claim/assembleWatchtowerArtifacts.ts)
+
+**`Experimental`**
+
+Network the depositor's address is derived on, to check the signer.
+
+##### source
+
+```ts
+source: ClaimerArtifactsSource;
+```
+
+Defined in: [packages/babylon-ts-sdk/src/tbv/core/services/delegated-claim/assembleWatchtowerArtifacts.ts](https://github.com/babylonlabs-io/babylon-toolkit/blob/main/packages/babylon-ts-sdk/src/tbv/core/services/delegated-claim/assembleWatchtowerArtifacts.ts)
+
+**`Experimental`**
+
+Graph and verifying key as the vault provider returned them.
+
+##### vault
+
+```ts
+vault: DelegatedClaimVaultContext;
+```
+
+Defined in: [packages/babylon-ts-sdk/src/tbv/core/services/delegated-claim/assembleWatchtowerArtifacts.ts](https://github.com/babylonlabs-io/babylon-toolkit/blob/main/packages/babylon-ts-sdk/src/tbv/core/services/delegated-claim/assembleWatchtowerArtifacts.ts)
+
+**`Experimental`**
+
+##### babeSessionsJson?
+
+```ts
+optional babeSessionsJson: string;
+```
+
+Defined in: [packages/babylon-ts-sdk/src/tbv/core/services/delegated-claim/assembleWatchtowerArtifacts.ts](https://github.com/babylonlabs-io/babylon-toolkit/blob/main/packages/babylon-ts-sdk/src/tbv/core/services/delegated-claim/assembleWatchtowerArtifacts.ts)
+
+**`Experimental`**
+
+Per-challenger BaBe sessions as `{"<pk>": {"decryptor_artifacts_hex":
+"..."}}`, passed through into the file unchanged.
+
+Omit it for anything but a fixture. Real sessions run to hundreds of
+megabytes per challenger, and this argument crosses the WASM boundary as
+one string — join them into the file downstream instead.
+
+***
+
+### AssertChallengerSetMatchesVaultParams
+
+Defined in: [packages/babylon-ts-sdk/src/tbv/core/services/delegated-claim/challengerBinding.ts](https://github.com/babylonlabs-io/babylon-toolkit/blob/main/packages/babylon-ts-sdk/src/tbv/core/services/delegated-claim/challengerBinding.ts)
+
+**`Experimental`**
+
+The graph's challenger keys, and the on-chain sets they must equal.
+
+#### Properties
+
+##### graphChallengerPubkeys
+
+```ts
+graphChallengerPubkeys: string[];
+```
+
+Defined in: [packages/babylon-ts-sdk/src/tbv/core/services/delegated-claim/challengerBinding.ts](https://github.com/babylonlabs-io/babylon-toolkit/blob/main/packages/babylon-ts-sdk/src/tbv/core/services/delegated-claim/challengerBinding.ts)
+
+**`Experimental`**
+
+Challenger keys the graph produced WronglyChallenged PSBTs for.
+
+##### depositorBtcPubkey
+
+```ts
+depositorBtcPubkey: string;
+```
+
+Defined in: [packages/babylon-ts-sdk/src/tbv/core/services/delegated-claim/challengerBinding.ts](https://github.com/babylonlabs-io/babylon-toolkit/blob/main/packages/babylon-ts-sdk/src/tbv/core/services/delegated-claim/challengerBinding.ts)
+
+**`Experimental`**
+
+Depositor's BTC public key, registered on chain for this vault.
+
+##### vaultProviderBtcPubkey
+
+```ts
+vaultProviderBtcPubkey: string;
+```
+
+Defined in: [packages/babylon-ts-sdk/src/tbv/core/services/delegated-claim/challengerBinding.ts](https://github.com/babylonlabs-io/babylon-toolkit/blob/main/packages/babylon-ts-sdk/src/tbv/core/services/delegated-claim/challengerBinding.ts)
+
+**`Experimental`**
+
+Vault provider's BTC public key, registered on chain for this vault.
+The depositor-as-claimer branch does not use it, but the shared
+derivation takes it, and passing a stand-in would be a lie that the
+next change to that function could turn into a wrong set.
+
+##### vaultKeeperBtcPubkeys
+
+```ts
+vaultKeeperBtcPubkeys: string[];
+```
+
+Defined in: [packages/babylon-ts-sdk/src/tbv/core/services/delegated-claim/challengerBinding.ts](https://github.com/babylonlabs-io/babylon-toolkit/blob/main/packages/babylon-ts-sdk/src/tbv/core/services/delegated-claim/challengerBinding.ts)
+
+**`Experimental`**
+
+Vault keepers registered on chain for this vault.
+
+##### universalChallengerBtcPubkeys
+
+```ts
+universalChallengerBtcPubkeys: string[];
+```
+
+Defined in: [packages/babylon-ts-sdk/src/tbv/core/services/delegated-claim/challengerBinding.ts](https://github.com/babylonlabs-io/babylon-toolkit/blob/main/packages/babylon-ts-sdk/src/tbv/core/services/delegated-claim/challengerBinding.ts)
+
+**`Experimental`**
+
+Universal challengers registered on chain.
+
+***
+
+### DeriveClaimerWotsKeypairParams
+
+Defined in: [packages/babylon-ts-sdk/src/tbv/core/services/delegated-claim/deriveClaimerWotsKeypair.ts](https://github.com/babylonlabs-io/babylon-toolkit/blob/main/packages/babylon-ts-sdk/src/tbv/core/services/delegated-claim/deriveClaimerWotsKeypair.ts)
+
+**`Experimental`**
+
+Inputs for re-deriving the depositor's WOTS keypair at claim time.
+
+#### Properties
+
+##### btcWallet
+
+```ts
+btcWallet: BitcoinWallet;
+```
+
+Defined in: [packages/babylon-ts-sdk/src/tbv/core/services/delegated-claim/deriveClaimerWotsKeypair.ts](https://github.com/babylonlabs-io/babylon-toolkit/blob/main/packages/babylon-ts-sdk/src/tbv/core/services/delegated-claim/deriveClaimerWotsKeypair.ts)
+
+**`Experimental`**
+
+Must implement `deriveContextHash` — the only wallet prompt in the claim.
+
+##### vaultContext
+
+```ts
+vaultContext: VaultContextInput;
+```
+
+Defined in: [packages/babylon-ts-sdk/src/tbv/core/services/delegated-claim/deriveClaimerWotsKeypair.ts](https://github.com/babylonlabs-io/babylon-toolkit/blob/main/packages/babylon-ts-sdk/src/tbv/core/services/delegated-claim/deriveClaimerWotsKeypair.ts)
+
+**`Experimental`**
+
+Same context that produced this vault's secrets at deposit time.
+
+##### htlcVout
+
+```ts
+htlcVout: number;
+```
+
+Defined in: [packages/babylon-ts-sdk/src/tbv/core/services/delegated-claim/deriveClaimerWotsKeypair.ts](https://github.com/babylonlabs-io/babylon-toolkit/blob/main/packages/babylon-ts-sdk/src/tbv/core/services/delegated-claim/deriveClaimerWotsKeypair.ts)
+
+**`Experimental`**
+
+HTLC output index of this vault within the Pre-PegIn transaction.
+
+##### txGraphJson
+
+```ts
+txGraphJson: string;
+```
+
+Defined in: [packages/babylon-ts-sdk/src/tbv/core/services/delegated-claim/deriveClaimerWotsKeypair.ts](https://github.com/babylonlabs-io/babylon-toolkit/blob/main/packages/babylon-ts-sdk/src/tbv/core/services/delegated-claim/deriveClaimerWotsKeypair.ts)
+
+**`Experimental`**
+
+JSON-serialized TxGraph the keypair must match.
+
+##### txGraphVersion
+
+```ts
+txGraphVersion: number;
+```
+
+Defined in: [packages/babylon-ts-sdk/src/tbv/core/services/delegated-claim/deriveClaimerWotsKeypair.ts](https://github.com/babylonlabs-io/babylon-toolkit/blob/main/packages/babylon-ts-sdk/src/tbv/core/services/delegated-claim/deriveClaimerWotsKeypair.ts)
+
+**`Experimental`**
+
+Graph version. Delegated claim requires 3.
+
+##### expectedWotsPkHash
+
+```ts
+expectedWotsPkHash: string;
+```
+
+Defined in: [packages/babylon-ts-sdk/src/tbv/core/services/delegated-claim/deriveClaimerWotsKeypair.ts](https://github.com/babylonlabs-io/babylon-toolkit/blob/main/packages/babylon-ts-sdk/src/tbv/core/services/delegated-claim/deriveClaimerWotsKeypair.ts)
+
+**`Experimental`**
+
+`depositorWotsPkHash` as the vault records it on chain, `0x`-prefixed.
+
+This is the only anchor here the vault provider does not supply. The
+graph check below compares against VP-served bytes, so it cannot tell a
+wrong `htlcVout`, a wrong wallet account, or expander drift after a
+WASM re-pin from a correct derivation.
+
+***
+
+### ClaimerWotsKeypair
+
+Defined in: [packages/babylon-ts-sdk/src/tbv/core/services/delegated-claim/deriveClaimerWotsKeypair.ts](https://github.com/babylonlabs-io/babylon-toolkit/blob/main/packages/babylon-ts-sdk/src/tbv/core/services/delegated-claim/deriveClaimerWotsKeypair.ts)
+
+**`Experimental`**
+
+The `wots_keypair.json` content and the hash it commits to.
+
+#### Properties
+
+##### wotsKeypairJson
+
+```ts
+wotsKeypairJson: string;
+```
+
+Defined in: [packages/babylon-ts-sdk/src/tbv/core/services/delegated-claim/deriveClaimerWotsKeypair.ts](https://github.com/babylonlabs-io/babylon-toolkit/blob/main/packages/babylon-ts-sdk/src/tbv/core/services/delegated-claim/deriveClaimerWotsKeypair.ts)
+
+**`Experimental`**
+
+Content of `wots_keypair.json`, ready to write verbatim. Secret and
+single-use: never log it, never persist it beyond the claim, and never
+reuse it — reuse across claims leaks the WOTS key.
+
+##### pkHash
+
+```ts
+pkHash: string;
+```
+
+Defined in: [packages/babylon-ts-sdk/src/tbv/core/services/delegated-claim/deriveClaimerWotsKeypair.ts](https://github.com/babylonlabs-io/babylon-toolkit/blob/main/packages/babylon-ts-sdk/src/tbv/core/services/delegated-claim/deriveClaimerWotsKeypair.ts)
+
+**`Experimental`**
+
+`0x`-prefixed hash of the public keys, matching `depositorWotsPkHash`.
+
+***
+
+### AssertPayoutPaysRegisteredScriptParams
+
+Defined in: [packages/babylon-ts-sdk/src/tbv/core/services/delegated-claim/payoutBinding.ts](https://github.com/babylonlabs-io/babylon-toolkit/blob/main/packages/babylon-ts-sdk/src/tbv/core/services/delegated-claim/payoutBinding.ts)
+
+**`Experimental`**
+
+The Payout to check, and the destination it must pay.
+
+#### Properties
+
+##### payoutPsbtBase64
+
+```ts
+payoutPsbtBase64: string;
+```
+
+Defined in: [packages/babylon-ts-sdk/src/tbv/core/services/delegated-claim/payoutBinding.ts](https://github.com/babylonlabs-io/babylon-toolkit/blob/main/packages/babylon-ts-sdk/src/tbv/core/services/delegated-claim/payoutBinding.ts)
+
+**`Experimental`**
+
+A Payout signing PSBT, base64, as the graph produced it.
+
+##### registeredPayoutScriptPubKey
+
+```ts
+registeredPayoutScriptPubKey: string;
+```
+
+Defined in: [packages/babylon-ts-sdk/src/tbv/core/services/delegated-claim/payoutBinding.ts](https://github.com/babylonlabs-io/babylon-toolkit/blob/main/packages/babylon-ts-sdk/src/tbv/core/services/delegated-claim/payoutBinding.ts)
+
+**`Experimental`**
+
+`depositorPayoutScriptPubKey` as the vault registered it on chain, hex.
+The vault provider does not choose this value, which is the whole point
+of comparing against it.
+
+***
+
+### AssertArtifactsUsableParams
+
+Defined in: [packages/babylon-ts-sdk/src/tbv/core/services/delegated-claim/readWatchtowerArtifacts.ts](https://github.com/babylonlabs-io/babylon-toolkit/blob/main/packages/babylon-ts-sdk/src/tbv/core/services/delegated-claim/readWatchtowerArtifacts.ts)
+
+**`Experimental`**
+
+The file to check, and the vault it must belong to.
+
+#### Properties
+
+##### artifactsJson
+
+```ts
+artifactsJson: string;
+```
+
+Defined in: [packages/babylon-ts-sdk/src/tbv/core/services/delegated-claim/readWatchtowerArtifacts.ts](https://github.com/babylonlabs-io/babylon-toolkit/blob/main/packages/babylon-ts-sdk/src/tbv/core/services/delegated-claim/readWatchtowerArtifacts.ts)
+
+**`Experimental`**
+
+##### expectedVaultId
+
+```ts
+expectedVaultId: string;
+```
+
+Defined in: [packages/babylon-ts-sdk/src/tbv/core/services/delegated-claim/readWatchtowerArtifacts.ts](https://github.com/babylonlabs-io/babylon-toolkit/blob/main/packages/babylon-ts-sdk/src/tbv/core/services/delegated-claim/readWatchtowerArtifacts.ts)
+
+**`Experimental`**
+
+Vault the caller intends to claim, `0x`-prefixed or bare hex.
+
+##### depositorEthAddress
+
+```ts
+depositorEthAddress: string;
+```
+
+Defined in: [packages/babylon-ts-sdk/src/tbv/core/services/delegated-claim/readWatchtowerArtifacts.ts](https://github.com/babylonlabs-io/babylon-toolkit/blob/main/packages/babylon-ts-sdk/src/tbv/core/services/delegated-claim/readWatchtowerArtifacts.ts)
+
+**`Experimental`**
+
+Depositor's Ethereum address, used with the file's PegIn txid to
+re-derive the vault id. Without it the only check would be the file's
+self-declared `vault_id`.
+
+##### txGraphVersion?
+
+```ts
+optional txGraphVersion: number;
+```
+
+Defined in: [packages/babylon-ts-sdk/src/tbv/core/services/delegated-claim/readWatchtowerArtifacts.ts](https://github.com/babylonlabs-io/babylon-toolkit/blob/main/packages/babylon-ts-sdk/src/tbv/core/services/delegated-claim/readWatchtowerArtifacts.ts)
+
+**`Experimental`**
+
+Graph version to verify under. Defaults to the only version the format
+exists for. A file that records a different `vault_core_version` is
+rejected rather than verified under this one.
+
+***
+
+### WatchtowerArtifactsSummary
+
+Defined in: [packages/babylon-ts-sdk/src/tbv/core/services/delegated-claim/types.ts](https://github.com/babylonlabs-io/babylon-toolkit/blob/main/packages/babylon-ts-sdk/src/tbv/core/services/delegated-claim/types.ts)
+
+**`Experimental`**
+
+The small, non-opaque fields of an `artifacts.json` file.
+
+#### Properties
+
+##### vaultCoreVersion?
+
+```ts
+optional vaultCoreVersion: number;
+```
+
+Defined in: [packages/babylon-ts-sdk/src/tbv/core/services/delegated-claim/types.ts](https://github.com/babylonlabs-io/babylon-toolkit/blob/main/packages/babylon-ts-sdk/src/tbv/core/services/delegated-claim/types.ts)
+
+**`Experimental`**
+
+Vault Core version the file records, absent on files written before the
+field existed. `assertArtifactsUsableForVault` refuses a file whose
+value differs from the version it verifies under.
+
+##### vaultId
+
+```ts
+vaultId: string;
+```
+
+Defined in: [packages/babylon-ts-sdk/src/tbv/core/services/delegated-claim/types.ts](https://github.com/babylonlabs-io/babylon-toolkit/blob/main/packages/babylon-ts-sdk/src/tbv/core/services/delegated-claim/types.ts)
+
+**`Experimental`**
+
+32-byte on-chain vault id, as the file records it.
+
+##### claimTxid
+
+```ts
+claimTxid: string;
+```
+
+Defined in: [packages/babylon-ts-sdk/src/tbv/core/services/delegated-claim/types.ts](https://github.com/babylonlabs-io/babylon-toolkit/blob/main/packages/babylon-ts-sdk/src/tbv/core/services/delegated-claim/types.ts)
+
+**`Experimental`**
+
+Txid of the fully signed Claim transaction the file carries.
+
+##### peginTxid
+
+```ts
+peginTxid: string;
+```
+
+Defined in: [packages/babylon-ts-sdk/src/tbv/core/services/delegated-claim/types.ts](https://github.com/babylonlabs-io/babylon-toolkit/blob/main/packages/babylon-ts-sdk/src/tbv/core/services/delegated-claim/types.ts)
+
+**`Experimental`**
+
+Txid of the PegIn output that Claim spends. Together with the depositor's
+Ethereum address this derives the vault id, which is the only check that
+binds the file's graph to a vault — `vault_id` itself is self-declared.
+
+##### proverCircuitVersion
+
+```ts
+proverCircuitVersion: number;
+```
+
+Defined in: [packages/babylon-ts-sdk/src/tbv/core/services/delegated-claim/types.ts](https://github.com/babylonlabs-io/babylon-toolkit/blob/main/packages/babylon-ts-sdk/src/tbv/core/services/delegated-claim/types.ts)
+
+**`Experimental`**
+
+##### claimableEventBlockNumber
+
+```ts
+claimableEventBlockNumber: bigint;
+```
+
+Defined in: [packages/babylon-ts-sdk/src/tbv/core/services/delegated-claim/types.ts](https://github.com/babylonlabs-io/babylon-toolkit/blob/main/packages/babylon-ts-sdk/src/tbv/core/services/delegated-claim/types.ts)
+
+**`Experimental`**
+
+Block of the finalized `VaultClaimableBy` event, or `0n` when the file was
+assembled before the Ethereum withdrawal was initiated. A claim run
+against zero proves the wrong block and fails before Assert, so
+`assertArtifactsUsableForVault` refuses it.
+
+`bigint`, matching [DelegatedClaimVaultContext](#delegatedclaimvaultcontext) and the WASM
+boundary — a block number is a u64 there.
+
+##### babeSessionChallengerPubkeys
+
+```ts
+babeSessionChallengerPubkeys: string[];
+```
+
+Defined in: [packages/babylon-ts-sdk/src/tbv/core/services/delegated-claim/types.ts](https://github.com/babylonlabs-io/babylon-toolkit/blob/main/packages/babylon-ts-sdk/src/tbv/core/services/delegated-claim/types.ts)
+
+**`Experimental`**
+
+Hex challenger public keys the file carries BaBe sessions for.
+
+***
+
+### ClaimerArtifactsSource
+
+Defined in: [packages/babylon-ts-sdk/src/tbv/core/services/delegated-claim/types.ts](https://github.com/babylonlabs-io/babylon-toolkit/blob/main/packages/babylon-ts-sdk/src/tbv/core/services/delegated-claim/types.ts)
+
+**`Experimental`**
+
+Inputs the vault provider supplies for artifact assembly.
+
+#### Properties
+
+##### txGraphJson
+
+```ts
+txGraphJson: string;
+```
+
+Defined in: [packages/babylon-ts-sdk/src/tbv/core/services/delegated-claim/types.ts](https://github.com/babylonlabs-io/babylon-toolkit/blob/main/packages/babylon-ts-sdk/src/tbv/core/services/delegated-claim/types.ts)
+
+**`Experimental`**
+
+`tx_graph_json` from `requestDepositorClaimerArtifacts`.
+
+##### verifyingKeyHex
+
+```ts
+verifyingKeyHex: string;
+```
+
+Defined in: [packages/babylon-ts-sdk/src/tbv/core/services/delegated-claim/types.ts](https://github.com/babylonlabs-io/babylon-toolkit/blob/main/packages/babylon-ts-sdk/src/tbv/core/services/delegated-claim/types.ts)
+
+**`Experimental`**
+
+`verifying_key_hex` from the same response.
+
+Trusted from the vault provider. This value is written into the
+artifacts file and is the key `pinPegoutProof` later verifies the
+Groth16 proof against, so a provider that supplies a key of its own
+choosing makes that verification prove nothing. No registry read in
+this SDK exposes a verifying key, or a hash of one, per
+`proverCircuitVersion`, so there is nothing to compare it with yet.
+Obtain it over an authenticated channel, and re-check it here once the
+chain exposes an anchor.
+
+***
+
+### DelegatedClaimVaultContext
+
+Defined in: [packages/babylon-ts-sdk/src/tbv/core/services/delegated-claim/types.ts](https://github.com/babylonlabs-io/babylon-toolkit/blob/main/packages/babylon-ts-sdk/src/tbv/core/services/delegated-claim/types.ts)
+
+**`Experimental`**
+
+On-chain facts the assembled artifacts commit to.
+
+#### Properties
+
+##### vaultId
+
+```ts
+vaultId: `0x${string}`;
+```
+
+Defined in: [packages/babylon-ts-sdk/src/tbv/core/services/delegated-claim/types.ts](https://github.com/babylonlabs-io/babylon-toolkit/blob/main/packages/babylon-ts-sdk/src/tbv/core/services/delegated-claim/types.ts)
+
+**`Experimental`**
+
+##### depositorEthAddress
+
+```ts
+depositorEthAddress: `0x${string}`;
+```
+
+Defined in: [packages/babylon-ts-sdk/src/tbv/core/services/delegated-claim/types.ts](https://github.com/babylonlabs-io/babylon-toolkit/blob/main/packages/babylon-ts-sdk/src/tbv/core/services/delegated-claim/types.ts)
+
+**`Experimental`**
+
+Depositor's Ethereum address, the one the vault was registered under.
+With the PegIn txid it re-derives [DelegatedClaimVaultContext.vaultId](#vaultid-3),
+which is how a vault-provider-served graph is bound to this vault.
+
+##### registeredPayoutScriptPubKey
+
+```ts
+registeredPayoutScriptPubKey: string;
+```
+
+Defined in: [packages/babylon-ts-sdk/src/tbv/core/services/delegated-claim/types.ts](https://github.com/babylonlabs-io/babylon-toolkit/blob/main/packages/babylon-ts-sdk/src/tbv/core/services/delegated-claim/types.ts)
+
+**`Experimental`**
+
+`depositorPayoutScriptPubKey` as the vault registered it on chain, hex.
+The Payout the vault provider builds is checked against this before the
+wallet signs it.
+
+##### vaultProviderBtcPubkey
+
+```ts
+vaultProviderBtcPubkey: string;
+```
+
+Defined in: [packages/babylon-ts-sdk/src/tbv/core/services/delegated-claim/types.ts](https://github.com/babylonlabs-io/babylon-toolkit/blob/main/packages/babylon-ts-sdk/src/tbv/core/services/delegated-claim/types.ts)
+
+**`Experimental`**
+
+Vault provider's BTC public key, registered on chain for this vault.
+
+##### vaultKeeperBtcPubkeys
+
+```ts
+vaultKeeperBtcPubkeys: string[];
+```
+
+Defined in: [packages/babylon-ts-sdk/src/tbv/core/services/delegated-claim/types.ts](https://github.com/babylonlabs-io/babylon-toolkit/blob/main/packages/babylon-ts-sdk/src/tbv/core/services/delegated-claim/types.ts)
+
+**`Experimental`**
+
+Vault keepers registered on chain, the local challengers of this claim.
+
+##### universalChallengerBtcPubkeys
+
+```ts
+universalChallengerBtcPubkeys: string[];
+```
+
+Defined in: [packages/babylon-ts-sdk/src/tbv/core/services/delegated-claim/types.ts](https://github.com/babylonlabs-io/babylon-toolkit/blob/main/packages/babylon-ts-sdk/src/tbv/core/services/delegated-claim/types.ts)
+
+**`Experimental`**
+
+Universal challengers registered on chain.
+
+##### txGraphVersion
+
+```ts
+txGraphVersion: number;
+```
+
+Defined in: [packages/babylon-ts-sdk/src/tbv/core/services/delegated-claim/types.ts](https://github.com/babylonlabs-io/babylon-toolkit/blob/main/packages/babylon-ts-sdk/src/tbv/core/services/delegated-claim/types.ts)
+
+**`Experimental`**
+
+Graph (vault core) version of the vault. Delegated claim requires 3.
+
+##### proverCircuitVersion
+
+```ts
+proverCircuitVersion: number;
+```
+
+Defined in: [packages/babylon-ts-sdk/src/tbv/core/services/delegated-claim/types.ts](https://github.com/babylonlabs-io/babylon-toolkit/blob/main/packages/babylon-ts-sdk/src/tbv/core/services/delegated-claim/types.ts)
+
+**`Experimental`**
+
+##### vaultCoreVersion
+
+```ts
+vaultCoreVersion: number;
+```
+
+Defined in: [packages/babylon-ts-sdk/src/tbv/core/services/delegated-claim/types.ts](https://github.com/babylonlabs-io/babylon-toolkit/blob/main/packages/babylon-ts-sdk/src/tbv/core/services/delegated-claim/types.ts)
+
+**`Experimental`**
+
+Vault Core version from the finalized `PegInSubmitted` event. The builder
+refuses a graph that records a different one, which is what stops a graph
+built under other rules from being signed.
+
+##### claimableEventBlockNumber
+
+```ts
+claimableEventBlockNumber: bigint;
+```
+
+Defined in: [packages/babylon-ts-sdk/src/tbv/core/services/delegated-claim/types.ts](https://github.com/babylonlabs-io/babylon-toolkit/blob/main/packages/babylon-ts-sdk/src/tbv/core/services/delegated-claim/types.ts)
+
+**`Experimental`**
+
+Block of the finalized `VaultClaimableBy` event.
+
+Zero is accepted, because the file is meant to be assembled while the
+vault provider is still online, which can be long before the withdrawal
+is initiated. Such a file is not claimable as written: nothing in the SDK
+fills the field in later, and `assertArtifactsUsableForVault` refuses it.
+Pass the real block whenever the event has already finalized.
+
+***
+
+### AssertClaimSpendsVaultParams
+
+Defined in: [packages/babylon-ts-sdk/src/tbv/core/services/delegated-claim/vaultIdBinding.ts](https://github.com/babylonlabs-io/babylon-toolkit/blob/main/packages/babylon-ts-sdk/src/tbv/core/services/delegated-claim/vaultIdBinding.ts)
+
+**`Experimental`**
+
+The three values the on-chain vault id is derived from and compared with.
+
+#### Properties
+
+##### peginTxid
+
+```ts
+peginTxid: string;
+```
+
+Defined in: [packages/babylon-ts-sdk/src/tbv/core/services/delegated-claim/vaultIdBinding.ts](https://github.com/babylonlabs-io/babylon-toolkit/blob/main/packages/babylon-ts-sdk/src/tbv/core/services/delegated-claim/vaultIdBinding.ts)
+
+**`Experimental`**
+
+Display-order PegIn txid, from the Claim's first input.
+
+##### depositorEthAddress
+
+```ts
+depositorEthAddress: string;
+```
+
+Defined in: [packages/babylon-ts-sdk/src/tbv/core/services/delegated-claim/vaultIdBinding.ts](https://github.com/babylonlabs-io/babylon-toolkit/blob/main/packages/babylon-ts-sdk/src/tbv/core/services/delegated-claim/vaultIdBinding.ts)
+
+**`Experimental`**
+
+Depositor's Ethereum address, the second half of the on-chain id.
+
+##### expectedVaultId
+
+```ts
+expectedVaultId: string;
+```
+
+Defined in: [packages/babylon-ts-sdk/src/tbv/core/services/delegated-claim/vaultIdBinding.ts](https://github.com/babylonlabs-io/babylon-toolkit/blob/main/packages/babylon-ts-sdk/src/tbv/core/services/delegated-claim/vaultIdBinding.ts)
+
+**`Experimental`**
+
+Vault id the graph or file claims to be for.
+
+***
+
 ### PeginStatusReader
 
 Defined in: [packages/babylon-ts-sdk/src/tbv/core/services/deposit/interfaces.ts](https://github.com/babylonlabs-io/babylon-toolkit/blob/main/packages/babylon-ts-sdk/src/tbv/core/services/deposit/interfaces.ts)
@@ -488,10 +1683,10 @@ Read-only VP operations needed by polling/status functions.
 
 #### Methods
 
-##### getPeginStatus()
+##### getPeginStatusByVaultId()
 
 ```ts
-getPeginStatus(params, signal?): Promise<GetPeginStatusResponse>;
+getPeginStatusByVaultId(params, signal?): Promise<GetPeginStatusResponse>;
 ```
 
 Defined in: [packages/babylon-ts-sdk/src/tbv/core/services/deposit/interfaces.ts](https://github.com/babylonlabs-io/babylon-toolkit/blob/main/packages/babylon-ts-sdk/src/tbv/core/services/deposit/interfaces.ts)
@@ -500,7 +1695,7 @@ Defined in: [packages/babylon-ts-sdk/src/tbv/core/services/deposit/interfaces.ts
 
 ###### params
 
-###### pegin_txid
+###### vault_id
 
 `string`
 
@@ -1146,6 +2341,16 @@ Defined in: [packages/babylon-ts-sdk/src/tbv/core/services/deposit/runDepositorP
 
 Bitcoin wallet for signing
 
+##### vaultId
+
+```ts
+vaultId: string;
+```
+
+Defined in: [packages/babylon-ts-sdk/src/tbv/core/services/deposit/runDepositorPresignFlow.ts](https://github.com/babylonlabs-io/babylon-toolkit/blob/main/packages/babylon-ts-sdk/src/tbv/core/services/deposit/runDepositorPresignFlow.ts)
+
+On-chain vault id (hex, `0x` prefix optional) — addresses status polling
+
 ##### peginTxid
 
 ```ts
@@ -1154,7 +2359,7 @@ peginTxid: string;
 
 Defined in: [packages/babylon-ts-sdk/src/tbv/core/services/deposit/runDepositorPresignFlow.ts](https://github.com/babylonlabs-io/babylon-toolkit/blob/main/packages/babylon-ts-sdk/src/tbv/core/services/deposit/runDepositorPresignFlow.ts)
 
-BTC pegin transaction ID (unprefixed hex, 64 chars)
+BTC pegin transaction ID (unprefixed hex, 64 chars) — used by the presign RPCs
 
 ##### depositorPk
 
@@ -1231,6 +2436,33 @@ Optional progress callback (completed claimers, total claimers)
 ###### Returns
 
 `void`
+
+##### recordGraphFingerprint()
+
+```ts
+recordGraphFingerprint: (fingerprint) => void | Promise<void>;
+```
+
+Defined in: [packages/babylon-ts-sdk/src/tbv/core/services/deposit/runDepositorPresignFlow.ts](https://github.com/babylonlabs-io/babylon-toolkit/blob/main/packages/babylon-ts-sdk/src/tbv/core/services/deposit/runDepositorPresignFlow.ts)
+
+Persist the fingerprint of the transaction set about to be signed.
+
+`pegin.md` §5.9 requires activation to refuse a bundle whose graph does
+not reproduce this value. It is called after every check and signature
+has passed and before the signatures are submitted, and awaited: when it
+throws, the flow stops and no signature reaches the VP. A run that fails a
+check, is declined, or resumes past payout signing does not call it, so an
+earlier record stays in place.
+
+###### Parameters
+
+###### fingerprint
+
+`string`
+
+###### Returns
+
+`void` \| `Promise`\<`void`\>
 
 ***
 
@@ -1474,6 +2706,16 @@ Defined in: [packages/babylon-ts-sdk/src/tbv/core/services/deposit/submitWotsPub
 
 VP client implementing the WOTS key submission interface
 
+##### vaultId
+
+```ts
+vaultId: string;
+```
+
+Defined in: [packages/babylon-ts-sdk/src/tbv/core/services/deposit/submitWotsPublicKey.ts](https://github.com/babylonlabs-io/babylon-toolkit/blob/main/packages/babylon-ts-sdk/src/tbv/core/services/deposit/submitWotsPublicKey.ts)
+
+On-chain vault id (hex, `0x` prefix optional) — addresses status polling
+
 ##### peginTxid
 
 ```ts
@@ -1482,7 +2724,7 @@ peginTxid: string;
 
 Defined in: [packages/babylon-ts-sdk/src/tbv/core/services/deposit/submitWotsPublicKey.ts](https://github.com/babylonlabs-io/babylon-toolkit/blob/main/packages/babylon-ts-sdk/src/tbv/core/services/deposit/submitWotsPublicKey.ts)
 
-BTC pegin transaction ID (unprefixed hex, 64 chars)
+BTC pegin transaction ID (unprefixed hex, 64 chars) — used by the write RPC
 
 ##### depositorPk
 
@@ -1572,6 +2814,18 @@ applicationEntryPoint: `0x${string}`;
 
 Defined in: [packages/babylon-ts-sdk/src/tbv/core/services/deposit/validateOnChainParticipantKeys.ts](https://github.com/babylonlabs-io/babylon-toolkit/blob/main/packages/babylon-ts-sdk/src/tbv/core/services/deposit/validateOnChainParticipantKeys.ts)
 
+The application entry point the caller believes the provider serves — a
+*hint*, checked against the registry, in the same sense as
+`expectedVaultProviderBtcPubkey` below.
+
+The registry's own `getVaultProviderApplication(vp)` is authoritative: it
+is what the peg-in submit path resolves internally, and it selects the
+keeper roster, the roster version and the keeper key epoch a deposit is
+bonded to. This value comes from the dApp's configuration instead. They
+agree today, so the check is normally a no-op — but if they ever diverge,
+building against the configured one would bond the vault to an application
+the caller never chose, and nothing downstream would say so.
+
 ##### expectedVaultProviderBtcPubkey
 
 ```ts
@@ -1654,6 +2908,34 @@ immediately before the throw.
 
 `void`
 
+##### blockNumber
+
+```ts
+blockNumber: bigint;
+```
+
+Defined in: [packages/babylon-ts-sdk/src/tbv/core/services/deposit/validateOnChainParticipantKeys.ts](https://github.com/babylonlabs-io/babylon-toolkit/blob/main/packages/babylon-ts-sdk/src/tbv/core/services/deposit/validateOnChainParticipantKeys.ts)
+
+Block to resolve every read against, so the roster versions, the roster
+members and their operation keys all describe one chain state.
+
+This function reads in four dependent rounds — the application entry point
+and the challenger axis, then the keeper version and epoch keyed on that
+entry point, then the roster members at those versions, then those members'
+operation keys — because each round needs the previous round's output.
+Left unpinned, each round lands on
+whatever `latest` happens to be, and a rotation between rounds yields a key
+set that no single block ever held. The Bitcoin lock built from it would
+commit to that mixture, and no counterparty would agree with it.
+
+Required rather than optional, and deliberately so. This function exists
+only for the fresh-deposit path, where an unpinned read is never correct —
+an optional pin would be a silent fallback to `latest`-per-round on a path
+that builds a Bitcoin lock. Callers must pass the same block to
+`ProtocolParamsReader.getPegInConfiguration`; the reader interfaces keep
+their pin optional because their other callers resolve against a vault's
+already-frozen epochs, where pinning is meaningless.
+
 ***
 
 ### ValidatedOnChainParticipantKeys
@@ -1700,6 +2982,31 @@ Defined in: [packages/babylon-ts-sdk/src/tbv/core/services/deposit/validateOnCha
 
 ```ts
 expectedUniversalChallengersVersion: number;
+```
+
+Defined in: [packages/babylon-ts-sdk/src/tbv/core/services/deposit/validateOnChainParticipantKeys.ts](https://github.com/babylonlabs-io/babylon-toolkit/blob/main/packages/babylon-ts-sdk/src/tbv/core/services/deposit/validateOnChainParticipantKeys.ts)
+
+##### appKeeperKeyEpoch
+
+```ts
+appKeeperKeyEpoch: bigint;
+```
+
+Defined in: [packages/babylon-ts-sdk/src/tbv/core/services/deposit/validateOnChainParticipantKeys.ts](https://github.com/babylonlabs-io/babylon-toolkit/blob/main/packages/babylon-ts-sdk/src/tbv/core/services/deposit/validateOnChainParticipantKeys.ts)
+
+The two operation-key epochs the peg-in config fingerprint commits to, as
+`bigint` (`uint64` on-chain).
+
+They live here rather than beside the protocol params because they label
+the very keys this function resolves: `appKeeperKeyEpoch` is the epoch the
+keeper operation keys above were read at, and `ucKeyEpoch` the same for the
+challengers. Reading them anywhere else would create a second place for the
+epoch and the keys it names to come from different blocks.
+
+##### ucKeyEpoch
+
+```ts
+ucKeyEpoch: bigint;
 ```
 
 Defined in: [packages/babylon-ts-sdk/src/tbv/core/services/deposit/validateOnChainParticipantKeys.ts](https://github.com/babylonlabs-io/babylon-toolkit/blob/main/packages/babylon-ts-sdk/src/tbv/core/services/deposit/validateOnChainParticipantKeys.ts)
@@ -2077,6 +3384,16 @@ Defined in: [packages/babylon-ts-sdk/src/tbv/core/services/deposit/waitForPeginS
 
 VP client implementing the status reader interface
 
+##### vaultId
+
+```ts
+vaultId: string;
+```
+
+Defined in: [packages/babylon-ts-sdk/src/tbv/core/services/deposit/waitForPeginStatus.ts](https://github.com/babylonlabs-io/babylon-toolkit/blob/main/packages/babylon-ts-sdk/src/tbv/core/services/deposit/waitForPeginStatus.ts)
+
+On-chain vault id (hex, `0x` prefix optional)
+
 ##### peginTxid
 
 ```ts
@@ -2085,7 +3402,12 @@ peginTxid: string;
 
 Defined in: [packages/babylon-ts-sdk/src/tbv/core/services/deposit/waitForPeginStatus.ts](https://github.com/babylonlabs-io/babylon-toolkit/blob/main/packages/babylon-ts-sdk/src/tbv/core/services/deposit/waitForPeginStatus.ts)
 
-BTC pegin transaction ID (unprefixed hex, 64 chars)
+BTC pegin transaction ID (unprefixed hex, 64 chars) of the same vault.
+The VP builds the response `vault_id` from the request, so that field
+alone cannot show which row answered. `pegin_txid` is a DB lookup on the
+server, so a mismatch shows a status for a different peg-in. It cannot
+tell apart vaults that share one peg-in txid. It is also the identifier
+the presign and WOTS writes are addressed by.
 
 ##### targetStatuses
 
@@ -2364,6 +3686,176 @@ Carried so a later re-resolution — notably the post-registration
 read-after-mine check — reuses the *same* roster rather than re-deriving
 one that may since have moved, which would report a roster drift as a key
 drift.
+
+***
+
+### ReclaimVaultData
+
+Defined in: [packages/babylon-ts-sdk/src/tbv/core/services/reclaim/buildAndBroadcastReclaim.ts](https://github.com/babylonlabs-io/babylon-toolkit/blob/main/packages/babylon-ts-sdk/src/tbv/core/services/reclaim/buildAndBroadcastReclaim.ts)
+
+One reserve to sweep, as the caller resolves it.
+
+#### Properties
+
+##### depositorSignedPeginTxHex
+
+```ts
+depositorSignedPeginTxHex: string;
+```
+
+Defined in: [packages/babylon-ts-sdk/src/tbv/core/services/reclaim/buildAndBroadcastReclaim.ts](https://github.com/babylonlabs-io/babylon-toolkit/blob/main/packages/babylon-ts-sdk/src/tbv/core/services/reclaim/buildAndBroadcastReclaim.ts)
+
+The contract's own copy of the depositor-signed PegIn transaction
+(`VaultProtocolInfo.depositorSignedPeginTx`). Must come from the chain —
+never the indexer. Its `outs[1]` is one leg of the three-way bind.
+
+##### observed
+
+```ts
+observed: object;
+```
+
+Defined in: [packages/babylon-ts-sdk/src/tbv/core/services/reclaim/buildAndBroadcastReclaim.ts](https://github.com/babylonlabs-io/babylon-toolkit/blob/main/packages/babylon-ts-sdk/src/tbv/core/services/reclaim/buildAndBroadcastReclaim.ts)
+
+Independent chain observation of `peginTxid:1`, including the outpoint the
+lookup was issued against — see `ReclaimReserve.observed` for why the
+script and value alone cannot identify a reserve.
+
+###### txid
+
+```ts
+txid: string;
+```
+
+###### vout
+
+```ts
+vout: number;
+```
+
+###### scriptPubKey
+
+```ts
+scriptPubKey: string;
+```
+
+###### value
+
+```ts
+value: bigint;
+```
+
+##### expectedClaimValue
+
+```ts
+expectedClaimValue: bigint;
+```
+
+Defined in: [packages/babylon-ts-sdk/src/tbv/core/services/reclaim/buildAndBroadcastReclaim.ts](https://github.com/babylonlabs-io/babylon-toolkit/blob/main/packages/babylon-ts-sdk/src/tbv/core/services/reclaim/buildAndBroadcastReclaim.ts)
+
+This vault's reserve value, recomputed via `computeMinClaimValue`.
+
+***
+
+### ReclaimInput
+
+Defined in: [packages/babylon-ts-sdk/src/tbv/core/services/reclaim/buildAndBroadcastReclaim.ts](https://github.com/babylonlabs-io/babylon-toolkit/blob/main/packages/babylon-ts-sdk/src/tbv/core/services/reclaim/buildAndBroadcastReclaim.ts)
+
+#### Type Parameters
+
+##### R
+
+`R` *extends* [`BtcBroadcastResult`](#btcbroadcastresult) = [`BtcBroadcastResult`](#btcbroadcastresult)
+
+#### Properties
+
+##### vaultIds
+
+```ts
+vaultIds: `0x${string}`[];
+```
+
+Defined in: [packages/babylon-ts-sdk/src/tbv/core/services/reclaim/buildAndBroadcastReclaim.ts](https://github.com/babylonlabs-io/babylon-toolkit/blob/main/packages/babylon-ts-sdk/src/tbv/core/services/reclaim/buildAndBroadcastReclaim.ts)
+
+##### depositorEthAddress
+
+```ts
+depositorEthAddress: `0x${string}`;
+```
+
+Defined in: [packages/babylon-ts-sdk/src/tbv/core/services/reclaim/buildAndBroadcastReclaim.ts](https://github.com/babylonlabs-io/babylon-toolkit/blob/main/packages/babylon-ts-sdk/src/tbv/core/services/reclaim/buildAndBroadcastReclaim.ts)
+
+The depositor's Ethereum address — the second preimage of every vault id.
+Used to re-derive each requested id from the PegIn bytes `readVaults`
+returned, so a reserve can be tied to the vault it was asked for.
+
+##### depositorBtcPubkey
+
+```ts
+depositorBtcPubkey: string;
+```
+
+Defined in: [packages/babylon-ts-sdk/src/tbv/core/services/reclaim/buildAndBroadcastReclaim.ts](https://github.com/babylonlabs-io/babylon-toolkit/blob/main/packages/babylon-ts-sdk/src/tbv/core/services/reclaim/buildAndBroadcastReclaim.ts)
+
+The **connected wallet's live** BTC pubkey — compressed sec1 or x-only.
+Never the indexer's `depositorBtcPubkey`: re-deriving the claim script
+from the live key is what proves the wallet about to sign is the wallet
+that can spend.
+
+##### readVaults()
+
+```ts
+readVaults: () => Promise<ReclaimVaultData[]>;
+```
+
+Defined in: [packages/babylon-ts-sdk/src/tbv/core/services/reclaim/buildAndBroadcastReclaim.ts](https://github.com/babylonlabs-io/babylon-toolkit/blob/main/packages/babylon-ts-sdk/src/tbv/core/services/reclaim/buildAndBroadcastReclaim.ts)
+
+Resolve the reserves to sweep, in the same order as `vaultIds`. The SDK
+passes no arguments — the caller closes over whatever context it needs.
+
+###### Returns
+
+`Promise`\<[`ReclaimVaultData`](#reclaimvaultdata)[]\>
+
+##### feeRate
+
+```ts
+feeRate: number;
+```
+
+Defined in: [packages/babylon-ts-sdk/src/tbv/core/services/reclaim/buildAndBroadcastReclaim.ts](https://github.com/babylonlabs-io/babylon-toolkit/blob/main/packages/babylon-ts-sdk/src/tbv/core/services/reclaim/buildAndBroadcastReclaim.ts)
+
+Mempool-derived sat/vB fee rate. Caller fetches it before invoking.
+
+##### signPsbt
+
+```ts
+signPsbt: ReclaimPsbtSigner;
+```
+
+Defined in: [packages/babylon-ts-sdk/src/tbv/core/services/reclaim/buildAndBroadcastReclaim.ts](https://github.com/babylonlabs-io/babylon-toolkit/blob/main/packages/babylon-ts-sdk/src/tbv/core/services/reclaim/buildAndBroadcastReclaim.ts)
+
+BTC wallet signer; receives a PSBT hex + taproot script-path options.
+
+##### broadcastTx
+
+```ts
+broadcastTx: BtcBroadcaster<R>;
+```
+
+Defined in: [packages/babylon-ts-sdk/src/tbv/core/services/reclaim/buildAndBroadcastReclaim.ts](https://github.com/babylonlabs-io/babylon-toolkit/blob/main/packages/babylon-ts-sdk/src/tbv/core/services/reclaim/buildAndBroadcastReclaim.ts)
+
+Broadcast callback — returns whatever shape the caller needs.
+
+##### signal?
+
+```ts
+optional signal: AbortSignal;
+```
+
+Defined in: [packages/babylon-ts-sdk/src/tbv/core/services/reclaim/buildAndBroadcastReclaim.ts](https://github.com/babylonlabs-io/babylon-toolkit/blob/main/packages/babylon-ts-sdk/src/tbv/core/services/reclaim/buildAndBroadcastReclaim.ts)
+
+Checked at every async boundary.
 
 ***
 
@@ -2826,6 +4318,30 @@ How a [ParticipantKeySet](#participantkeyset) was resolved. Carried for diagnost
 
 ***
 
+### ReclaimPsbtSigner()
+
+```ts
+type ReclaimPsbtSigner = (psbtHex, opts) => Promise<string>;
+```
+
+Defined in: [packages/babylon-ts-sdk/src/tbv/core/services/reclaim/buildAndBroadcastReclaim.ts](https://github.com/babylonlabs-io/babylon-toolkit/blob/main/packages/babylon-ts-sdk/src/tbv/core/services/reclaim/buildAndBroadcastReclaim.ts)
+
+#### Parameters
+
+##### psbtHex
+
+`string`
+
+##### opts
+
+[`SignPsbtOptions`](managers.md#signpsbtoptions)
+
+#### Returns
+
+`Promise`\<`string`\>
+
+***
+
 ### BtcBroadcaster()
 
 ```ts
@@ -2991,6 +4507,317 @@ whatever the injected `writeContract` throws
 #### Throws
 
 `AbortError` / caller-provided abort reason if `signal` aborts
+
+***
+
+### assembleWatchtowerArtifacts()
+
+```ts
+function assembleWatchtowerArtifacts(params): Promise<string>;
+```
+
+Defined in: [packages/babylon-ts-sdk/src/tbv/core/services/delegated-claim/assembleWatchtowerArtifacts.ts](https://github.com/babylonlabs-io/babylon-toolkit/blob/main/packages/babylon-ts-sdk/src/tbv/core/services/delegated-claim/assembleWatchtowerArtifacts.ts)
+
+**`Experimental`**
+
+Signs the delegated-claim set and returns the `artifacts.json` content,
+ready to write verbatim.
+
+Every signature is verified against the graph before the file is produced,
+so a wallet that signed under the wrong key fails here rather than at claim
+time, when nothing can be re-signed.
+
+Experimental: this API can change in a minor release. Pin the SDK
+version if you build on it.
+
+#### Parameters
+
+##### params
+
+[`AssembleWatchtowerArtifactsParams`](#assemblewatchtowerartifactsparams)
+
+#### Returns
+
+`Promise`\<`string`\>
+
+#### Throws
+
+If the graph is not version 3, if the wallet returns a signature
+        that does not verify, or if the graph's own presignatures are
+        incomplete.
+
+***
+
+### assertChallengerSetMatchesVault()
+
+```ts
+function assertChallengerSetMatchesVault(params): void;
+```
+
+Defined in: [packages/babylon-ts-sdk/src/tbv/core/services/delegated-claim/challengerBinding.ts](https://github.com/babylonlabs-io/babylon-toolkit/blob/main/packages/babylon-ts-sdk/src/tbv/core/services/delegated-claim/challengerBinding.ts)
+
+**`Experimental`**
+
+Throws unless the graph's challenger set equals `local ∪ universal`.
+
+The depositor is the claimer here, so the local set is the vault keepers,
+derived by the same function the deposit path uses rather than restated.
+
+#### Parameters
+
+##### params
+
+[`AssertChallengerSetMatchesVaultParams`](#assertchallengersetmatchesvaultparams)
+
+#### Returns
+
+`void`
+
+#### Throws
+
+[ChallengerSetMismatchError](#challengersetmismatcherror) on any missing or extra key, or
+        a plain error when the on-chain sets themselves are unusable.
+
+***
+
+### deriveClaimerWotsKeypair()
+
+```ts
+function deriveClaimerWotsKeypair(params): Promise<ClaimerWotsKeypair>;
+```
+
+Defined in: [packages/babylon-ts-sdk/src/tbv/core/services/delegated-claim/deriveClaimerWotsKeypair.ts](https://github.com/babylonlabs-io/babylon-toolkit/blob/main/packages/babylon-ts-sdk/src/tbv/core/services/delegated-claim/deriveClaimerWotsKeypair.ts)
+
+**`Experimental`**
+
+Re-derives the depositor's WOTS keypair and checks it against the vault's
+on-chain commitment and against the graph.
+
+The validation is the point of this function, not a formality: an unbound
+keypair produces an Assert witness no verifier accepts, and that failure
+would otherwise surface only after the Claim has been broadcast and the
+PegIn UTXO is already spent. The on-chain hash is checked first, because
+it is the one value here the vault provider cannot choose.
+
+Experimental: this API can change in a minor release. Pin the SDK
+version if you build on it.
+
+#### Parameters
+
+##### params
+
+[`DeriveClaimerWotsKeypairParams`](#deriveclaimerwotskeypairparams)
+
+#### Returns
+
+`Promise`\<[`ClaimerWotsKeypair`](#claimerwotskeypair)\>
+
+#### Throws
+
+If the derivation does not match the vault's on-chain
+        `depositorWotsPkHash`, or the WOTS public keys the graph's Claim
+        commits to.
+
+***
+
+### assertPayoutPaysRegisteredScript()
+
+```ts
+function assertPayoutPaysRegisteredScript(params): void;
+```
+
+Defined in: [packages/babylon-ts-sdk/src/tbv/core/services/delegated-claim/payoutBinding.ts](https://github.com/babylonlabs-io/babylon-toolkit/blob/main/packages/babylon-ts-sdk/src/tbv/core/services/delegated-claim/payoutBinding.ts)
+
+**`Experimental`**
+
+Throws unless the Payout pays the vault's registered payout script.
+
+Run this on every Payout PSBT before the wallet is prompted. Both the
+depositor and the claimer PSBT describe the same transaction, so both must
+pass; checking only one would leave the other free to differ.
+
+#### Parameters
+
+##### params
+
+[`AssertPayoutPaysRegisteredScriptParams`](#assertpayoutpaysregisteredscriptparams)
+
+#### Returns
+
+`void`
+
+#### Throws
+
+[PayoutDestinationError](#payoutdestinationerror) when output 0 pays elsewhere, or a
+        plain error when the layout is not the canonical claimer layout.
+
+***
+
+### summarizeWatchtowerArtifacts()
+
+```ts
+function summarizeWatchtowerArtifacts(artifactsJson): WatchtowerArtifactsSummary;
+```
+
+Defined in: [packages/babylon-ts-sdk/src/tbv/core/services/delegated-claim/readWatchtowerArtifacts.ts](https://github.com/babylonlabs-io/babylon-toolkit/blob/main/packages/babylon-ts-sdk/src/tbv/core/services/delegated-claim/readWatchtowerArtifacts.ts)
+
+**`Experimental`**
+
+Reads the small, self-describing fields of an artifacts file.
+
+This parses the whole JSON, so it is bounded by whatever the file carries
+in `babe_sessions`. Keep those sessions in their own file: a bundle with
+real sessions runs to hundreds of megabytes per challenger and cannot be
+parsed in a browser tab.
+
+Experimental: this API can change in a minor release. Pin the SDK
+version if you build on it.
+
+#### Parameters
+
+##### artifactsJson
+
+`string`
+
+#### Returns
+
+[`WatchtowerArtifactsSummary`](#watchtowerartifactssummary)
+
+#### Throws
+
+If the file is not JSON, or lacks the fields every artifacts file
+        has.
+
+***
+
+### assertArtifactsUsableForVault()
+
+```ts
+function assertArtifactsUsableForVault(params): Promise<WatchtowerArtifactsSummary>;
+```
+
+Defined in: [packages/babylon-ts-sdk/src/tbv/core/services/delegated-claim/readWatchtowerArtifacts.ts](https://github.com/babylonlabs-io/babylon-toolkit/blob/main/packages/babylon-ts-sdk/src/tbv/core/services/delegated-claim/readWatchtowerArtifacts.ts)
+
+**`Experimental`**
+
+Verifies an artifacts file and confirms it is the one for this vault.
+
+Experimental: this API can change in a minor release. Pin the SDK
+version if you build on it.
+
+#### Parameters
+
+##### params
+
+[`AssertArtifactsUsableParams`](#assertartifactsusableparams)
+
+#### Returns
+
+`Promise`\<[`WatchtowerArtifactsSummary`](#watchtowerartifactssummary)\>
+
+#### Throws
+
+[ArtifactsVaultMismatchError](#artifactsvaultmismatcherror) when the file names a different
+        vault, [VaultIdBindingError](#vaultidbindingerror) when the graph it carries
+        belongs to another vault whatever the file says, or a verification
+        error when any bundled signature does not hold against that graph.
+
+***
+
+### assertClaimSpendsVault()
+
+```ts
+function assertClaimSpendsVault(params): void;
+```
+
+Defined in: [packages/babylon-ts-sdk/src/tbv/core/services/delegated-claim/vaultIdBinding.ts](https://github.com/babylonlabs-io/babylon-toolkit/blob/main/packages/babylon-ts-sdk/src/tbv/core/services/delegated-claim/vaultIdBinding.ts)
+
+**`Experimental`**
+
+Throws unless the Claim's PegIn input derives the expected vault id.
+
+Experimental: this API can change in a minor release. Pin the SDK
+version if you build on it.
+
+#### Parameters
+
+##### params
+
+[`AssertClaimSpendsVaultParams`](#assertclaimspendsvaultparams)
+
+#### Returns
+
+`void`
+
+#### Throws
+
+[VaultIdBindingError](#vaultidbindingerror) when the graph belongs to another vault.
+
+***
+
+### fingerprintReturnedGraph()
+
+```ts
+function fingerprintReturnedGraph(graph): string;
+```
+
+Defined in: [packages/babylon-ts-sdk/src/tbv/core/services/deposit/graphFingerprint.ts](https://github.com/babylonlabs-io/babylon-toolkit/blob/main/packages/babylon-ts-sdk/src/tbv/core/services/deposit/graphFingerprint.ts)
+
+Fingerprint the graph a VP returned at activation, parsed from
+`tx_graph_json`.
+
+#### Parameters
+
+##### graph
+
+`Record`\<`string`, `unknown`\>
+
+#### Returns
+
+`string`
+
+***
+
+### assertReturnedGraphMatchesFingerprint()
+
+```ts
+function assertReturnedGraphMatchesFingerprint(graph, expectedFingerprint): void;
+```
+
+Defined in: [packages/babylon-ts-sdk/src/tbv/core/services/deposit/graphFingerprint.ts](https://github.com/babylonlabs-io/babylon-toolkit/blob/main/packages/babylon-ts-sdk/src/tbv/core/services/deposit/graphFingerprint.ts)
+
+Check (a) of `pegin.md` §5.9: throw unless the graph a VP returned at
+activation is the one the depositor fingerprinted at presign.
+
+Call this before revealing the HTLC secret, with the value that
+`runDepositorPresignFlow` passed to `recordGraphFingerprint`. The
+fingerprint covers the challengers in `challenger_subgraphs`, but the graph
+also declares its roster in `challenger_pubkeys`. This also requires the
+two to name the same keys, or a graph could match the fingerprint while its
+declared roster adds or drops a challenger.
+
+#### Parameters
+
+##### graph
+
+`Record`\<`string`, `unknown`\>
+
+Parsed `tx_graph_json` from the artifact bundle.
+
+##### expectedFingerprint
+
+`string`
+
+The fingerprint recorded at presign.
+
+#### Returns
+
+`void`
+
+#### Throws
+
+GraphFingerprintError when the graph is malformed, does not
+  reproduce the fingerprint, or declares a different roster.
 
 ***
 
@@ -3172,6 +4999,53 @@ boundary-equal block is NOT expired. All values are Ethereum block numbers.
 
 ***
 
+### activationDeadlineBlocksRemaining()
+
+```ts
+function activationDeadlineBlocksRemaining(params): number;
+```
+
+Defined in: [packages/babylon-ts-sdk/src/tbv/core/services/deposit/peginState.ts](https://github.com/babylonlabs-io/babylon-toolkit/blob/main/packages/babylon-ts-sdk/src/tbv/core/services/deposit/peginState.ts)
+
+Blocks still available for an activation transaction to be mined; `0` once
+the window has closed.
+
+`isActivationDeadlinePassedOnChain` answers whether the window is already
+shut, which is the right question for a badge but the wrong one for a
+secret-bearing call. An activation submitted in the last block before the
+deadline reverts if it lands one block late, and by then `s` is public
+calldata: the vault expires with `ActivationTimeout`, and the vault
+provider, which holds the rest of the HTLC signature set, can broadcast the
+PegIn with that secret. The caller therefore needs the remaining margin,
+not a boolean.
+
+The contract accepts a transaction mined at `block.number <= createdAt +
+timeout`. `currentBlock` is the chain head, which is already mined, so a new
+transaction lands at `currentBlock + 1` at the earliest: at
+`currentBlock === createdAt + timeout` no usable block remains.
+
+#### Parameters
+
+##### params
+
+###### currentBlock
+
+`bigint`
+
+###### createdAtBlock
+
+`bigint`
+
+###### pegInActivationTimeout
+
+`bigint`
+
+#### Returns
+
+`number`
+
+***
+
 ### runDepositorPresignFlow()
 
 ```ts
@@ -3252,6 +5126,26 @@ Submit WOTS public keys to the vault provider.
 #### Throws
 
 Error on timeout, abort, or RPC error
+
+***
+
+### isApplicationEntryPointMismatchError()
+
+```ts
+function isApplicationEntryPointMismatchError(err): err is ApplicationEntryPointMismatchError;
+```
+
+Defined in: [packages/babylon-ts-sdk/src/tbv/core/services/deposit/validateOnChainParticipantKeys.ts](https://github.com/babylonlabs-io/babylon-toolkit/blob/main/packages/babylon-ts-sdk/src/tbv/core/services/deposit/validateOnChainParticipantKeys.ts)
+
+#### Parameters
+
+##### err
+
+`unknown`
+
+#### Returns
+
+`err is ApplicationEntryPointMismatchError`
 
 ***
 
@@ -3555,7 +5449,7 @@ function waitForPeginStatus(params): Promise<DaemonStatus>;
 
 Defined in: [packages/babylon-ts-sdk/src/tbv/core/services/deposit/waitForPeginStatus.ts](https://github.com/babylonlabs-io/babylon-toolkit/blob/main/packages/babylon-ts-sdk/src/tbv/core/services/deposit/waitForPeginStatus.ts)
 
-Poll `getPeginStatus` until the VP reaches one of the target statuses.
+Poll `getPeginStatusByVaultId` until the VP reaches one of the target statuses.
 
 #### Parameters
 
@@ -3785,6 +5679,13 @@ Resolve every participant's *current* operation key.
 Use for a peg-in being built now. Issues no epoch read, so it never touches
 the extended `getBtcVaultProtocolInfo` ABI.
 
+`blockNumber` pins the resolution to one block, and is required. Pass the
+same block the rosters in `query` were read at: the roster supplies each
+participant's address and genesis key, and this call resolves what that
+participant has rotated to. Reading the two at different blocks can pair a
+roster member with a key from a different chain state, so there is no
+correct unpinned call and no default worth having.
+
 #### Parameters
 
 ##### params
@@ -3796,6 +5697,10 @@ the extended `getBtcVaultProtocolInfo` ABI.
 ###### query
 
 [`OperationKeyQuery`](clients.md#operationkeyquery)
+
+###### blockNumber
+
+`bigint`
 
 #### Returns
 
@@ -3871,7 +5776,7 @@ function isPegoutTerminalStatus(claimerStatus): boolean;
 Defined in: [packages/babylon-ts-sdk/src/tbv/core/services/pegout/state.ts](https://github.com/babylonlabs-io/babylon-toolkit/blob/main/packages/babylon-ts-sdk/src/tbv/core/services/pegout/state.ts)
 
 Whether a claimer status is a hard-terminal pegout status
-(PayoutBroadcast or PayoutBlocked). Soft-terminal conditions (polling
+(PayoutConfirmed or PayoutBlocked). Soft-terminal conditions (polling
 thresholds) are a consumer-side concern.
 
 #### Parameters
@@ -3883,6 +5788,49 @@ thresholds) are a consumer-side concern.
 #### Returns
 
 `boolean`
+
+***
+
+### buildAndBroadcastReclaim()
+
+```ts
+function buildAndBroadcastReclaim<R>(input): Promise<R>;
+```
+
+Defined in: [packages/babylon-ts-sdk/src/tbv/core/services/reclaim/buildAndBroadcastReclaim.ts](https://github.com/babylonlabs-io/babylon-toolkit/blob/main/packages/babylon-ts-sdk/src/tbv/core/services/reclaim/buildAndBroadcastReclaim.ts)
+
+Build, sign, and broadcast a reclaim transaction sweeping one or more
+depositor-claim reserves back to the depositor's BIP-86 address.
+
+#### Type Parameters
+
+##### R
+
+`R` *extends* [`BtcBroadcastResult`](#btcbroadcastresult) = [`BtcBroadcastResult`](#btcbroadcastresult)
+
+#### Parameters
+
+##### input
+
+[`ReclaimInput`](#reclaiminput)\<`R`\>
+
+#### Returns
+
+`Promise`\<`R`\>
+
+whatever the injected `broadcastTx` returns (generic pass-through)
+
+#### Throws
+
+[ReclaimUneconomicalError](#reclaimuneconomicalerror) if the fee breaches either cap
+
+#### Throws
+
+`Error` if any validation or script/value bind fails
+
+#### Throws
+
+anything `readVaults`, `signPsbt`, or `broadcastTx` throws
 
 ***
 
@@ -3962,6 +5910,153 @@ whatever the injected `broadcastTx` returns (generic pass-through)
 
 anything `readVault`, `readPrePeginContext`,
         `signPsbt`, or `broadcastTx` throws
+
+***
+
+### pinPegoutProof()
+
+```ts
+function pinPegoutProof(
+   txGraphVersion, 
+   artifactsJson, 
+proofHex): Promise<string>;
+```
+
+Defined in: [packages/babylon-ts-sdk/src/tbv/core/wasm/index.ts](https://github.com/babylonlabs-io/babylon-toolkit/blob/main/packages/babylon-ts-sdk/src/tbv/core/wasm/index.ts)
+
+**`Experimental`**
+
+Verifies the Groth16 pegout proof and pins it into the artifacts, returning
+the updated artifacts JSON. Persist that copy: the one-time WOTS keypair
+signs exactly one proof, so a second, different one is refused.
+
+#### Parameters
+
+##### txGraphVersion
+
+`number`
+
+##### artifactsJson
+
+`string`
+
+##### proofHex
+
+`string`
+
+#### Returns
+
+`Promise`\<`string`\>
+
+***
+
+### attachFinalizedAssert()
+
+```ts
+function attachFinalizedAssert(
+   txGraphVersion, 
+   artifactsJson, 
+keypairJson): Promise<string>;
+```
+
+Defined in: [packages/babylon-ts-sdk/src/tbv/core/wasm/index.ts](https://github.com/babylonlabs-io/babylon-toolkit/blob/main/packages/babylon-ts-sdk/src/tbv/core/wasm/index.ts)
+
+**`Experimental`**
+
+Finalizes the Assert from the pinned proof and the WOTS keypair, writes it
+into the artifacts and returns the updated artifacts JSON. The keypair
+never leaves the caller.
+
+#### Parameters
+
+##### txGraphVersion
+
+`number`
+
+##### artifactsJson
+
+`string`
+
+##### keypairJson
+
+`string`
+
+#### Returns
+
+`Promise`\<`string`\>
+
+***
+
+### finalizePayout()
+
+```ts
+function finalizePayout(txGraphVersion, artifactsJson): Promise<string>;
+```
+
+Defined in: [packages/babylon-ts-sdk/src/tbv/core/wasm/index.ts](https://github.com/babylonlabs-io/babylon-toolkit/blob/main/packages/babylon-ts-sdk/src/tbv/core/wasm/index.ts)
+
+**`Experimental`**
+
+Finalizes the Payout tx from the artifacts' signatures, consensus hex.
+
+#### Parameters
+
+##### txGraphVersion
+
+`number`
+
+##### artifactsJson
+
+`string`
+
+#### Returns
+
+`Promise`\<`string`\>
+
+***
+
+### finalizeWronglyChallenged()
+
+```ts
+function finalizeWronglyChallenged(
+   txGraphVersion, 
+   artifactsJson, 
+   challengerPkHex, 
+   gcIndex, 
+preimageHex): Promise<string>;
+```
+
+Defined in: [packages/babylon-ts-sdk/src/tbv/core/wasm/index.ts](https://github.com/babylonlabs-io/babylon-toolkit/blob/main/packages/babylon-ts-sdk/src/tbv/core/wasm/index.ts)
+
+**`Experimental`**
+
+Finalizes one WronglyChallenged tx — the answer to a ChallengeAssert.
+
+#### Parameters
+
+##### txGraphVersion
+
+`number`
+
+##### artifactsJson
+
+`string`
+
+##### challengerPkHex
+
+`string`
+
+##### gcIndex
+
+`number`
+
+##### preimageHex
+
+`string`
+
+#### Returns
+
+`Promise`\<`string`\>
 
 ## Enumerations
 
@@ -4168,10 +6263,10 @@ ASSERT_BROADCAST: "AssertBroadcast";
 
 Defined in: [packages/babylon-ts-sdk/src/tbv/core/services/pegout/state.ts](https://github.com/babylonlabs-io/babylon-toolkit/blob/main/packages/babylon-ts-sdk/src/tbv/core/services/pegout/state.ts)
 
-##### PAYOUT\_BROADCAST
+##### PAYOUT\_CONFIRMED
 
 ```ts
-PAYOUT_BROADCAST: "PayoutBroadcast";
+PAYOUT_CONFIRMED: "PayoutConfirmed";
 ```
 
 Defined in: [packages/babylon-ts-sdk/src/tbv/core/services/pegout/state.ts](https://github.com/babylonlabs-io/babylon-toolkit/blob/main/packages/babylon-ts-sdk/src/tbv/core/services/pegout/state.ts)
@@ -4185,6 +6280,21 @@ PAYOUT_BLOCKED: "PayoutBlocked";
 Defined in: [packages/babylon-ts-sdk/src/tbv/core/services/pegout/state.ts](https://github.com/babylonlabs-io/babylon-toolkit/blob/main/packages/babylon-ts-sdk/src/tbv/core/services/pegout/state.ts)
 
 ## Variables
+
+### DELEGATED\_CLAIM\_TX\_GRAPH\_VERSION
+
+```ts
+const DELEGATED_CLAIM_TX_GRAPH_VERSION: 3 = 3;
+```
+
+Defined in: [packages/babylon-ts-sdk/src/tbv/core/services/delegated-claim/readWatchtowerArtifacts.ts](https://github.com/babylonlabs-io/babylon-toolkit/blob/main/packages/babylon-ts-sdk/src/tbv/core/services/delegated-claim/readWatchtowerArtifacts.ts)
+
+**`Experimental`**
+
+Graph version the delegated-claim artifacts format exists for. Vaults on
+graph v1 and v2 predate it and have no artifacts path at all.
+
+***
 
 ### PEGIN\_ETH\_CONFIRMATIONS
 
@@ -4203,6 +6313,64 @@ by a client bug), and costs ~1.6 min at 12s slots. Deliberately not the
 benefit. This is a liveness guard against an orphaned registration, not a
 theft mitigation — every Pre-PegIn HTLC spend path requires the depositor's
 own BTC key regardless.
+
+***
+
+### RECLAIM\_MAX\_FEE\_RATE\_SATS\_VB
+
+```ts
+const RECLAIM_MAX_FEE_RATE_SATS_VB: 2000 = 2000;
+```
+
+Defined in: [packages/babylon-ts-sdk/src/tbv/core/services/reclaim/buildAndBroadcastReclaim.ts](https://github.com/babylonlabs-io/babylon-toolkit/blob/main/packages/babylon-ts-sdk/src/tbv/core/services/reclaim/buildAndBroadcastReclaim.ts)
+
+Hard upper bound on the per-vbyte fee rate the SDK will sign a reclaim at.
+Same reasoning and value as the refund's cap: a compromised mempool endpoint
+can legally return up to 10,000 sat/vB, and 2000 leaves margin over the
+worst historical `halfHourFee` while still blocking that by 5×.
+
+***
+
+### RECLAIM\_MAX\_FEE\_FRACTION\_NUMERATOR
+
+```ts
+const RECLAIM_MAX_FEE_FRACTION_NUMERATOR: 25n = 25n;
+```
+
+Defined in: [packages/babylon-ts-sdk/src/tbv/core/services/reclaim/buildAndBroadcastReclaim.ts](https://github.com/babylonlabs-io/babylon-toolkit/blob/main/packages/babylon-ts-sdk/src/tbv/core/services/reclaim/buildAndBroadcastReclaim.ts)
+
+Hard upper bound on the absolute fee as a fraction of the **swept total**.
+
+> ⚠️ The basis here is deliberately different from the refund's. There the
+> basis is `vault.amount` and the swept amount is far larger, so a 10% cap is
+> generous. Here the basis *is* the swept amount — roughly 33k sats — and a
+> 10% cap would block every reclaim above about 25 sat/vB. Do not "fix" this
+> into symmetry with `REFUND_MAX_FEE_FRACTION_*`; it would silently change
+> behaviour. The matching comment lives at the UI cap site.
+
+***
+
+### RECLAIM\_MAX\_FEE\_FRACTION\_DENOMINATOR
+
+```ts
+const RECLAIM_MAX_FEE_FRACTION_DENOMINATOR: 100n = 100n;
+```
+
+Defined in: [packages/babylon-ts-sdk/src/tbv/core/services/reclaim/buildAndBroadcastReclaim.ts](https://github.com/babylonlabs-io/babylon-toolkit/blob/main/packages/babylon-ts-sdk/src/tbv/core/services/reclaim/buildAndBroadcastReclaim.ts)
+
+***
+
+### RECLAIM\_WARN\_FEE\_FRACTION\_NUMERATOR
+
+```ts
+const RECLAIM_WARN_FEE_FRACTION_NUMERATOR: 10n = 10n;
+```
+
+Defined in: [packages/babylon-ts-sdk/src/tbv/core/services/reclaim/buildAndBroadcastReclaim.ts](https://github.com/babylonlabs-io/babylon-toolkit/blob/main/packages/babylon-ts-sdk/src/tbv/core/services/reclaim/buildAndBroadcastReclaim.ts)
+
+Fraction of the swept total above which the UI warns but still allows the
+reclaim. Exported so the review screen derives its threshold from the same
+constant the SDK enforces against, rather than restating it.
 
 ***
 

@@ -48,8 +48,20 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
+      # Vault bundles the SDK. Release workflows run independently, so this
+      # workflow must keep the SDK browser gate.
+      - name: Install Chromium for browser tests
+        run: pnpm --filter @babylonlabs-io/ts-sdk exec playwright install --with-deps chromium
+
+      - name: Test SDK in Chromium
+        run: pnpm exec nx run @babylonlabs-io/ts-sdk:test-browser
+
       - name: Test
         run: pnpm run test
+        env:
+          # See package-release.yml: `--all` on a 4-vCPU runner oversubscribes
+          # at nx's default of 3 projects and trips vitest's per-test timeout.
+          NX_PARALLEL: "1"
 
       - name: Build
         run: pnpm run build
@@ -156,6 +168,7 @@ jobs:
           # Bitcoin Network Configuration (Vault)
           NEXT_PUBLIC_BTC_NETWORK: ${{ vars.NEXT_PUBLIC_BTC_NETWORK }}
           NEXT_PUBLIC_MEMPOOL_API: ${{ vars.NEXT_PUBLIC_MEMPOOL_API }}
+          NEXT_PUBLIC_BTC_OBSERVER_API: ${{ vars.NEXT_PUBLIC_BTC_OBSERVER_API }}
           # Ethereum Network Configuration (Vault)
           NEXT_PUBLIC_ETH_CHAINID: ${{ vars.NEXT_PUBLIC_ETH_CHAINID }}
           NEXT_PUBLIC_ETH_RPC_URL: ${{ vars.NEXT_PUBLIC_ETH_RPC_URL }}
@@ -194,17 +207,13 @@ jobs:
           NEXT_PUBLIC_SENTRY_ENVIRONMENT: ${{ matrix.environment }}
           # Feature Flags
           NEXT_PUBLIC_FF_DISABLE_VAULT_CAP: ${{ vars.NEXT_PUBLIC_FF_DISABLE_VAULT_CAP }}
-          NEXT_PUBLIC_FF_ENABLE_LIQUIDATION_NOTIFICATIONS: ${{ vars.NEXT_PUBLIC_FF_ENABLE_LIQUIDATION_NOTIFICATIONS }}
-          NEXT_PUBLIC_FF_ENABLE_SIGNING_NOTIFICATIONS: ${{ vars.NEXT_PUBLIC_FF_ENABLE_SIGNING_NOTIFICATIONS }}
           NEXT_PUBLIC_FF_ENABLE_LEDGER_VAULT_WALLET: ${{ vars.NEXT_PUBLIC_FF_ENABLE_LEDGER_VAULT_WALLET }}
           NEXT_PUBLIC_FF_ENABLE_EXPLORE: ${{ vars.NEXT_PUBLIC_FF_ENABLE_EXPLORE }}
-          NEXT_PUBLIC_FF_LIQUIDATION_ANALYSIS_CHART: ${{ vars.NEXT_PUBLIC_FF_LIQUIDATION_ANALYSIS_CHART }}
           NEXT_PUBLIC_FF_DISABLE_DEPOSIT: ${{ vars.NEXT_PUBLIC_FF_DISABLE_DEPOSIT }}
           NEXT_PUBLIC_FF_DISABLE_BORROW: ${{ vars.NEXT_PUBLIC_FF_DISABLE_BORROW }}
           NEXT_PUBLIC_FF_PROTOCOL_FROZEN: ${{ vars.NEXT_PUBLIC_FF_PROTOCOL_FROZEN }}
           NEXT_PUBLIC_FF_PROTOCOL_PAUSED: ${{ vars.NEXT_PUBLIC_FF_PROTOCOL_PAUSED }}
           NEXT_PUBLIC_FF_FORCE_PARTIAL_LIQUIDATION_SPLIT: ${{ vars.NEXT_PUBLIC_FF_FORCE_PARTIAL_LIQUIDATION_SPLIT }}
-          NEXT_PUBLIC_FF_ENABLE_ACTIVATION_DELAY: ${{ vars.NEXT_PUBLIC_FF_ENABLE_ACTIVATION_DELAY }}
           NEXT_PUBLIC_TBV_DISABLED_BTC_WALLETS: ${{ vars.NEXT_PUBLIC_TBV_DISABLED_BTC_WALLETS }}
           # Misc
           NEXT_PUBLIC_NOTICE_BANNER_MESSAGE: ${{ vars.NEXT_PUBLIC_NOTICE_BANNER_MESSAGE }}

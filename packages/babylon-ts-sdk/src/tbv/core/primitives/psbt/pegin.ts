@@ -14,29 +14,34 @@
  * @module primitives/psbt/pegin
  */
 
+import { Transaction } from "bitcoinjs-lib";
 import {
   buildPeginTxFromPrePegin,
   computeMinClaimValue,
   createPrePeginTransaction,
   peginP2aAnchorOutput,
-  tapInternalPubkey,
   validatePeginP2aAnchor,
   type Network,
-} from "@babylonlabs-io/babylon-tbv-rust-wasm";
-import { Buffer } from "buffer";
-import { payments, script as bscript, Transaction, opcodes } from "bitcoinjs-lib";
+} from "../../wasm";
 
 import { parseUnfundedWasmTransaction } from "../../utils/transaction/fundPeginTransaction";
-import {
-  hexToUint8Array,
-  stripHexPrefix,
-  uint8ArrayToHex,
-} from "../utils/bitcoin";
+import { stripHexPrefix, uint8ArrayToHex } from "../utils/bitcoin";
 
 import {
-  assertEncodedHtlcOutputsMatch,
+  assertUnfundedPrePeginOutputLayout,
   assertWasmPeginSizing,
+  deriveExpectedPeginPayoutScriptPubKey,
 } from "./assertWasmPeginSizing";
+import {
+  PEGIN_INPUT_SEQUENCE,
+  PEGIN_TX_LOCKTIME,
+  PEGIN_TX_VERSION_CORE_1,
+  PEGIN_TX_VERSION_CORE_2_AND_3,
+} from "./constants";
+import {
+  PEGIN_DEPOSITOR_CLAIM_VOUT,
+  deriveDepositorClaimScriptPubKey,
+} from "./depositorClaim";
 
 /**
  * Parameters for building an unfunded Pre-PegIn PSBT
@@ -92,6 +97,11 @@ export interface PrePeginParams {
 const AUTH_ANCHOR_HASH_HEX_LEN = 64;
 
 const HEX_PATTERN = /^[0-9a-fA-F]+$/;
+
+/**
+ * The largest PegIn timelock in blocks. The engine stores it as a Rust u16.
+ */
+const MAX_TIMELOCK_PEGIN_BLOCKS = 0xffff;
 
 /**
  * Result of building an unfunded Pre-PegIn transaction
@@ -209,19 +219,22 @@ export async function buildPrePeginPsbt(
   // PegIn registration. Both the sizing and commit passes route through here.
   const minPeginFee = await assertWasmPeginSizing(result, params);
 
-  // Parse the unfunded tx to sum all output values
+  // Parse the unfunded tx before summing all output values
   // (HTLCs + optional OP_RETURN + CPFP anchor). This is the amount
   // UTXOs must cover before adding network fees.
   const parsed = parseUnfundedWasmTransaction(result.txHex);
 
-  // Bind the validated metadata to the bytes that get funded and signed:
-  // the encoded HTLC outputs must carry exactly the values/scripts the
-  // cross-check above validated. Otherwise a tx whose real outputs differ
-  // from the checked metadata could still be funded and signed.
-  assertEncodedHtlcOutputsMatch(
+  // Bind the validated metadata to the bytes that get funded and signed.
+  // Reject a wrong count, a wrong auth or CPFP output, or an HTLC that does
+  // not match the request before UTXO selection uses the output values.
+  assertUnfundedPrePeginOutputLayout(
     parsed.outputs,
     result.htlcValues,
     result.htlcScriptPubKeys,
+    params,
+    authAnchorHash,
+    parsed.version,
+    parsed.locktime,
   );
 
   const totalOutputValue = parsed.outputs.reduce(
@@ -276,11 +289,28 @@ export function normalizeAuthAnchorHash(
  *
  * @param params - Build parameters including Pre-PegIn params and funded tx hex
  * @returns PegIn transaction details
- * @throws If WASM initialization fails or parameters are invalid
+ * @throws If `timelockPegin` is not a whole number from 1 to 65535, if WASM
+ *   initialization fails or parameters are invalid, or if the WASM result does
+ *   not match the request (for example, a vault scriptPubKey that differs from
+ *   the independently derived payout scriptPubKey)
  */
 export async function buildPeginTxFromFundedPrePegin(
   params: BuildPeginTxParams,
 ): Promise<PeginTxResult> {
+  // Reject the timelock before it crosses into the engine. The engine keeps
+  // only the low 16 bits and drops a fraction, and rejects only a zero
+  // result. Thus 65537 would build a one-block vault, not the requested one.
+  if (
+    !Number.isInteger(params.timelockPegin) ||
+    params.timelockPegin < 1 ||
+    params.timelockPegin > MAX_TIMELOCK_PEGIN_BLOCKS
+  ) {
+    throw new Error(
+      `PegIn timelock ${params.timelockPegin} must be a whole number of ` +
+        `blocks from 1 to ${MAX_TIMELOCK_PEGIN_BLOCKS}.`,
+    );
+  }
+
   // WASM reconstructs the Pre-PegIn template from these params to
   // decode the funded tx. Must pass `authAnchorHash` (normalized
   // identically to buildPrePeginPsbt) so the reconstruction matches
@@ -330,26 +360,22 @@ export async function buildPeginTxFromFundedPrePegin(
 const PEGIN_BASE_OUTPUT_COUNT = 2;
 
 /**
- * Vout of the depositor-claim output in every PegIn version (btc-vault:
- * vault at 0, depositor claim at 1, optional P2A anchor appended after).
- */
-const PEGIN_DEPOSITOR_CLAIM_VOUT = 1;
-
-/**
- * Cross-check the WASM-built PegIn transaction's bytes against the request
- * and the version's expected output layout before the depositor signs it.
+ * Cross-check the WASM-built PegIn transaction's header, input, and outputs
+ * against the request before the depositor signs it.
  *
  * CLAUDE.md critical path #1: the metadata (`vaultValue`, `txid`,
  * `vaultScriptPubKey`) and the tx bytes both come from WASM — bind them to
  * each other and to the caller's requested amount so a doctored binary
- * can't commit one thing and encode another. The vault output value is the
+ * can't commit one thing and encode another. The reported and the encoded
+ * vault scriptPubKey must both equal the payout scriptPubKey that TypeScript
+ * derives from the request. The vault output value is the
  * exact on-chain vault amount, so it must equal the requested peg-in amount
  * (btc-vault: PegIn vout 0 carries `pegin_amount` verbatim). The P2A anchor
  * (exact value/vout/script for v2; complete absence for v1) is enforced by
  * the version-dispatched `validatePeginP2aAnchor`.
  *
- * @throws If the encoded outputs disagree with the metadata, the requested
- *   amount, or the version's anchor rules.
+ * @throws If the encoded transaction disagrees with the request, metadata,
+ *   or canonical shape for its Vault Core version.
  */
 async function assertPeginTxShape(
   result: {
@@ -361,6 +387,15 @@ async function assertPeginTxShape(
   params: BuildPeginTxParams,
 ): Promise<void> {
   const version = params.prePeginParams.vaultCoreVersion;
+  const expectedTxVersion =
+    version === 1
+      ? PEGIN_TX_VERSION_CORE_1
+      : version === 2 || version === 3
+        ? PEGIN_TX_VERSION_CORE_2_AND_3
+        : undefined;
+  if (expectedTxVersion === undefined) {
+    throw new Error(`Unsupported vaultCoreVersion ${version} for PegIn tx.`);
+  }
 
   await validatePeginP2aAnchor(version, result.txHex);
 
@@ -368,6 +403,19 @@ async function assertPeginTxShape(
   const expectedOutputCount = PEGIN_BASE_OUTPUT_COUNT + (anchor ? 1 : 0);
 
   const peginTx = Transaction.fromHex(stripHexPrefix(result.txHex));
+
+  if (peginTx.version !== expectedTxVersion) {
+    throw new Error(
+      `PegIn tx version ${peginTx.version} does not match ` +
+        `vaultCoreVersion ${version}; expected ${expectedTxVersion}.`,
+    );
+  }
+  if (peginTx.locktime !== PEGIN_TX_LOCKTIME) {
+    throw new Error(
+      `PegIn tx locktime ${peginTx.locktime} does not match the canonical ` +
+        `locktime ${PEGIN_TX_LOCKTIME}.`,
+    );
+  }
 
   // Input bind: the PegIn must spend EXACTLY the requested HTLC outpoint
   // (fundedPrePeginTxid, htlcVout). Without this, a doctored tx could spend
@@ -399,6 +447,18 @@ async function assertPeginTxShape(
         `expected the requested HTLC vout ${params.htlcVout}.`,
     );
   }
+  if (peginTx.ins[0].sequence !== PEGIN_INPUT_SEQUENCE) {
+    throw new Error(
+      `PegIn input sequence ${peginTx.ins[0].sequence} does not match the ` +
+        `canonical sequence ${PEGIN_INPUT_SEQUENCE}.`,
+    );
+  }
+  if (peginTx.ins[0].script.length !== 0) {
+    throw new Error("PegIn input scriptSig must be empty.");
+  }
+  if (peginTx.ins[0].witness.length !== 0) {
+    throw new Error("PegIn input witness must be empty before signing.");
+  }
 
   if (peginTx.outs.length !== expectedOutputCount) {
     throw new Error(
@@ -408,8 +468,7 @@ async function assertPeginTxShape(
     );
   }
 
-  const requestedAmount =
-    params.prePeginParams.pegInAmounts[params.htlcVout];
+  const requestedAmount = params.prePeginParams.pegInAmounts[params.htlcVout];
   if (result.vaultValue !== requestedAmount) {
     throw new Error(
       `PegIn vault output value ${result.vaultValue} does not match the ` +
@@ -426,15 +485,26 @@ async function assertPeginTxShape(
         `match the WASM-reported vaultValue ${result.vaultValue}.`,
     );
   }
+  const expectedVaultScript = deriveExpectedPeginPayoutScriptPubKey(
+    params.prePeginParams,
+    params.timelockPegin,
+  ).toString("hex");
+  if (
+    stripHexPrefix(result.vaultScriptPubKey).toLowerCase() !==
+    expectedVaultScript
+  ) {
+    throw new Error(
+      `WASM-reported PegIn vaultScriptPubKey ${result.vaultScriptPubKey} ` +
+        `does not match the independently derived payout scriptPubKey ` +
+        `${expectedVaultScript}.`,
+    );
+  }
   const encodedVaultScript = encodedVaultOut.script.toString("hex");
-  const expectedVaultScript = stripHexPrefix(
-    result.vaultScriptPubKey,
-  ).toLowerCase();
-  if (encodedVaultScript.toLowerCase() !== expectedVaultScript) {
+  if (encodedVaultScript !== expectedVaultScript) {
     throw new Error(
       `Encoded PegIn vault output scriptPubKey ${encodedVaultScript} does ` +
-        `not match the WASM-reported vaultScriptPubKey ` +
-        `${result.vaultScriptPubKey}.`,
+        `not match the independently derived payout scriptPubKey ` +
+        `${expectedVaultScript}.`,
     );
   }
 
@@ -481,28 +551,4 @@ async function assertPeginTxShape(
         `${expectedClaimScript.toString("hex")}).`,
     );
   }
-}
-
-/**
- * Independently derive the PegIn depositor-claim output's scriptPubKey in
- * JS: a Taproot output with the NUMS internal key and a single
- * `<depositor> OP_CHECKSIG` leaf — btc-vault's `SingleKeyConnector`
- * (`crates/vault/src/connectors/mod.rs`, identical across graph versions).
- * Uses the same `tapInternalPubkey` NUMS constant the HTLC connector pins.
- */
-function deriveDepositorClaimScriptPubKey(depositorPubkey: string): Buffer {
-  const claimLeafScript = bscript.compile([
-    Buffer.from(hexToUint8Array(depositorPubkey)),
-    opcodes.OP_CHECKSIG,
-  ]);
-  const { output } = payments.p2tr({
-    internalPubkey: Buffer.from(tapInternalPubkey),
-    scriptTree: { output: claimLeafScript },
-  });
-  if (!output) {
-    throw new Error(
-      "Failed to derive the depositor-claim P2TR scriptPubKey for PegIn output validation",
-    );
-  }
-  return output;
 }

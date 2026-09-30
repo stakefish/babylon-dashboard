@@ -75,8 +75,6 @@ export interface VaultProtocolInfo {
   depositorPopSignature: Hex;
   prePeginTxHash: Hex;
   vaultProviderCommissionBps: number;
-  /** Block deadline (uint256) for depositor reclaim. TODO(#1690): wire to refund flow. */
-  claimExpiredUntil: bigint;
   /** Vault core version (uint16) stamped at registration. VP-side gating only — see #1690. */
   vaultCoreVersion: number;
 }
@@ -128,6 +126,17 @@ export interface VaultRegistryReader {
    */
   getVaultProviderGenesisBtcPubKey(
     vpAddress: Address,
+    blockNumber?: bigint,
+  ): Promise<OnChainBtcPubkey>;
+  /**
+   * Read the vault provider operation key selected by an RFC-006 epoch.
+   * Existing-vault consumers pass the vault's frozen `vpKeyEpoch` here so a
+   * later rotation cannot move the result.
+   */
+  getVaultProviderOperationBtcKeyAtEpoch(
+    vpAddress: Address,
+    epoch: bigint,
+    blockNumber?: bigint,
   ): Promise<OnChainBtcPubkey>;
   /** Read the protocol pegin fee (in wei) for a given vault provider. */
   getPegInFee(vaultProvider: Address): Promise<bigint>;
@@ -154,12 +163,39 @@ export interface VaultRegistryReader {
   getVaultKeyEpochsBatch(vaultIds: readonly Hex[]): Promise<KeyEpochs[]>;
   /**
    * Read a vault provider's *current* RFC-006 operation BTC key — the key its
-   * server signs auth tokens with. Falls back to the registration key when the
-   * provider has never rotated.
+   * server uses for the JSON-RPC token subject. Falls back to the registration
+   * key when the provider has never rotated.
    */
   getCurrentVaultProviderOperationBtcKey(
     vpAddress: Address,
   ): Promise<OnChainBtcPubkey>;
+  /**
+   * Read the depositor's commission ceiling (`maxAcceptableCommissionBps`)
+   * for vaults registered in the same block `createdAt`, from their
+   * `PegInSubmittedV2` logs, in `vaultIds` order. The contract discards the
+   * ceiling after bound-checking it, so the log is its only on-chain source.
+   *
+   * @throws {RegistrationLogsUnavailableError} (transient, retry) when the
+   * node answers with no registration logs for the block at all.
+   * @throws when a vault has only its `PegInSubmitted` log (a registration
+   * that predates the V2 event), none, or more than one V2 log.
+   */
+  getMaxAcceptableCommissionBpsBatch(
+    vaultIds: readonly Hex[],
+    createdAt: bigint,
+  ): Promise<number[]>;
+  /**
+   * Read the application entry point a vault provider is registered for.
+   *
+   * The peg-in submit path resolves this internally and uses it to pick the
+   * keeper roster, the roster version and the keeper key epoch a deposit is
+   * bonded to. Pass `blockNumber` when the result will shape a Bitcoin lock,
+   * so it describes the same block as the roster reads that follow it.
+   */
+  getVaultProviderApplication(
+    vpAddress: Address,
+    blockNumber?: bigint,
+  ): Promise<Address>;
 }
 
 // ============================================================================
@@ -270,7 +306,12 @@ export interface ProtocolParamsReader {
   getLatestOffchainParams(): Promise<VersionedOffchainParams>;
   getLatestOffchainParamsVersion(): Promise<number>;
   getTimelockPeginByVersion(version: number): Promise<number>;
-  getPegInConfiguration(): Promise<PegInConfiguration>;
+  /**
+   * Pass `blockNumber` when the result will shape a Bitcoin lock, so this
+   * multicall and the participant-key reads describe the same block. Omit it
+   * for display-only reads, where a slightly stale value is harmless.
+   */
+  getPegInConfiguration(blockNumber?: bigint): Promise<PegInConfiguration>;
   /**
    * Observation window enforced between a vault's final ACK and its
    * activation, in ETH blocks measured from `verifiedAt`. `0` disables it.
@@ -302,23 +343,66 @@ export interface AddressBTCKeyPair {
   btcPubKey: Hex;
 }
 
-/** Interface for reading vault keepers from the ApplicationRegistry contract. */
+/**
+ * Interface for reading vault keepers from the ApplicationRegistry contract.
+ *
+ * The reads used to build a peg-in — here and on the sibling reader interfaces
+ * — take an optional `blockNumber` that pins them to one block instead of
+ * `latest`. Omitting it, the historical behaviour, is correct for every read
+ * that resolves against a vault's already-frozen epochs, because those are
+ * immutable once stamped. It is NOT correct for a fresh peg-in build: the
+ * participant keys, roster versions and protocol params that shape the Bitcoin
+ * lock must all describe the same block, or the lock commits to a mixture of
+ * chain states that never existed at once. See
+ * `services/deposit/validateOnChainParticipantKeys`.
+ *
+ * The `getCurrent*` roster reads are the exception and take no block. Nothing
+ * on the build path uses them — it resolves rosters by version instead — so
+ * they were left alone rather than given a pin no caller would pass.
+ */
 export interface VaultKeeperReader {
   getVaultKeepersByVersion(
     appEntryPoint: Address,
     version: number,
+    blockNumber?: bigint,
   ): Promise<AddressBTCKeyPair[]>;
   getCurrentVaultKeepers(appEntryPoint: Address): Promise<AddressBTCKeyPair[]>;
-  getCurrentVaultKeepersVersion(appEntryPoint: Address): Promise<number>;
+  getCurrentVaultKeepersVersion(
+    appEntryPoint: Address,
+    blockNumber?: bigint,
+  ): Promise<number>;
+  /**
+   * Read the application's current vault-keeper operation-key epoch.
+   *
+   * One counter for the whole application, bumped by any keeper's
+   * operation-key or payout-script append. The peg-in config fingerprint
+   * commits to it in place of the N resolved keeper keys, so it must be read
+   * at the same block as the roster it labels. Returned as `bigint`; the
+   * contract encodes it as `uint64` and a `Number` would truncate.
+   */
+  getCurrentAppKeeperKeyEpoch(
+    appEntryPoint: Address,
+    blockNumber?: bigint,
+  ): Promise<bigint>;
 }
 
 /** Interface for reading universal challengers from the ProtocolParams contract. */
 export interface UniversalChallengerReader {
   getUniversalChallengersByVersion(
     version: number,
+    blockNumber?: bigint,
   ): Promise<AddressBTCKeyPair[]>;
   getCurrentUniversalChallengers(): Promise<AddressBTCKeyPair[]>;
-  getLatestUniversalChallengersVersion(): Promise<number>;
+  getLatestUniversalChallengersVersion(blockNumber?: bigint): Promise<number>;
+  /**
+   * Read the protocol's current universal-challenger operation-key epoch.
+   *
+   * The challenger-axis counterpart to
+   * {@link VaultKeeperReader.getCurrentAppKeeperKeyEpoch}: one protocol-wide
+   * counter the fingerprint commits to in place of the M resolved challenger
+   * keys. Returned as `bigint` for the same `uint64` reason.
+   */
+  getCurrentUcKeyEpoch(blockNumber?: bigint): Promise<bigint>;
 }
 
 // ============================================================================
@@ -385,11 +469,15 @@ export interface OperationKeyReader {
   /**
    * Resolve every participant's *current* operation key.
    *
-   * Used for new peg-ins and for the VP auth pin. Needs no epoch read at all —
-   * each registry's `getCurrentOperationBtcKey` resolves its own genesis
-   * fallback, so an operator that never rotated yields its registration key.
+   * Used for new peg-ins. The VP-only current getter separately supplies the
+   * JSON-RPC auth pin. Needs no epoch read at all — each registry's
+   * `getCurrentOperationBtcKey` resolves its own genesis fallback, so an
+   * operator that never rotated yields its registration key.
    */
-  getCurrentOperationKeys(query: OperationKeyQuery): Promise<RawOperationKeys>;
+  getCurrentOperationKeys(
+    query: OperationKeyQuery,
+    blockNumber?: bigint,
+  ): Promise<RawOperationKeys>;
   /**
    * Resolve every participant's operation key bonded at a vault's frozen
    * epochs. Used for every existing-vault path (resume, payout, refund).

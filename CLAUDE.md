@@ -1,16 +1,31 @@
 # CLAUDE.md — babylon-toolkit
 
+## Fork Sync (stakefish)
+
+This repo (`origin` = `stakefish/babylon-dashboard`) is a fork of `upstream` = `babylonlabs-io/babylon-toolkit`.
+
+- **Branches:** `sync-upstream-main` mirrors `upstream/main` and is only ever fast-forwarded. `staging` is our source of truth: upstream plus stakefish changes (simple-staking restyle on `@stakefish/ui-kit`, core-ui tweaks, exact dependency pins + pnpm age gate, `build:ci` scripts, Vercel config). `main` receives `sync-upstream-main` later; `production` follows `staging`.
+- **What staging deliberately does not carry:** `services/vault` (deleted in `9f5092b9`), the upstream `/pre-review` tooling (`.claude/agents/review-*`, `.claude/skills/pre-review`, `scripts/pre-review`, `.husky/pre-push`, `pre-review-*.yml`, `docs/pre-review.md`) and `docs/specs/derive-*.md`. Upstream keeps adding files there; they merge in **without conflicts**, so delete them again on every sync.
+- **Procedure:**
+  1. `git fetch upstream`, back up the current tips with `git branch backup/<branch>-<YYYYMMDD>` for `staging` and `sync-upstream-main`.
+  2. `git checkout sync-upstream-main && git merge --ff-only upstream/main && git push origin sync-upstream-main`.
+  3. `git checkout staging && git -c merge.directoryRenames=false merge sync-upstream-main`. **Always disable directory-rename detection:** because staging deleted `services/vault`, git otherwise "detects" `services/vault/src/*` as renamed into `packages/babylon-ts-sdk/src/tbv/core/*` and drops upstream's vault files, and even conflict markers, into the SDK. The May 2026 merge (`73d1d88f`) did exactly that.
+  4. `git rm -rf` the paths listed above; drop the `pre-review:test` script, the `.gitignore` pre-review entries and the vault steps in `verify.yml`.
+  5. `package.json` conflicts: keep both `build:ci` and upstream's new scripts, take upstream's new deps, keep exact pins (no `^`) and staging's removals (e.g. `@sentry/*`). For `pnpm-lock.yaml`, `git checkout --ours` and rerun `pnpm install`; never hand-merge it.
+  6. `packages/babylon-ts-sdk` carries no stakefish changes, so after the merge `git diff upstream/main -- packages/babylon-ts-sdk` must be empty.
+  7. Verify: `pnpm install`, `pnpm run build`, `pnpm run lint`, `pnpm run test`, then open simple-staking and check the styling. Commit and push `staging`.
+
 ## Project Overview
 
 Monorepo (pnpm workspaces) for Babylon's Bitcoin vault frontend. Users lock BTC on Bitcoin, receive vaultBTC on Ethereum for DeFi collateral. The frontend manages the full depositor lifecycle: vault provider selection, deposit, presigning payout transactions, broadcasting, redemption.
 
 ### Key Packages
 
-- `services/vault` — Main vault dApp (Next.js)
+- `services/vault` — Main vault dApp (Vite + React)
 - `packages/babylon-tbv-rust-wasm` — Rust→WASM for transaction construction, fee calculation
-- `packages/wallet-connector` — Multi-chain wallet abstraction (BTC + ETH)
-- `packages/core-ui` — Shared UI component library
-- `packages/ts-sdk` — TypeScript SDK for protocol interaction
+- `packages/babylon-wallet-connector` — Multi-chain wallet abstraction (BTC + ETH)
+- `packages/babylon-core-ui` — Shared UI component library
+- `packages/babylon-ts-sdk` — TypeScript SDK for protocol interaction
 - `packages/babylon-ledger-vault-signer` — Host-side client for the Ledger Babylon Vault app (device protocol only; wallet-connector adapts it)
 
 ### Build Prerequisites
@@ -27,9 +42,18 @@ pnpm run build                        # Build all packages
 pnpm run lint                         # Lint all packages
 pnpm run test                         # Run all tests (vitest)
 pnpm --filter vault run dev           # Dev server for vault service
+
+# Regenerate the checked-in ts-sdk API docs. Required whenever the SDK's public
+# surface changes — a signature, a parameter, an exported type, or the JSDoc on
+# any of them.
+pnpm --filter @babylonlabs-io/ts-sdk run docs:clean
 ```
 
-Run `pnpm run lint` and `pnpm run test` in the affected service before considering work done.
+Run `pnpm run lint` and `pnpm run test` in the affected service before considering work done. If the change touched `packages/babylon-ts-sdk`'s public surface, run `docs:clean` as well and commit the regenerated `docs/api/` output.
+
+The `verify` CI job regenerates those docs and diffs them against what is committed, failing with _"Generated API docs are stale"_. It is easy to miss locally: `docs:clean` is not part of `build`, `lint` or `test`, so a change can be green on all three and still fail CI. Note also that the generator prints hundreds of pre-existing warnings about undocumented symbols — those are not the failure; only staleness is.
+
+Run the SDK's own `test` script rather than `vitest` directly when checking that package. `pnpm --filter @babylonlabs-io/ts-sdk run test` is `build && vitest run && node --test tests/wasm-facade.node.mjs`; invoking `vitest` alone skips the build and the WASM-facade pin check that CI runs.
 
 ---
 
@@ -39,13 +63,24 @@ These paths handle irreversible value movement. An AI-generated mistake here is 
 
 ### 1. WASM boundary (value computation)
 
-- File: `packages/babylon-tbv-rust-wasm/src/index.ts`
-- The Rust/WASM layer computes `htlcValue = peginAmount + depositorClaimValue + p2aAnchorValue + minPeginFee` internally (the anchor term is 0 for tx-graph v1, 240 sats for v2 and v3). JS receives outputs with no runtime validation.
+- Files:
+  - `packages/babylon-tbv-rust-wasm/src/index.ts`
+  - `packages/babylon-tbv-rust-wasm/src/index-node.ts`
+  - `packages/babylon-tbv-rust-wasm/src/delegatedClaim.ts` — the delegated-claim crossing, spread verbatim into both entries above. It owns the width guards for every integer that reaches WASM on this path, and carries a `@stability frozen` derivation (`wotsKeypairFromSeed`), so section 4 reaches it too.
+  - `packages/babylon-ts-sdk/src/tbv/core/primitives/psbt/assertWasmPeginSizing.ts`
+  - `packages/babylon-ts-sdk/src/tbv/core/primitives/psbt/constants.ts` - protocol transaction layout constants
+  - `packages/babylon-ts-sdk/src/tbv/core/primitives/psbt/pegin.ts`
+  - `packages/babylon-ts-sdk/src/tbv/core/primitives/psbt/peginInput.ts`
+  - `packages/babylon-ts-sdk/src/tbv/core/primitives/psbt/refund.ts`
+  - `packages/babylon-ts-sdk/src/tbv/core/utils/transaction/fundPeginTransaction.ts` - rejects undeclared output bytes
+- The Rust/WASM layer computes `htlcValue = peginAmount + depositorClaimValue + p2aAnchorValue + minPeginFee` internally (the anchor term is 0 for tx-graph v1, 240 sats for v2 and v3). TypeScript independently derives each canonical Pre-PegIn HTLC output and rejects a transaction or signing field that does not match.
 - **Rule:** Every WASM output consumed by JS must be asserted against expected bounds before use. If a WASM-returned value feeds a signed transaction, cross-check it against an independently computed expected value.
+- The engine main entry (`src/index.ts`, `src/index-node.ts`) also exports the wasm-bindgen classes `WasmPeginTx`, `WasmPrePeginTx`, `WasmPeginPayoutConnector` and `WasmPrePeginHtlcConnector` without value checks, so the rule above binds at each call site, not at the export. The SDK's public `loadTbvWasm()` (`packages/babylon-ts-sdk/src/tbv/core/wasm/index.ts`) returns this engine module, so it also gives callers these classes. The only SDK consumer is `packages/babylon-ts-sdk/src/tbv/core/primitives/psbt/refund.ts`. It guards `pegInAmounts` with `assertPositiveBigintArray`, derives the canonical HTLC and signing data in TypeScript, compares the WASM template's script and value with the funded output, and checks the final refund input and output before it emits the PSBT. Every new class consumer must do equivalent cross-checks. #2361 records the decision to keep these classes unguarded.
 
 ### 2. Fee calculation consistency
 
 - Files:
+  - `packages/babylon-ts-sdk/src/tbv/core/utils/fee/constants.ts` - shared transaction sizing and safety limits
   - `packages/babylon-ts-sdk/src/tbv/core/utils/utxo/selectUtxos.ts` — UTXO selection with iterative fee recalculation
   - `packages/babylon-ts-sdk/src/tbv/core/utils/fee/peginFeeMath.ts` — shared Pre-PegIn vsize/fee model
   - `services/vault/src/hooks/deposit/useEstimatedBtcFee.ts` — dApp-side estimate (delegates to the SDK model)
@@ -58,23 +93,27 @@ These paths handle irreversible value movement. An AI-generated mistake here is 
   - `packages/babylon-ts-sdk/src/tbv/core/primitives/psbt/payout.ts`
   - `packages/babylon-ts-sdk/src/tbv/core/services/deposit/signDepositorGraph.ts` — orchestrator that derives `LocalChallengers`, asserts the VP-returned `challenger_presign_data` set equals `local ∪ universal`, and decides which per-challenger NoPayout PSBTs get pre-signed
   - `services/vault/src/hooks/deposit/depositFlowSteps/payoutSigning.ts`
+  - `packages/babylon-ts-sdk/src/tbv/core/services/delegated-claim/` — the claim-time counterpart. The same depositor signs the same kinds of transaction from the same VP-served graph, months later and with no VP to re-ask, so the same rule binds: `payoutBinding.ts` pins the Payout destination against the on-chain registered script, `challengerBinding.ts` asserts the graph's challenger set equals `local ∪ universal`, and `vaultIdBinding.ts` ties the graph to the vault before anything is signed.
 - The depositor pre-signs payout (and per-challenger NoPayout) transactions built by the Vault Provider — values and challenger sets come from an external party with no independent verification. Asymmetric failure: undersigning leaves recovery material missing for an active challenger; oversigning hands signatures to a key the protocol doesn't recognize.
 - **Rule:** Before the signature call, re-derive the expected payout amount from on-chain or WASM-computed sources and assert equality. For the challenger set, derive `LocalChallengers` from on-chain VK list (matching the Rust reference in `btc-vault crates/vault/src/tx_graph/graph.rs`) and assert the VP-returned set equals `local ∪ universal` exactly — no missing entries, no extras. Never sign a value or accept a challenger key handed to us verbatim.
+- **Funding-chain rule:** Before any wallet signing prompt, require the depositor graph's Claim to have exactly one input spending the depositor's authoritative PegIn output 1, and require every Assert (depositor graph and each VP/VK claimer entry) to spend output 0 of its own Claim at input 0. Do not pin VP/VK claimer Claims to PegIn output 1: a claimer funds its Claim from its own wallet, and only the depositor can spend PegIn output 1.
 
 ### 4. Vault-secret derivation (frozen on-chain-binding API)
 
 - Files (all marked `@stability frozen` in JSDoc):
   - `packages/babylon-ts-sdk/src/tbv/core/vault-secrets/context.ts` — `buildVaultContext`, `buildFundingOutpointsCommitment`
   - `packages/babylon-ts-sdk/src/tbv/core/vault-secrets/deriveVaultRoot.ts` — `deriveVaultRoot`, `VAULT_APP_NAME`
-  - `packages/babylon-ts-sdk/src/tbv/core/vault-secrets/index.ts` — re-exports `expandAuthAnchor`, `expandHashlockSecret`, `expandWotsSeed` from the WASM package
+  - `packages/babylon-ts-sdk/src/tbv/core/vault-secrets/index.ts` — re-exports `expandAuthAnchor`, `expandHashlockSecret`, `expandWotsSeed` from the SDK's lazy WASM boundary
+  - `packages/babylon-ts-sdk/src/tbv/core/wasm/index.ts` — the lazy boundary's async wrappers for the three expanders; every SDK caller now reaches the WASM package through this hop (also registered in section 9)
   - `packages/babylon-tbv-rust-wasm/src/index.ts` — browser-side async wrappers for the three expanders
   - `packages/babylon-tbv-rust-wasm/src/index-node.ts` — node-side async wrappers for the three expanders
+  - `packages/babylon-tbv-rust-wasm/src/delegatedClaim.ts` — `wotsKeypairFromSeed`, the claim-time re-derivation of the WOTS keypair the on-chain `depositorWotsPkHash` commits to
   - `packages/babylon-tbv-rust-wasm/scripts/build-wasm.js` — `VAULT_WASM_COMMIT` pin (the vault-wasm facade at this commit, and the btc-vault revs it bundles, are the byte-level source of truth for the HKDF `info` encoding, labels, and i2osp prefixes)
   - `packages/babylon-ts-sdk/src/tbv/core/wots/blockDerivation.ts` — `deriveWotsBlocksFromSeed`, `computeWotsBlockPublicKeysHash`
 - The orchestrator that composes these primitives:
   - `packages/babylon-ts-sdk/src/tbv/core/managers/PeginManager.ts` — `PeginManager.preparePegin` (sizing → `deriveVaultRoot` → per-vault expand → commit pass with `htlcVout === index` invariant). The wrapper API may evolve; the underlying frozen primitives must not.
 - These functions feed `wallet.deriveContextHash` and produce on-chain commitments (`depositorWotsPkHash`, HTLC hashlock, OP_RETURN auth-anchor preimage). Any byte-level change to layout, ordering, label, or HKDF info rotates the secrets and **invalidates every existing deposit** — users cannot derive matching keys, cannot activate, cannot resume.
-- **Rule:** Treat as a hard fork. Changes require: (a) a coordinated revision of `derive-vault-secrets.md` / `derive-context-hash.md`, (b) updated golden-vector tests in `btc-vault` (`golden_vectors_pinned`) and vault-wasm (`lib.rs`) — the byte-level `info` encoding lives Rust-side and those tests are the source of truth, plus the JS golden vectors in `vault-secrets/__tests__/expand.test.ts`, (c) a migration plan for in-flight deposits. A bump of `VAULT_WASM_COMMIT` in `build-wasm.js` that changes any expander output is equivalent to changing this list — re-run the JS golden-vector gate on every bump. Match the Rust `babe::wots` reference byte-for-byte. Two-vault test (overlapping inputs, distinct keys) is mandatory for any chain-logic change.
+- **Rule:** Treat as a hard fork. Changes require: (a) updated golden-vector tests in `btc-vault` (`golden_vectors_pinned`) and vault-wasm (`lib.rs`) — the byte-level `info` encoding lives Rust-side and those tests are the source of truth; (b) updated JS golden vectors in `vault-secrets/__tests__/expand.test.ts` and `vault-secrets/__tests__/context.golden.test.ts`; (c) for the wallet-side derivation, updated conformance vectors in `vault-secrets/__tests__/deriveContextHash.vectors.test.ts` and a coordinated release with every external implementation that pins them (Ledger vault app, Keystone firmware, OneKey, UniSat) — the tests are the specification; (d) a matching revision of `docs/specs/derive-context-hash.md` / `docs/specs/derive-vault-secrets.md`, the readable form those external implementers build from; (e) a migration plan for in-flight deposits. A bump of `VAULT_WASM_COMMIT` in `build-wasm.js` that changes any expander output is equivalent to changing this list — re-run the JS golden-vector gate on every bump. Match the Rust `babe::wots` reference byte-for-byte. Two-vault test (overlapping inputs, distinct keys) is mandatory for any chain-logic change.
 
 ### 5. HTLC secret & vault activation
 
@@ -102,15 +141,16 @@ These paths handle irreversible value movement. An AI-generated mistake here is 
 
 ### 9. Dependency-free reimplementations of Bitcoin primitives
 
-These paths are registered ahead of the reimplementations landing (see #2228 / #2229). Separating the Ethereum-only paths from the Bitcoin stack means some primitives get reimplemented without `bitcoinjs-lib`, `tiny-secp256k1` or the WASM engine. Each one is small, and each one fails silently: the code compiles, the tests pass, and a wrong address or a wrong on-chain identifier ships.
+Separating the Ethereum-only paths from the Bitcoin stack reimplements some primitives without `bitcoinjs-lib`, `tiny-secp256k1` or the WASM engine (see #2228 / #2229). Each one is small, and each one fails silently: the code compiles, the tests pass, and a wrong address or a wrong on-chain identifier ships.
 
-- Files (all but the last arrive with the optional-BTC work):
+- Files (all are in the tree except `scriptPubKeyAddress.ts`, which is registered ahead of the remaining optional-BTC work):
   - `packages/babylon-ts-sdk/src/tbv/core/clients/eth/pegin-transaction.ts` — transaction-id parsing and vault-id derivation, replacing the bitcoinjs and WASM implementations
   - `packages/babylon-ts-sdk/src/tbv/core/clients/eth/pegin-registration-client.ts` — Ethereum-side registration extracted from `PeginManager`
+  - `packages/babylon-ts-sdk/src/tbv/core/clients/eth/payout-script.ts` - payout-script derivation without the Bitcoin stack
   - `packages/babylon-ts-sdk/src/tbv/core/wasm/` — the lazy boundary every WASM-computed value now crosses
-  - `packages/babylon-tbv-rust-wasm/src/wasm-loader.ts`, `wasm-loader-node.ts`, `raw.ts`, `raw-node.ts` — the restructured engine entry surface (the `@stability frozen` rules in section 4 still apply)
-  - `services/vault/src/utils/btc/scriptPubKeyAddress.ts` — hand-written bech32, bech32m and base58check encoding
-  - `packages/babylon-ts-sdk/src/tbv/core/clients/eth/onChainBtcPubkey.ts` — already in the tree, and guarded from now rather than on arrival: it is the sole validator minting `OnChainBtcPubkey`, and the optional-BTC work replaces its `ecc.isXOnlyPoint` curve-membership check with hand-rolled field arithmetic
+  - `packages/babylon-tbv-rust-wasm/src/wasm-loader.ts`, `wasm-loader-node.ts` - the loaders that the engine entries use to load the binary on demand (the `@stability frozen` rules in section 4 still apply)
+  - `services/vault/src/utils/btc/scriptPubKeyAddress.ts` - hand-written bech32, bech32m and base58check encoding; registered ahead of arrival
+  - `packages/babylon-ts-sdk/src/tbv/core/clients/eth/onChainBtcPubkey.ts` - the sole validator minting `OnChainBtcPubkey`; the optional-BTC work replaced its `ecc.isXOnlyPoint` curve-membership check with hand-rolled field arithmetic
 - **Rule:** A reimplementation may not land without a differential test asserting byte-for-byte equality against the implementation it replaces, over the existing golden vectors **plus** randomised inputs. A single hardcoded vector is not sufficient — it pins one input, not the function. If the original is being deleted in the same change, the differential must run against it before deletion, and the vectors it produced must be committed as fixtures.
 
 ---
@@ -228,18 +268,21 @@ These paths are registered ahead of the reimplementations landing (see #2228 / #
 
 ## MOTION & ANIMATION
 
-- **Any PR that adds or changes an animation must follow `docs/motion-system.md`** — it is the standard for motion across the monorepo.
+- **Any PR that adds or changes an animation must follow the rules in this section** — they are the standard for motion across the monorepo.
 - **Tokens, not magic numbers.** Timing/easing/distance are CSS custom properties (`--motion-*`); never inline `ms`/easing/`px` in components.
 - **Knobs in core-ui, values in the app.** core-ui animations read `var(--motion-…, <legacy default>)`; an app opts in by defining the token in its `globals.css`. Don't define app-spec tokens in core-ui `:root`.
 - **No animation library** (no framer-motion/react-spring) — use the existing mount/unmount seam for exits.
-- **`prefers-reduced-motion` is mandatory:** handled by a single global `*` animation/transition reset in core-ui `index.css` — no per-token or per-app zeroing. The functional spinner is the one re-enabled exception; JS motion reads `useReducedMotion()`.
+- **`prefers-reduced-motion` is mandatory:** handled by a single global `*` animation/transition reset in core-ui `index.css` — no per-token or per-app zeroing. The functional spinner is the one re-enabled exception; JS motion reads `useReducedMotion()` and renders the final state on first paint (initialize state from `reduced`; never fade in after mount).
 - **Never animate `transform` on a popper/tooltip-positioned element** — animate opacity on it, translate on an inner wrapper.
+- **Enter ease-out, exit ease-in.** Distances 4–8px, durations 120–220ms (longer only for the looping spinner and the skeleton shimmer). Never shift surrounding layout; a skeleton shimmer preserves the final layout.
+- **Token families:** `--motion-duration-*`, `--motion-ease-*`, `--motion-shift-*`, `--motion-transform-*`. Values come from the Figma section node (`get_design_context`), not the overview screenshot — re-pull it before changing a value. Current values: `services/vault/src/globals.css`; reset and shared utilities: core-ui `src/index.css`; hook: core-ui `src/hooks/useReducedMotion.ts`.
+- **Adding an animation:** take the values from the Figma section node; add the keyframe/transition in core-ui (`src/components/**/*.css` or `tailwind.config.js`) behind `var(--motion-…, <legacy default>)` so non-opted-in consumers keep their current behavior; define the token in the app's `globals.css` `:root`; only a functional indicator that must keep running under reduced motion gets a higher-specificity re-enable rule next to the spinner exception; verify with the core-ui build, the app's lint and tests, and a manual `prefers-reduced-motion` pass.
 
 ---
 
 ## SECURITY
 
-- **Security models live next to the code they describe.** A security-critical component carries a `SECURITY_MODEL.md` at its root, stating what that component must protect, against whom, and under which assumptions. Before changing a component, read the nearest `SECURITY_MODEL.md` at or above the files you are touching. A model that has been reviewed by its component owner is binding: treat its invariants as constraints on the change rather than as a checklist to satisfy afterwards. A model still marked *pending component-owner review* is informative — read it, and raise a conflict with it on the PR rather than treating it as settled. **When no component model exists at or above those files, the repository-level [`SECURITY.md`](SECURITY.md) applies** — it covers `packages/babylon-ts-sdk` and `packages/babylon-tbv-rust-wasm` in depth, which is where most of the critical paths above are actually enforced. Component coverage is being added incrementally; the absence of a component model is not evidence that a component is uncritical, and never leaves a change unconstrained.
+- **Security models live next to the code they describe.** A security-critical component carries a `SECURITY_MODEL.md` at its root, stating what that component must protect, against whom, and under which assumptions. Before changing a component, read the nearest `SECURITY_MODEL.md` at or above the files you are touching. A model that has been reviewed by its component owner is binding: treat its invariants as constraints on the change rather than as a checklist to satisfy afterwards. A model still marked _pending component-owner review_ is informative — read it, and raise a conflict with it on the PR rather than treating it as settled. **When no component model exists at or above those files, the repository-level [`SECURITY.md`](SECURITY.md) applies** — it covers `packages/babylon-ts-sdk` and `packages/babylon-tbv-rust-wasm` in depth, which is where most of the critical paths above are actually enforced. Component coverage is being added incrementally; the absence of a component model is not evidence that a component is uncritical, and never leaves a change unconstrained.
 - **Never log sensitive key material** — no `console.log` of private keys, derived secrets, or signing data.
 - **Wallet inputs**: Validate all data received from wallet APIs before use.
 - **GraphQL/RPC responses**: Never trust external data for security decisions without validation.

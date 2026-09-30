@@ -289,7 +289,7 @@ importers:
         version: 0.23.0(rollup@4.46.1)(vite@6.4.1(@types/node@22.17.0)(jiti@2.7.0)(lightningcss@1.32.0)(sass-embedded@1.98.0)(sass@1.98.0)(terser@5.44.0)(tsx@4.20.3)(yaml@2.8.2))
       vitest:
         specifier: 4.0.9
-        version: 4.0.9(@types/debug@4.1.12)(@types/node@22.17.0)(@vitest/ui@4.0.9)(jiti@2.7.0)(jsdom@20.0.3(bufferutil@4.0.9)(utf-8-validate@5.0.10))(lightningcss@1.32.0)(msw@2.11.6(@types/node@22.17.0)(typescript@5.9.2))(sass-embedded@1.98.0)(sass@1.98.0)(terser@5.44.0)(tsx@4.20.3)(yaml@2.8.2)
+        version: 4.0.9(@types/debug@4.1.12)(@types/node@22.17.0)(@vitest/browser-playwright@4.0.9)(@vitest/ui@4.0.9)(jiti@2.7.0)(jsdom@20.0.3(bufferutil@4.0.9)(utf-8-validate@5.0.10))(lightningcss@1.32.0)(msw@2.11.6(@types/node@22.17.0)(typescript@5.9.2))(sass-embedded@1.98.0)(sass@1.98.0)(terser@5.44.0)(tsx@4.20.3)(yaml@2.8.2)
 
   packages/babylon-ledger-vault-signer:
     dependencies:
@@ -315,9 +315,18 @@ importers:
         specifier: 7.8.2
         version: 7.8.2
     devDependencies:
+      '@babylonlabs-io/babylon-tbv-rust-wasm':
+        specifier: workspace:*
+        version: link:../babylon-tbv-rust-wasm
+      '@babylonlabs-io/ts-sdk':
+        specifier: workspace:*
+        version: link:../babylon-ts-sdk
       '@internal/eslint-config':
         specifier: workspace:*
         version: link:../../tools/eslint-config
+      '@ledgerhq/device-transport-kit-speculos':
+        specifier: 1.2.1
+        version: 1.2.1(@ledgerhq/device-management-kit@1.7.1(bufferutil@4.0.9)(rxjs@7.8.2)(utf-8-validate@5.0.10))(rxjs@7.8.2)
       prettier:
         specifier: ^3.6.2
         version: 3.6.2
@@ -335,7 +344,7 @@ importers:
         version: 4.5.4(@types/node@22.17.0)(rollup@4.46.1)(typescript@5.9.2)(vite@6.4.1(@types/node@22.17.0)(jiti@2.7.0)(lightningcss@1.32.0)(sass-embedded@1.98.0)(sass@1.98.0)(terser@5.44.0)(tsx@4.20.3)(yaml@2.8.2))
       vitest:
         specifier: 4.0.9
-        version: 4.0.9(@types/debug@4.1.12)(@types/node@22.17.0)(@vitest/ui@4.0.9)(jiti@2.7.0)(jsdom@20.0.3(bufferutil@4.0.9)(utf-8-validate@5.0.10))(lightningcss@1.32.0)(msw@2.11.6(@types/node@22.17.0)(typescript@5.9.2))(sass-embedded@1.98.0)(sass@1.98.0)(terser@5.44.0)(tsx@4.20.3)(yaml@2.8.2)
+        version: 4.0.9(@types/debug@4.1.12)(@types/node@22.17.0)(@vitest/browser-playwright@4.0.9)(@vitest/ui@4.0.9)(jiti@2.7.0)(jsdom@20.0.3(bufferutil@4.0.9)(utf-8-validate@5.0.10))(lightningcss@1.32.0)(msw@2.11.6(@types/node@22.17.0)(typescript@5.9.2))(sass-embedded@1.98.0)(sass@1.98.0)(terser@5.44.0)(tsx@4.20.3)(yaml@2.8.2)
 
   packages/babylon-proto-ts:
     dependencies:
@@ -397,12 +406,12 @@ importers:
 
   packages/babylon-ts-sdk:
     dependencies:
-      '@babylonlabs-io/babylon-tbv-rust-wasm':
-        specifier: workspace:*
-        version: link:../babylon-tbv-rust-wasm
       '@bitcoin-js/tiny-secp256k1-asmjs':
         specifier: 2.2.3
         version: 2.2.3
+      '@noble/curves':
+        specifier: 1.9.7
+        version: 1.9.7
       '@noble/hashes':
         specifier: 2.0.1
         version: 2.0.1
@@ -413,12 +422,18 @@ importers:
         specifier: 6.0.3
         version: 6.0.3
     devDependencies:
+      '@babylonlabs-io/babylon-tbv-rust-wasm':
+        specifier: workspace:*
+        version: link:../babylon-tbv-rust-wasm
       '@internal/eslint-config':
         specifier: workspace:*
         version: link:../../tools/eslint-config
+      '@vitest/browser-playwright':
+        specifier: 4.0.9
+        version: 4.0.9(bufferutil@4.0.9)(msw@2.11.6(@types/node@22.17.0)(typescript@5.9.2))(playwright@1.56.1)(utf-8-validate@5.0.10)(vite@6.4.1(@types/node@22.17.0)(jiti@2.7.0)(lightningcss@1.32.0)(sass-embedded@1.98.0)(sass@1.98.0)(terser@5.44.0)(tsx@4.20.3)(yaml@2.8.2))(vitest@4.0.9)
       '@vitest/coverage-v8':
         specifier: ^4.0.8
-        version: 4.0.9(vitest@4.0.9)
+        version: 4.0.9(@vitest/browser@4.0.9(bufferutil@4.0.9)(msw@2.11.6(@types/node@22.17.0)(typescript@5.9.2))(utf-8-validate@5.0.10)(vite@6.4.1(@types/node@22.17.0)(jiti@2.7.0)(lightningcss@1.32.0)(sass-embedded@1.98.0)(sass@1.98.0)(terser@5.44.0)(tsx@4.20.3)(yaml@2.8.2))(vitest@4.0.9))(vitest@4.0.9)
       '@vitest/ui':
         specifier: ^4.0.8
         version: 4.0.9(vitest@4.0.9)
@@ -428,6 +443,9 @@ importers:
       eslint-plugin-tsdoc:
         specifier: ^0.4.0
         version: 0.4.0
+      playwright:
+        specifier: 1.56.1
+        version: 1.56.1
       prettier:
         specifier: ^3.6.2
         version: 3.6.2
@@ -454,82 +472,22 @@ importers:
         version: 4.5.4(@types/node@22.17.0)(rollup@4.46.1)(typescript@5.9.2)(vite@6.4.1(@types/node@22.17.0)(jiti@2.7.0)(lightningcss@1.32.0)(sass-embedded@1.98.0)(sass@1.98.0)(terser@5.44.0)(tsx@4.20.3)(yaml@2.8.2))
       vitest:
         specifier: 4.0.9
-        version: 4.0.9(@types/debug@4.1.12)(@types/node@22.17.0)(@vitest/ui@4.0.9)(jiti@2.7.0)(jsdom@20.0.3(bufferutil@4.0.9)(utf-8-validate@5.0.10))(lightningcss@1.32.0)(msw@2.11.6(@types/node@22.17.0)(typescript@5.9.2))(sass-embedded@1.98.0)(sass@1.98.0)(terser@5.44.0)(tsx@4.20.3)(yaml@2.8.2)
+        version: 4.0.9(@types/debug@4.1.12)(@types/node@22.17.0)(@vitest/browser-playwright@4.0.9)(@vitest/ui@4.0.9)(jiti@2.7.0)(jsdom@20.0.3(bufferutil@4.0.9)(utf-8-validate@5.0.10))(lightningcss@1.32.0)(msw@2.11.6(@types/node@22.17.0)(typescript@5.9.2))(sass-embedded@1.98.0)(sass@1.98.0)(terser@5.44.0)(tsx@4.20.3)(yaml@2.8.2)
 
   packages/babylon-wallet-connector:
     dependencies:
       '@babylonlabs-io/core-ui':
         specifier: workspace:*
         version: link:../babylon-core-ui
-      '@babylonlabs-io/ledger-vault-signer':
-        specifier: workspace:*
-        version: link:../babylon-ledger-vault-signer
-      '@bitcoin-js/tiny-secp256k1-asmjs':
-        specifier: 2.2.3
-        version: 2.2.3
-      '@cosmjs/proto-signing':
-        specifier: 0.36.0
-        version: 0.36.0
-      '@cosmjs/stargate':
-        specifier: 0.36.0
-        version: 0.36.0(bufferutil@4.0.9)(utf-8-validate@5.0.10)
-      '@keplr-wallet/provider-extension':
-        specifier: 0.12.272
-        version: 0.12.272(starknet@6.24.1)
       '@keplr-wallet/types':
         specifier: 0.12.272
         version: 0.12.272(starknet@6.24.1)
-      '@keystonehq/animated-qr':
-        specifier: 0.10.0
-        version: 0.10.0(react-dom@18.3.1(react@18.3.1))(react@18.3.1)
-      '@keystonehq/keystone-sdk':
-        specifier: 0.12.3
-        version: 0.12.3
-      '@keystonehq/sdk':
-        specifier: 0.22.1
-        version: 0.22.1(react-dom@18.3.1(react@18.3.1))(react@18.3.1)
-      '@ledgerhq/hw-transport':
-        specifier: 6.31.10
-        version: 6.31.10
-      '@ledgerhq/hw-transport-webhid':
-        specifier: 6.30.6
-        version: 6.30.6
-      '@ledgerhq/hw-transport-webusb':
-        specifier: 6.29.10
-        version: 6.29.10
       '@reown/appkit':
         specifier: 1.8.12
         version: 1.8.12(@types/react@18.3.23)(bufferutil@4.0.9)(react@18.3.1)(typescript@5.9.2)(utf-8-validate@5.0.10)(zod@4.1.12)
-      '@reown/appkit-adapter-bitcoin':
-        specifier: 1.8.12
-        version: 1.8.12(@types/react@18.3.23)(bufferutil@4.0.9)(react@18.3.1)(typescript@5.9.2)(utf-8-validate@5.0.10)(valtio@2.1.7(@types/react@18.3.23)(react@18.3.1))(zod@4.1.12)
       '@reown/appkit-adapter-wagmi':
         specifier: 1.8.12
         version: 1.8.12(@tanstack/react-query@5.90.20(react@18.3.1))(@types/react@18.3.23)(@wagmi/core@2.22.1(@tanstack/query-core@5.90.20)(@types/react@18.3.23)(react@18.3.1)(typescript@5.9.2)(use-sync-external-store@1.4.0(react@18.3.1))(viem@2.38.2(bufferutil@4.0.9)(typescript@5.9.2)(utf-8-validate@5.0.10)(zod@4.1.12)))(bufferutil@4.0.9)(react@18.3.1)(typescript@5.9.2)(use-sync-external-store@1.4.0(react@18.3.1))(utf-8-validate@5.0.10)(viem@2.38.2(bufferutil@4.0.9)(typescript@5.9.2)(utf-8-validate@5.0.10)(zod@4.1.12))(wagmi@2.18.1(@tanstack/query-core@5.90.20)(@tanstack/react-query@5.90.20(react@18.3.1))(@types/react@18.3.23)(bufferutil@4.0.9)(react@18.3.1)(typescript@5.9.2)(utf-8-validate@5.0.10)(viem@2.38.2(bufferutil@4.0.9)(typescript@5.9.2)(utf-8-validate@5.0.10)(zod@4.1.12))(zod@4.1.12))(zod@4.1.12)
-      '@scure/bip32':
-        specifier: 1.4.0
-        version: 1.4.0
-      '@scure/btc-signer':
-        specifier: 1.8.1
-        version: 1.8.1
-      '@tomo-inc/ledger-bitcoin-babylon':
-        specifier: 0.3.5-alpha.0
-        version: 0.3.5-alpha.0(@ledgerhq/hw-transport-webhid@6.30.6)(@ledgerhq/hw-transport-webusb@6.29.10)(@ledgerhq/hw-transport@6.31.10)(bitcoinjs-lib@6.1.7)
-      '@tomo-inc/wallet-connect-sdk':
-        specifier: 1.0.0
-        version: 1.0.0(@bitcoinerlab/secp256k1@1.2.0)(@cosmjs/stargate@0.36.0(bufferutil@4.0.9)(utf-8-validate@5.0.10))(@keplr-wallet/types@0.12.272(starknet@6.24.1))(@keystonehq/animated-qr@0.10.0(react-dom@18.3.1(react@18.3.1))(react@18.3.1))(@keystonehq/keystone-sdk@0.12.3)(@keystonehq/sdk@0.22.1(react-dom@18.3.1(react@18.3.1))(react@18.3.1))(@scure/bip32@1.4.0)(@types/react@18.3.23)(bitcoinjs-lib@6.1.7)(react-dom@18.3.1(react@18.3.1))(react@18.3.1)
-      bip174:
-        specifier: 2.1.1
-        version: 2.1.1
-      bitcoinjs-lib:
-        specifier: 6.1.7
-        version: 6.1.7
-      buffer:
-        specifier: 6.0.3
-        version: 6.0.3
-      ledger-bitcoin-babylon-boilerplate:
-        specifier: 0.2.8
-        version: 0.2.8(@ledgerhq/hw-transport-webhid@6.30.6)(@ledgerhq/hw-transport-webusb@6.29.10)(@ledgerhq/hw-transport@6.31.10)(bitcoinjs-lib@6.1.7)
       nanoevents:
         specifier: 9.1.0
         version: 9.1.0
@@ -545,9 +503,6 @@ importers:
       usehooks-ts:
         specifier: ^3.1.1
         version: 3.1.1(react@18.3.1)
-      uuid:
-        specifier: 11.1.0
-        version: 11.1.0
       viem:
         specifier: ^2.38.2
         version: 2.38.2(bufferutil@4.0.9)(typescript@5.9.2)(utf-8-validate@5.0.10)(zod@4.1.12)
@@ -555,6 +510,12 @@ importers:
         specifier: 2.18.1
         version: 2.18.1(@tanstack/query-core@5.90.20)(@tanstack/react-query@5.90.20(react@18.3.1))(@types/react@18.3.23)(bufferutil@4.0.9)(react@18.3.1)(typescript@5.9.2)(utf-8-validate@5.0.10)(viem@2.38.2(bufferutil@4.0.9)(typescript@5.9.2)(utf-8-validate@5.0.10)(zod@4.1.12))(zod@4.1.12)
     devDependencies:
+      '@babylonlabs-io/ledger-vault-signer':
+        specifier: workspace:*
+        version: link:../babylon-ledger-vault-signer
+      '@bitcoin-js/tiny-secp256k1-asmjs':
+        specifier: 2.2.3
+        version: 2.2.3
       '@changesets/cli':
         specifier: ^2.29.8
         version: 2.29.8(@types/node@22.17.0)
@@ -567,15 +528,48 @@ importers:
       '@commitlint/config-conventional':
         specifier: ^19.8.0
         version: 19.8.1
+      '@cosmjs/proto-signing':
+        specifier: 0.36.0
+        version: 0.36.0
+      '@cosmjs/stargate':
+        specifier: 0.36.0
+        version: 0.36.0(bufferutil@4.0.9)(utf-8-validate@5.0.10)
       '@eslint/js':
         specifier: ^9.31.0
         version: 9.32.0
       '@internal/eslint-config':
         specifier: workspace:*
         version: link:../../tools/eslint-config
+      '@keplr-wallet/provider-extension':
+        specifier: 0.12.272
+        version: 0.12.272(starknet@6.24.1)
+      '@keystonehq/keystone-sdk':
+        specifier: 0.12.3
+        version: 0.12.3
+      '@keystonehq/sdk':
+        specifier: 0.22.1
+        version: 0.22.1(react-dom@18.3.1(react@18.3.1))(react@18.3.1)
+      '@ledgerhq/hw-transport':
+        specifier: 6.31.10
+        version: 6.31.10
+      '@ledgerhq/hw-transport-webhid':
+        specifier: 6.30.6
+        version: 6.30.6
+      '@ledgerhq/hw-transport-webusb':
+        specifier: 6.29.10
+        version: 6.29.10
       '@playwright/test':
         specifier: 1.56.1
         version: 1.56.1
+      '@reown/appkit-adapter-bitcoin':
+        specifier: 1.8.12
+        version: 1.8.12(@types/react@18.3.23)(bufferutil@4.0.9)(react@18.3.1)(typescript@5.9.2)(utf-8-validate@5.0.10)(valtio@2.1.7(@types/react@18.3.23)(react@18.3.1))(zod@4.1.12)
+      '@scure/bip32':
+        specifier: 1.4.0
+        version: 1.4.0
+      '@scure/btc-signer':
+        specifier: 1.8.1
+        version: 1.8.1
       '@semantic-release/github':
         specifier: ^11.0.2
         version: 11.0.3(semantic-release@24.2.7(typescript@5.9.2))
@@ -609,6 +603,12 @@ importers:
       '@testing-library/react':
         specifier: 16.3.0
         version: 16.3.0(@testing-library/dom@10.4.0)(@types/react-dom@18.3.7(@types/react@18.3.23))(@types/react@18.3.23)(react-dom@18.3.1(react@18.3.1))(react@18.3.1)
+      '@tomo-inc/ledger-bitcoin-babylon':
+        specifier: 0.3.5-alpha.0
+        version: 0.3.5-alpha.0(@ledgerhq/hw-transport-webhid@6.30.6)(@ledgerhq/hw-transport-webusb@6.29.10)(@ledgerhq/hw-transport@6.31.10)(bitcoinjs-lib@6.1.7)
+      '@tomo-inc/wallet-connect-sdk':
+        specifier: 1.0.0
+        version: 1.0.0(@bitcoinerlab/secp256k1@1.2.0)(@cosmjs/stargate@0.36.0(bufferutil@4.0.9)(utf-8-validate@5.0.10))(@keplr-wallet/types@0.12.272(starknet@6.24.1))(@keystonehq/animated-qr@0.10.0(react-dom@18.3.1(react@18.3.1))(react@18.3.1))(@keystonehq/keystone-sdk@0.12.3)(@keystonehq/sdk@0.22.1(react-dom@18.3.1(react@18.3.1))(react@18.3.1))(@scure/bip32@1.4.0)(@types/react@18.3.23)(bitcoinjs-lib@6.1.7)(react-dom@18.3.1(react@18.3.1))(react@18.3.1)
       '@types/node':
         specifier: ^22.10.2
         version: 22.17.0
@@ -627,6 +627,15 @@ importers:
       autoprefixer:
         specifier: ^10.4.20
         version: 10.4.21(postcss@8.5.6)
+      bip174:
+        specifier: 2.1.1
+        version: 2.1.1
+      bitcoinjs-lib:
+        specifier: 6.1.7
+        version: 6.1.7
+      buffer:
+        specifier: 6.0.3
+        version: 6.0.3
       dotenv:
         specifier: ^16.4.7
         version: 16.6.1
@@ -660,6 +669,9 @@ importers:
       jsdom:
         specifier: 20.0.3
         version: 20.0.3(bufferutil@4.0.9)(utf-8-validate@5.0.10)
+      ledger-bitcoin-babylon-boilerplate:
+        specifier: 0.2.8
+        version: 0.2.8(@ledgerhq/hw-transport-webhid@6.30.6)(@ledgerhq/hw-transport-webusb@6.29.10)(@ledgerhq/hw-transport@6.31.10)(bitcoinjs-lib@6.1.7)
       lint-staged:
         specifier: ^15.5.0
         version: 15.5.2
@@ -696,6 +708,9 @@ importers:
       typescript-eslint:
         specifier: ^8.44.1
         version: 8.44.1(eslint@9.32.0(jiti@2.7.0))(typescript@5.9.2)
+      uuid:
+        specifier: 11.1.0
+        version: 11.1.0
       vite:
         specifier: ^6.4.1
         version: 6.4.1(@types/node@22.17.0)(jiti@2.7.0)(lightningcss@1.32.0)(sass-embedded@1.98.0)(sass@1.98.0)(terser@5.44.0)(tsx@4.20.3)(yaml@2.8.2)
@@ -707,7 +722,7 @@ importers:
         version: 0.23.0(rollup@4.46.1)(vite@6.4.1(@types/node@22.17.0)(jiti@2.7.0)(lightningcss@1.32.0)(sass-embedded@1.98.0)(sass@1.98.0)(terser@5.44.0)(tsx@4.20.3)(yaml@2.8.2))
       vitest:
         specifier: 4.0.9
-        version: 4.0.9(@types/debug@4.1.12)(@types/node@22.17.0)(@vitest/ui@4.0.9)(jiti@2.7.0)(jsdom@20.0.3(bufferutil@4.0.9)(utf-8-validate@5.0.10))(lightningcss@1.32.0)(msw@2.11.6(@types/node@22.17.0)(typescript@5.9.2))(sass-embedded@1.98.0)(sass@1.98.0)(terser@5.44.0)(tsx@4.20.3)(yaml@2.8.2)
+        version: 4.0.9(@types/debug@4.1.12)(@types/node@22.17.0)(@vitest/browser-playwright@4.0.9)(@vitest/ui@4.0.9)(jiti@2.7.0)(jsdom@20.0.3(bufferutil@4.0.9)(utf-8-validate@5.0.10))(lightningcss@1.32.0)(msw@2.11.6(@types/node@22.17.0)(typescript@5.9.2))(sass-embedded@1.98.0)(sass@1.98.0)(terser@5.44.0)(tsx@4.20.3)(yaml@2.8.2)
 
   services/simple-staking:
     dependencies:
@@ -720,6 +735,9 @@ importers:
       '@babylonlabs-io/core-ui':
         specifier: workspace:*
         version: link:../../packages/babylon-core-ui
+      '@babylonlabs-io/ledger-vault-signer':
+        specifier: workspace:*
+        version: link:../../packages/babylon-ledger-vault-signer
       '@babylonlabs-io/wallet-connector':
         specifier: workspace:*
         version: link:../../packages/babylon-wallet-connector
@@ -735,9 +753,15 @@ importers:
       '@cosmjs/tendermint-rpc':
         specifier: 0.36.0
         version: 0.36.0(bufferutil@4.0.9)(utf-8-validate@5.0.10)
+      '@keystonehq/sdk':
+        specifier: 0.22.1
+        version: 0.22.1(react-dom@18.3.1(react@18.3.1))(react@18.3.1)
       '@reown/appkit':
         specifier: 1.8.12
         version: 1.8.12(@types/react@18.3.12)(bufferutil@4.0.9)(react@18.3.1)(typescript@5.8.3)(utf-8-validate@5.0.10)(zod@3.22.4)
+      '@reown/appkit-adapter-bitcoin':
+        specifier: 1.8.12
+        version: 1.8.12(@types/react@18.3.12)(bufferutil@4.0.9)(react@18.3.1)(typescript@5.8.3)(utf-8-validate@5.0.10)(valtio@2.1.7(@types/react@18.3.12)(react@18.3.1))(zod@3.22.4)
       '@stakefish/ui-kit':
         specifier: 3.0.7
         version: 3.0.7(@tailwindcss/postcss@4.3.3)(@types/react-dom@18.3.1)(@types/react@18.3.12)(react-dom@18.3.1(react@18.3.1))(react@18.3.1)(tailwindcss@4.3.3)
@@ -1048,7 +1072,7 @@ importers:
         version: 5.9.2
       vitest:
         specifier: 4.0.9
-        version: 4.0.9(@types/debug@4.1.12)(@types/node@22.17.0)(@vitest/ui@4.0.9)(jiti@2.7.0)(jsdom@20.0.3(bufferutil@4.0.9)(utf-8-validate@5.0.10))(lightningcss@1.32.0)(msw@2.11.6(@types/node@22.17.0)(typescript@5.9.2))(sass-embedded@1.98.0)(sass@1.98.0)(terser@5.44.0)(tsx@4.20.3)(yaml@2.8.2)
+        version: 4.0.9(@types/debug@4.1.12)(@types/node@22.17.0)(@vitest/browser-playwright@4.0.9)(@vitest/ui@4.0.9)(jiti@2.7.0)(jsdom@20.0.3(bufferutil@4.0.9)(utf-8-validate@5.0.10))(lightningcss@1.32.0)(msw@2.11.6(@types/node@22.17.0)(typescript@5.9.2))(sass-embedded@1.98.0)(sass@1.98.0)(terser@5.44.0)(tsx@4.20.3)(yaml@2.8.2)
 
 packages:
 
@@ -2784,6 +2808,12 @@ packages:
   '@ledgerhq/device-management-kit@1.7.1':
     resolution: {integrity: sha512-O1/H1BWPjrZre+/czkuDcP7fpbjq+PaTwquUtFxEXdVMM+6buvYAtlRUyGR6kjBy/tOsiSKQmHCnOabi/KBozw==}
     peerDependencies:
+      rxjs: 7.8.2
+
+  '@ledgerhq/device-transport-kit-speculos@1.2.1':
+    resolution: {integrity: sha512-lowqaGWtum+KrLgayz5Fu35Ep0AgtBMKo9FJoQ82ilNGli/PxSa4RqLLeWh/+L3CQtpyW8/89pBqSURQyldaYw==}
+    peerDependencies:
+      '@ledgerhq/device-management-kit': ^1.5.1
       rxjs: 7.8.2
 
   '@ledgerhq/device-transport-kit-web-hid@1.2.4':
@@ -5197,6 +5227,17 @@ packages:
     peerDependencies:
       vite: ^4.2.0 || ^5.0.0 || ^6.0.0 || ^7.0.0
 
+  '@vitest/browser-playwright@4.0.9':
+    resolution: {integrity: sha512-ayr0vCxvJIvodzfUTVzifFMT3bmcMeKzEWoPt7mtgrZsqJhMbYaftifuBZRQeF/glogsVr+jhtIePHw6g+0YRQ==}
+    peerDependencies:
+      playwright: '*'
+      vitest: 4.0.9
+
+  '@vitest/browser@4.0.9':
+    resolution: {integrity: sha512-OWN4ZgOIV2+T9cR4qfoajtjZDFoxcLa6qUpgDkviXZFUNkZ7XTVKvL/16X+gz5dtpqdZwXf3m0qIj72Ge/vytw==}
+    peerDependencies:
+      vitest: 4.0.9
+
   '@vitest/coverage-v8@4.0.9':
     resolution: {integrity: sha512-70oyhP+Q0HlWBIeGSP74YBw5KSjYhNgSCQjvmuQFciMqnyF36WL2cIkcT7XD85G4JPmBQitEMUsx+XMFv2AzQA==}
     peerDependencies:
@@ -6860,10 +6901,6 @@ packages:
   engine.io-parser@5.2.3:
     resolution: {integrity: sha512-HqD3yTBfnBxIrbnM1DoD6Pcq8NECnh8d4As1Qgh0z5Gg3jRRIqijury0CL3ghu/edArpUYiYqQiDUQBIs4np3Q==}
     engines: {node: '>=10.0.0'}
-
-  enhanced-resolve@5.18.3:
-    resolution: {integrity: sha512-d4lC8xfavMeBjzGr2vECC3fsGXziXZQyJxD868h2M/mBI3PwAuODxAkLkq5HYuvrPYcUtiLzsTo8U3PgX3Ocww==}
-    engines: {node: '>=10.13.0'}
 
   enhanced-resolve@5.24.5:
     resolution: {integrity: sha512-L1l8TNvomm6UVW5B253AGxQagSQr+vGwhMlrrfRS2qmhx46AMpMVJKQYLvWYbysTMY8VoicOvzHzoHMbyzB+4A==}
@@ -9569,6 +9606,10 @@ packages:
     resolution: {integrity: sha512-TfySrs/5nm8fQJDcBDuUng3VOUKsd7S+zqvbOTiGXHfxX4wK31ard+hoNuvkicM/2YFzlpDgABOevKSsB4G/FA==}
     engines: {node: '>= 6'}
 
+  pixelmatch@7.1.0:
+    resolution: {integrity: sha512-1wrVzJ2STrpmONHKBy228LM1b84msXDUoAzVEl0R8Mz4Ce6EPr+IVtxm8+yvrqLYMHswREkjYFaMxnyGnaY3Ng==}
+    hasBin: true
+
   pixelmatch@7.2.0:
     resolution: {integrity: sha512-xhcb4yHu9sM/G7foGzoLtXYcC0zHEaOXXjRKhGup0fw78Nf2Tkiapv4EQyMzrbcmQPsllAI7DbFY2UT7PlI9Pg==}
     hasBin: true
@@ -10982,10 +11023,6 @@ packages:
 
   tailwindcss@4.3.3:
     resolution: {integrity: sha512-gOhV3P7ufE62QDGg1zVaTgCR+EtPv92k2nIhVcVKcLmxT1sUBsQGhnZj175j+MqRt4zLF7ic+sCYjfhxMxj7YQ==}
-
-  tapable@2.2.3:
-    resolution: {integrity: sha512-ZL6DDuAlRlLGghwcfmSn9sK3Hr6ArtyudlSAiCqQ6IfE+b+HHbydbYDIG15IfS5do+7XQQBdBiubF/cV2dnDzg==}
-    engines: {node: '>=6'}
 
   tapable@2.3.3:
     resolution: {integrity: sha512-uxc/zpqFg6x7C8vOE7lh6Lbda8eEL9zmVm/PLeTPBRhh1xCgdWaQ+J1CUieGpIfm2HdtsUpRv+HshiasBMcc6A==}
@@ -14927,6 +14964,13 @@ snapshots:
       - bufferutil
       - utf-8-validate
 
+  '@ledgerhq/device-transport-kit-speculos@1.2.1(@ledgerhq/device-management-kit@1.7.1(bufferutil@4.0.9)(rxjs@7.8.2)(utf-8-validate@5.0.10))(rxjs@7.8.2)':
+    dependencies:
+      '@ledgerhq/device-management-kit': 1.7.1(bufferutil@4.0.9)(rxjs@7.8.2)(utf-8-validate@5.0.10)
+      '@sentry/minimal': 6.19.7
+      purify-ts: 2.1.0
+      rxjs: 7.8.2
+
   '@ledgerhq/device-transport-kit-web-hid@1.2.4(@ledgerhq/device-management-kit@1.7.1(bufferutil@4.0.9)(rxjs@7.8.2)(utf-8-validate@5.0.10))(rxjs@7.8.2)':
     dependencies:
       '@ledgerhq/device-management-kit': 1.7.1(bufferutil@4.0.9)(rxjs@7.8.2)(utf-8-validate@5.0.10)
@@ -16231,6 +16275,49 @@ snapshots:
 
   '@radix-ui/rect@1.1.0': {}
 
+  '@reown/appkit-adapter-bitcoin@1.8.12(@types/react@18.3.12)(bufferutil@4.0.9)(react@18.3.1)(typescript@5.8.3)(utf-8-validate@5.0.10)(valtio@2.1.7(@types/react@18.3.12)(react@18.3.1))(zod@3.22.4)':
+    dependencies:
+      '@exodus/bitcoin-wallet-standard': 0.0.0
+      '@reown/appkit': 1.8.12(@types/react@18.3.12)(bufferutil@4.0.9)(react@18.3.1)(typescript@5.8.3)(utf-8-validate@5.0.10)(zod@3.22.4)
+      '@reown/appkit-common': 1.8.12(bufferutil@4.0.9)(typescript@5.8.3)(utf-8-validate@5.0.10)(zod@3.22.4)
+      '@reown/appkit-controllers': 1.8.12(@types/react@18.3.12)(bufferutil@4.0.9)(react@18.3.1)(typescript@5.8.3)(utf-8-validate@5.0.10)(zod@3.22.4)
+      '@reown/appkit-polyfills': 1.8.12
+      '@reown/appkit-utils': 1.8.12(@types/react@18.3.12)(bufferutil@4.0.9)(react@18.3.1)(typescript@5.8.3)(utf-8-validate@5.0.10)(valtio@2.1.7(@types/react@18.3.12)(react@18.3.1))(zod@3.22.4)
+      '@wallet-standard/app': 1.1.0
+      '@wallet-standard/base': 1.1.0
+      '@walletconnect/universal-provider': 2.22.4(bufferutil@4.0.9)(typescript@5.8.3)(utf-8-validate@5.0.10)(zod@3.22.4)
+      bitcoinjs-lib: 6.1.7
+      sats-connect: 3.5.0(typescript@5.8.3)
+    transitivePeerDependencies:
+      - '@azure/app-configuration'
+      - '@azure/cosmos'
+      - '@azure/data-tables'
+      - '@azure/identity'
+      - '@azure/keyvault-secrets'
+      - '@azure/storage-blob'
+      - '@capacitor/preferences'
+      - '@deno/kv'
+      - '@netlify/blobs'
+      - '@planetscale/database'
+      - '@react-native-async-storage/async-storage'
+      - '@types/react'
+      - '@upstash/redis'
+      - '@vercel/blob'
+      - '@vercel/functions'
+      - '@vercel/kv'
+      - aws4fetch
+      - bufferutil
+      - db0
+      - debug
+      - encoding
+      - ioredis
+      - react
+      - typescript
+      - uploadthing
+      - utf-8-validate
+      - valtio
+      - zod
+
   '@reown/appkit-adapter-bitcoin@1.8.12(@types/react@18.3.23)(bufferutil@4.0.9)(react@18.3.1)(typescript@5.9.2)(utf-8-validate@5.0.10)(valtio@2.1.7(@types/react@18.3.23)(react@18.3.1))(zod@4.1.12)':
     dependencies:
       '@exodus/bitcoin-wallet-standard': 0.0.0
@@ -17500,6 +17587,17 @@ snapshots:
 
   '@safe-global/safe-gateway-typescript-sdk@3.23.1': {}
 
+  '@sats-connect/core@0.6.5(typescript@5.8.3)':
+    dependencies:
+      axios: 1.12.2
+      bitcoin-address-validation: 2.2.3
+      buffer: 6.0.3
+      jsontokens: 4.0.1
+      valibot: 0.42.1(typescript@5.8.3)
+    transitivePeerDependencies:
+      - debug
+      - typescript
+
   '@sats-connect/core@0.6.5(typescript@5.9.2)':
     dependencies:
       axios: 1.12.2
@@ -17510,6 +17608,13 @@ snapshots:
     transitivePeerDependencies:
       - debug
       - typescript
+
+  '@sats-connect/make-default-provider-config@0.0.10(@sats-connect/core@0.6.5(typescript@5.8.3))(typescript@5.8.3)':
+    dependencies:
+      '@sats-connect/core': 0.6.5(typescript@5.8.3)
+      '@sats-connect/ui': 0.0.6
+      bowser: 2.12.1
+      typescript: 5.8.3
 
   '@sats-connect/make-default-provider-config@0.0.10(@sats-connect/core@0.6.5(typescript@5.9.2))(typescript@5.9.2)':
     dependencies:
@@ -18844,7 +18949,37 @@ snapshots:
     transitivePeerDependencies:
       - supports-color
 
-  '@vitest/coverage-v8@4.0.9(vitest@4.0.9)':
+  '@vitest/browser-playwright@4.0.9(bufferutil@4.0.9)(msw@2.11.6(@types/node@22.17.0)(typescript@5.9.2))(playwright@1.56.1)(utf-8-validate@5.0.10)(vite@6.4.1(@types/node@22.17.0)(jiti@2.7.0)(lightningcss@1.32.0)(sass-embedded@1.98.0)(sass@1.98.0)(terser@5.44.0)(tsx@4.20.3)(yaml@2.8.2))(vitest@4.0.9)':
+    dependencies:
+      '@vitest/browser': 4.0.9(bufferutil@4.0.9)(msw@2.11.6(@types/node@22.17.0)(typescript@5.9.2))(utf-8-validate@5.0.10)(vite@6.4.1(@types/node@22.17.0)(jiti@2.7.0)(lightningcss@1.32.0)(sass-embedded@1.98.0)(sass@1.98.0)(terser@5.44.0)(tsx@4.20.3)(yaml@2.8.2))(vitest@4.0.9)
+      '@vitest/mocker': 4.0.9(msw@2.11.6(@types/node@22.17.0)(typescript@5.9.2))(vite@6.4.1(@types/node@22.17.0)(jiti@2.7.0)(lightningcss@1.32.0)(sass-embedded@1.98.0)(sass@1.98.0)(terser@5.44.0)(tsx@4.20.3)(yaml@2.8.2))
+      playwright: 1.56.1
+      tinyrainbow: 3.0.3
+      vitest: 4.0.9(@types/debug@4.1.12)(@types/node@22.17.0)(@vitest/browser-playwright@4.0.9)(@vitest/ui@4.0.9)(jiti@2.7.0)(jsdom@20.0.3(bufferutil@4.0.9)(utf-8-validate@5.0.10))(lightningcss@1.32.0)(msw@2.11.6(@types/node@22.17.0)(typescript@5.9.2))(sass-embedded@1.98.0)(sass@1.98.0)(terser@5.44.0)(tsx@4.20.3)(yaml@2.8.2)
+    transitivePeerDependencies:
+      - bufferutil
+      - msw
+      - utf-8-validate
+      - vite
+
+  '@vitest/browser@4.0.9(bufferutil@4.0.9)(msw@2.11.6(@types/node@22.17.0)(typescript@5.9.2))(utf-8-validate@5.0.10)(vite@6.4.1(@types/node@22.17.0)(jiti@2.7.0)(lightningcss@1.32.0)(sass-embedded@1.98.0)(sass@1.98.0)(terser@5.44.0)(tsx@4.20.3)(yaml@2.8.2))(vitest@4.0.9)':
+    dependencies:
+      '@vitest/mocker': 4.0.9(msw@2.11.6(@types/node@22.17.0)(typescript@5.9.2))(vite@6.4.1(@types/node@22.17.0)(jiti@2.7.0)(lightningcss@1.32.0)(sass-embedded@1.98.0)(sass@1.98.0)(terser@5.44.0)(tsx@4.20.3)(yaml@2.8.2))
+      '@vitest/utils': 4.0.9
+      magic-string: 0.30.21
+      pixelmatch: 7.1.0
+      pngjs: 7.0.0
+      sirv: 3.0.2
+      tinyrainbow: 3.0.3
+      vitest: 4.0.9(@types/debug@4.1.12)(@types/node@22.17.0)(@vitest/browser-playwright@4.0.9)(@vitest/ui@4.0.9)(jiti@2.7.0)(jsdom@20.0.3(bufferutil@4.0.9)(utf-8-validate@5.0.10))(lightningcss@1.32.0)(msw@2.11.6(@types/node@22.17.0)(typescript@5.9.2))(sass-embedded@1.98.0)(sass@1.98.0)(terser@5.44.0)(tsx@4.20.3)(yaml@2.8.2)
+      ws: 8.18.3(bufferutil@4.0.9)(utf-8-validate@5.0.10)
+    transitivePeerDependencies:
+      - bufferutil
+      - msw
+      - utf-8-validate
+      - vite
+
+  '@vitest/coverage-v8@4.0.9(@vitest/browser@4.0.9(bufferutil@4.0.9)(msw@2.11.6(@types/node@22.17.0)(typescript@5.9.2))(utf-8-validate@5.0.10)(vite@6.4.1(@types/node@22.17.0)(jiti@2.7.0)(lightningcss@1.32.0)(sass-embedded@1.98.0)(sass@1.98.0)(terser@5.44.0)(tsx@4.20.3)(yaml@2.8.2))(vitest@4.0.9))(vitest@4.0.9)':
     dependencies:
       '@bcoe/v8-coverage': 1.0.2
       '@vitest/utils': 4.0.9
@@ -18857,7 +18992,9 @@ snapshots:
       magicast: 0.5.1
       std-env: 3.10.0
       tinyrainbow: 3.0.3
-      vitest: 4.0.9(@types/debug@4.1.12)(@types/node@22.17.0)(@vitest/ui@4.0.9)(jiti@2.7.0)(jsdom@20.0.3(bufferutil@4.0.9)(utf-8-validate@5.0.10))(lightningcss@1.32.0)(msw@2.11.6(@types/node@22.17.0)(typescript@5.9.2))(sass-embedded@1.98.0)(sass@1.98.0)(terser@5.44.0)(tsx@4.20.3)(yaml@2.8.2)
+      vitest: 4.0.9(@types/debug@4.1.12)(@types/node@22.17.0)(@vitest/browser-playwright@4.0.9)(@vitest/ui@4.0.9)(jiti@2.7.0)(jsdom@20.0.3(bufferutil@4.0.9)(utf-8-validate@5.0.10))(lightningcss@1.32.0)(msw@2.11.6(@types/node@22.17.0)(typescript@5.9.2))(sass-embedded@1.98.0)(sass@1.98.0)(terser@5.44.0)(tsx@4.20.3)(yaml@2.8.2)
+    optionalDependencies:
+      '@vitest/browser': 4.0.9(bufferutil@4.0.9)(msw@2.11.6(@types/node@22.17.0)(typescript@5.9.2))(utf-8-validate@5.0.10)(vite@6.4.1(@types/node@22.17.0)(jiti@2.7.0)(lightningcss@1.32.0)(sass-embedded@1.98.0)(sass@1.98.0)(terser@5.44.0)(tsx@4.20.3)(yaml@2.8.2))(vitest@4.0.9)
     transitivePeerDependencies:
       - supports-color
 
@@ -18924,7 +19061,7 @@ snapshots:
       sirv: 3.0.2
       tinyglobby: 0.2.15
       tinyrainbow: 3.0.3
-      vitest: 4.0.9(@types/debug@4.1.12)(@types/node@22.17.0)(@vitest/ui@4.0.9)(jiti@2.7.0)(jsdom@20.0.3(bufferutil@4.0.9)(utf-8-validate@5.0.10))(lightningcss@1.32.0)(msw@2.11.6(@types/node@22.17.0)(typescript@5.9.2))(sass-embedded@1.98.0)(sass@1.98.0)(terser@5.44.0)(tsx@4.20.3)(yaml@2.8.2)
+      vitest: 4.0.9(@types/debug@4.1.12)(@types/node@22.17.0)(@vitest/browser-playwright@4.0.9)(@vitest/ui@4.0.9)(jiti@2.7.0)(jsdom@20.0.3(bufferutil@4.0.9)(utf-8-validate@5.0.10))(lightningcss@1.32.0)(msw@2.11.6(@types/node@22.17.0)(typescript@5.9.2))(sass-embedded@1.98.0)(sass@1.98.0)(terser@5.44.0)(tsx@4.20.3)(yaml@2.8.2)
 
   '@vitest/utils@2.0.5':
     dependencies:
@@ -21949,11 +22086,6 @@ snapshots:
       - utf-8-validate
 
   engine.io-parser@5.2.3: {}
-
-  enhanced-resolve@5.18.3:
-    dependencies:
-      graceful-fs: 4.2.11
-      tapable: 2.2.3
 
   enhanced-resolve@5.24.5:
     dependencies:
@@ -25206,6 +25338,10 @@ snapshots:
 
   pirates@4.0.7: {}
 
+  pixelmatch@7.1.0:
+    dependencies:
+      pngjs: 7.0.0
+
   pixelmatch@7.2.0:
     dependencies:
       pngjs: 7.0.0
@@ -26082,6 +26218,15 @@ snapshots:
       '@parcel/watcher': 2.6.0
     optional: true
 
+  sats-connect@3.5.0(typescript@5.8.3):
+    dependencies:
+      '@sats-connect/core': 0.6.5(typescript@5.8.3)
+      '@sats-connect/make-default-provider-config': 0.0.10(@sats-connect/core@0.6.5(typescript@5.8.3))(typescript@5.8.3)
+      '@sats-connect/ui': 0.0.7
+    transitivePeerDependencies:
+      - debug
+      - typescript
+
   sats-connect@3.5.0(typescript@5.9.2):
     dependencies:
       '@sats-connect/core': 0.6.5(typescript@5.9.2)
@@ -26755,8 +26900,6 @@ snapshots:
 
   tailwindcss@4.3.3: {}
 
-  tapable@2.2.3: {}
-
   tapable@2.3.3: {}
 
   tar-stream@2.2.0:
@@ -27291,6 +27434,10 @@ snapshots:
       '@types/istanbul-lib-coverage': 2.0.6
       convert-source-map: 2.0.0
 
+  valibot@0.42.1(typescript@5.8.3):
+    optionalDependencies:
+      typescript: 5.8.3
+
   valibot@0.42.1(typescript@5.9.2):
     optionalDependencies:
       typescript: 5.9.2
@@ -27536,7 +27683,7 @@ snapshots:
       tsx: 4.20.3
       yaml: 2.8.2
 
-  vitest@4.0.9(@types/debug@4.1.12)(@types/node@22.17.0)(@vitest/ui@4.0.9)(jiti@2.7.0)(jsdom@20.0.3(bufferutil@4.0.9)(utf-8-validate@5.0.10))(lightningcss@1.32.0)(msw@2.11.6(@types/node@22.17.0)(typescript@5.9.2))(sass-embedded@1.98.0)(sass@1.98.0)(terser@5.44.0)(tsx@4.20.3)(yaml@2.8.2):
+  vitest@4.0.9(@types/debug@4.1.12)(@types/node@22.17.0)(@vitest/browser-playwright@4.0.9)(@vitest/ui@4.0.9)(jiti@2.7.0)(jsdom@20.0.3(bufferutil@4.0.9)(utf-8-validate@5.0.10))(lightningcss@1.32.0)(msw@2.11.6(@types/node@22.17.0)(typescript@5.9.2))(sass-embedded@1.98.0)(sass@1.98.0)(terser@5.44.0)(tsx@4.20.3)(yaml@2.8.2):
     dependencies:
       '@vitest/expect': 4.0.9
       '@vitest/mocker': 4.0.9(msw@2.11.6(@types/node@22.17.0)(typescript@5.9.2))(vite@6.4.1(@types/node@22.17.0)(jiti@2.7.0)(lightningcss@1.32.0)(sass-embedded@1.98.0)(sass@1.98.0)(terser@5.44.0)(tsx@4.20.3)(yaml@2.8.2))
@@ -27561,6 +27708,7 @@ snapshots:
     optionalDependencies:
       '@types/debug': 4.1.12
       '@types/node': 22.17.0
+      '@vitest/browser-playwright': 4.0.9(bufferutil@4.0.9)(msw@2.11.6(@types/node@22.17.0)(typescript@5.9.2))(playwright@1.56.1)(utf-8-validate@5.0.10)(vite@6.4.1(@types/node@22.17.0)(jiti@2.7.0)(lightningcss@1.32.0)(sass-embedded@1.98.0)(sass@1.98.0)(terser@5.44.0)(tsx@4.20.3)(yaml@2.8.2))(vitest@4.0.9)
       '@vitest/ui': 4.0.9(vitest@4.0.9)
       jsdom: 20.0.3(bufferutil@4.0.9)(utf-8-validate@5.0.10)
     transitivePeerDependencies:
@@ -27704,7 +27852,7 @@ snapshots:
       acorn-import-phases: 1.0.4(acorn@8.15.0)
       browserslist: 4.25.1
       chrome-trace-event: 1.0.4
-      enhanced-resolve: 5.18.3
+      enhanced-resolve: 5.24.5
       es-module-lexer: 1.7.0
       eslint-scope: 5.1.1
       events: 3.3.0
@@ -27715,7 +27863,7 @@ snapshots:
       mime-types: 2.1.35
       neo-async: 2.6.2
       schema-utils: 4.3.2
-      tapable: 2.2.3
+      tapable: 2.3.3
       terser-webpack-plugin: 5.3.14(@swc/core@1.5.29(@swc/helpers@0.5.17))(webpack@5.101.3(@swc/core@1.5.29(@swc/helpers@0.5.17)))
       watchpack: 2.4.4
       webpack-sources: 3.3.3

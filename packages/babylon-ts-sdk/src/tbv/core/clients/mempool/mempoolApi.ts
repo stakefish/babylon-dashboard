@@ -29,6 +29,9 @@ const MAX_SATOSHIS = 21_000_000 * 1e8;
 /** Timeout for mempool API requests — prevents indefinite hangs from stalled endpoints */
 const MEMPOOL_REQUEST_TIMEOUT_MS = 30_000;
 
+/** HTTP status the mempool API answers for an unknown transaction or resource */
+const HTTP_NOT_FOUND = 404;
+
 /**
  * Fetch wrapper with AbortController-based timeout.
  * Ensures all mempool API requests fail bounded rather than hanging indefinitely.
@@ -134,6 +137,21 @@ export const MEMPOOL_API_URLS = {
 } as const;
 
 /**
+ * Thrown by `getTxInfo`, `getUtxoInfo`, `getTipHeight`, `getOutspend` and
+ * `getAddressTxs` when the mempool API answers HTTP 404, for example for a
+ * transaction it does not know. Their other failures throw a plain `Error`.
+ */
+export class MempoolNotFoundError extends Error {
+  /** HTTP status of the failed response. */
+  readonly status = HTTP_NOT_FOUND;
+
+  constructor(message: string) {
+    super(message);
+    this.name = "MempoolNotFoundError";
+  }
+}
+
+/**
  * Fetch wrapper with error handling.
  */
 async function fetchApi<T>(
@@ -145,7 +163,9 @@ async function fetchApi<T>(
 
     if (!response.ok) {
       const errorText = await response.text();
-      throw new Error(
+      const ErrorType =
+        response.status === HTTP_NOT_FOUND ? MempoolNotFoundError : Error;
+      throw new ErrorType(
         `Mempool API error (${response.status}): ${errorText || response.statusText}`,
       );
     }
@@ -157,6 +177,11 @@ async function fetchApi<T>(
       return (await response.text()) as T;
     }
   } catch (error) {
+    if (error instanceof MempoolNotFoundError) {
+      throw new MempoolNotFoundError(
+        `Failed to fetch from mempool API: ${error.message}`,
+      );
+    }
     if (error instanceof Error) {
       throw new Error(`Failed to fetch from mempool API: ${error.message}`);
     }
@@ -227,19 +252,28 @@ export async function getTxInfo(txid: string, apiUrl: string): Promise<TxInfo> {
  * Source: mempool.space API — `GET /api/blocks/tip/height` returns the height
  * of the most recent block as a plain-text integer.
  *
+ * The digit check alone is not enough to honour the contract below. A long
+ * enough run of digits passes `/^\d+$/` and then parses to a value no caller
+ * can use: 400 digits yields `Infinity`, and 20 digits yields a finite but
+ * unsafe integer. Callers subtract this from a confirmed block height to get a
+ * confirmation depth, so either one produces an enormous depth and clears any
+ * threshold it is compared against. Bound it to a safe integer here rather
+ * than leaving each caller to discover the gap.
+ *
  * @param apiUrl - Mempool API base URL
  * @returns The height of the most recent block
- * @throws Error if the response is not a whole number
+ * @throws Error if the response is not a whole number a caller can compute on
  */
 export async function getTipHeight(apiUrl: string): Promise<number> {
   const raw = await fetchApi<string>(`${apiUrl}/blocks/tip/height`);
   const trimmed = raw.trim();
-  if (!/^\d+$/.test(trimmed)) {
+  const height = /^\d+$/.test(trimmed) ? Number.parseInt(trimmed, 10) : NaN;
+  if (!Number.isSafeInteger(height) || height < 0) {
     throw new Error(
       `Mempool API returned an invalid block tip height: "${raw}"`,
     );
   }
-  return Number.parseInt(trimmed, 10);
+  return height;
 }
 
 /**

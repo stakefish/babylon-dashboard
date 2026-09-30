@@ -2,6 +2,10 @@
 
 WASM bindings for Babylon Trustless Bitcoin Vaults (TBV), providing TypeScript/JavaScript interfaces for creating Bitcoin peg-in transactions.
 
+The package entry loads the `.wasm` binary on demand. Importing the entry loads
+the wasm-bindgen glue, but it does not download or instantiate the binary. The
+binary loads on the first facade call that needs it, or on `initWasm()`.
+
 ## Overview
 
 This package provides WebAssembly bindings built from the [vault-wasm](https://github.com/babylonlabs-io/vault-wasm) facade — a single binary bundling every supported [btc-vault](https://github.com/babylonlabs-io/btc-vault) tx-graph version behind version-taking constructors, enabling browser and Node.js applications to construct Bitcoin transactions for TBV.
@@ -458,11 +462,53 @@ Value: `"50929b74c1a04954b78b4b6035e97a5e078a5a0f28ec96d547bfee9ace803ac0"`
 
 The same as `TAP_INTERNAL_KEY` but as a Buffer for convenience.
 
-### Raw WASM Types
+### WASM Classes
 
-The package also exports raw WASM classes for advanced usage:
+The package also exports these wasm-bindgen classes:
 
 - `WasmPeginTx` - Low-level peg-in transaction class
+- `WasmPrePeginTx` - Low-level Pre-PegIn transaction class
 - `WasmPeginPayoutConnector` - Low-level payout connector class
-- `WasmAssertPayoutNoPayoutConnector` - Low-level Assert Payout/NoPayout connector class
-- `WasmAssertChallengeAssertConnector` - Low-level ChallengeAssert connector class
+- `WasmPrePeginHtlcConnector` - Low-level Pre-PegIn HTLC connector class
+
+The classes have no value guards. Call `initWasm()` before you construct a
+class, and check every value a class returns before you use it.
+
+Check amounts before you convert them. `new BigUint64Array()` wraps negative
+and oversized values without an error. Pass `pegInAmounts` through
+`assertPositiveBigintArray` first. Call `free()` on each instance when you are
+done with it:
+
+```ts
+import {
+  assertPositiveBigintArray,
+  initWasm,
+  WasmPrePeginTx,
+} from "@babylonlabs-io/babylon-tbv-rust-wasm";
+
+await initWasm();
+const amounts = new BigUint64Array(
+  assertPositiveBigintArray(pegInAmounts, "pegInAmounts"),
+);
+const transaction = new WasmPrePeginTx(/* ..., amounts, ... */);
+try {
+  // Check every value that you read from transaction.
+} finally {
+  transaction.free();
+}
+```
+
+To build transactions, prefer the guarded builders in
+`@babylonlabs-io/ts-sdk/tbv/core/primitives`: `buildPrePeginPsbt`,
+`buildPeginTxFromFundedPrePegin`, `buildRefundPsbt`, `buildPeginInputPsbt` and
+`buildPayoutPsbt`.
+
+If you sign a transaction from a class, derive the expected outputs and signing
+data independently. Compare them with the values the class returns before you
+sign. `initWasm()` and the facade's amount bounds do not prove that transaction
+bytes match your request. `WasmPeginTx.fromJson` takes no trusted inputs, so a
+check against the same JSON proves nothing.
+
+Releases 0.17.0 to 0.19.0 exported these classes from
+`@babylonlabs-io/babylon-tbv-rust-wasm/raw`. That entry is removed. Import the
+classes from the package root. They are the same class objects.

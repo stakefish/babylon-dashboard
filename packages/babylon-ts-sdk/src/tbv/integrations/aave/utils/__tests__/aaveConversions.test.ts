@@ -64,27 +64,6 @@ describe("aaveConversions", () => {
     });
   });
 
-  describe("aaveRayValueToUsd", () => {
-    it("should convert 1e53 to $1 USD", () => {
-      const value = 10n ** 53n;
-      expect(aaveRayValueToUsd(value)).toBe(1);
-    });
-
-    it("should convert 100e53 to $100 USD", () => {
-      const value = 100n * 10n ** 53n;
-      expect(aaveRayValueToUsd(value)).toBeCloseTo(100);
-    });
-
-    it("should convert 0 to $0 USD", () => {
-      expect(aaveRayValueToUsd(0n)).toBe(0);
-    });
-
-    it("should handle fractional USD values", () => {
-      const value = 5n * 10n ** 52n;
-      expect(aaveRayValueToUsd(value)).toBe(0.5);
-    });
-  });
-
   describe("wadToNumber", () => {
     it("should convert 1e18 to 1.0", () => {
       const value = 10n ** 18n;

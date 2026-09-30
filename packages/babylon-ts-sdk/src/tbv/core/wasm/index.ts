@@ -1,0 +1,644 @@
+/**
+ * Explicit lazy boundary around the vault-WASM engine package.
+ *
+ * Importing the SDK (including its legacy root barrels) does not resolve the
+ * WASM package or generated binary. The engine is loaded only when a caller
+ * invokes an operation that actually needs the Bitcoin transaction graph.
+ * ETH-only entry points never import this module.
+ *
+ * @module tbv/core/wasm
+ */
+
+import type {
+  AssertNoPayoutScriptInfo,
+  AssertPayoutNoPayoutConnectorParams,
+  AssertPayoutScriptInfo,
+  ChallengeAssertConnectorParams,
+  ChallengeAssertScriptInfo,
+  HtlcConnectorInfo,
+  HtlcConnectorParams,
+  Network,
+  PayoutConnectorInfo,
+  PayoutConnectorParams,
+  PeginP2aAnchorInfo,
+  PeginTxResult,
+  PrePeginParams,
+  PrePeginResult,
+  WatchtowerArtifactsInputs,
+  WotsKeypairDerivation,
+  WronglyChallengedPsbts,
+  WronglyChallengedSigs,
+} from "@babylonlabs-io/babylon-tbv-rust-wasm";
+
+export { TAP_INTERNAL_KEY, tapInternalPubkey } from "./constants";
+
+type TbvWasmModule = typeof import("@babylonlabs-io/babylon-tbv-rust-wasm");
+
+let wasmModulePromise: Promise<TbvWasmModule> | undefined;
+
+/**
+ * Load and initialize the WASM engine on first use. Concurrent callers share
+ * one load. The returned module is already initialized, so a caller does not
+ * call `initWasm()`. A load or initialization failure rejects with an error
+ * that names the engine package. The original error is its cause. A failure
+ * clears this cache, so the next call loads again. The engine keeps a failed
+ * binary initialization rejected, so only a failed import or binary read can
+ * succeed on a later call.
+ *
+ * The module also contains the wasm-bindgen classes. The classes have no value
+ * guards. A caller that uses a class must cross-check its output at the call
+ * site.
+ */
+export function loadTbvWasm(): Promise<TbvWasmModule> {
+  wasmModulePromise ??= import("@babylonlabs-io/babylon-tbv-rust-wasm")
+    .catch((error: unknown) => {
+      wasmModulePromise = undefined;
+      throw new Error(
+        "The vault-WASM engine @babylonlabs-io/babylon-tbv-rust-wasm failed " +
+          "to load. The module could not be resolved, or it threw while " +
+          "evaluating, commonly a missing or stale generated WASM build. " +
+          "See the cause for the underlying error.",
+        { cause: error },
+      );
+    })
+    .then(async (wasm) => {
+      try {
+        await wasm.initWasm();
+      } catch (error: unknown) {
+        wasmModulePromise = undefined;
+        throw new Error(
+          "The vault-WASM engine @babylonlabs-io/babylon-tbv-rust-wasm " +
+            "resolved, but its WebAssembly binary failed to initialize, " +
+            "commonly a missing or stale generated WASM build. See the " +
+            "cause for the underlying error.",
+          { cause: error },
+        );
+      }
+      return wasm;
+    });
+  return wasmModulePromise;
+}
+
+/**
+ * Creates an unfunded Pre-PegIn transaction with no inputs and HTLC output(s).
+ *
+ * The HTLC output value (htlcValue) covers the peg-in amount, depositor claim value,
+ * and minimum pegin fee — all computed internally from the provided contract parameters.
+ *
+ * After building the Pre-PegIn transaction, the caller must:
+ * 1. Select UTXOs covering htlcValue + network fees
+ * 2. Fund the transaction (add inputs and change output)
+ * 3. Call reconstructFromFundedTx() with the funded tx hex
+ * 4. Call buildPeginTx() to derive the PegIn transaction
+ * 5. Sign the PegIn input using the HTLC hashlock leaf (leaf 0)
+ *
+ * @param params - Pre-PegIn parameters from contract and depositor wallet
+ * @returns Unfunded transaction details with HTLC output information
+ */
+export async function createPrePeginTransaction(
+  params: PrePeginParams,
+): Promise<PrePeginResult> {
+  return (await loadTbvWasm()).createPrePeginTransaction(params);
+}
+
+/**
+ * Derives the PegIn transaction from a funded Pre-PegIn transaction.
+ *
+ * The PegIn transaction has a single input spending the Pre-PegIn HTLC output
+ * at `htlcVout` via the hashlock + all-party script (leaf 0).
+ *
+ * @param params - Same PrePeginParams used to create the Pre-PegIn transaction
+ * @param timelockPegin - CSV timelock in blocks for the PegIn vault output
+ * @param fundedPrePeginTxHex - Hex-encoded funded Pre-PegIn transaction
+ * @param htlcVout - Index of the HTLC output to spend
+ * @returns PegIn transaction details including vault output information
+ */
+export async function buildPeginTxFromPrePegin(
+  params: PrePeginParams,
+  timelockPegin: number,
+  fundedPrePeginTxHex: string,
+  htlcVout: number,
+): Promise<PeginTxResult> {
+  return (await loadTbvWasm()).buildPeginTxFromPrePegin(
+    params,
+    timelockPegin,
+    fundedPrePeginTxHex,
+    htlcVout,
+  );
+}
+
+/**
+ * Returns HTLC connector script info for signing the PegIn transaction input.
+ *
+ * The depositor signs PegIn input 0 using the hashlock leaf (leaf 0) of the
+ * Pre-PegIn HTLC output. Use getHashlockScript() and getHashlockControlBlock()
+ * to construct the tapLeafScript entry in the PSBT.
+ *
+ * @param params - HTLC connector parameters (subset of PrePeginParams)
+ * @returns Hashlock and refund script info for PSBT construction
+ */
+export async function getPrePeginHtlcConnectorInfo(
+  params: HtlcConnectorParams,
+): Promise<HtlcConnectorInfo> {
+  return (await loadTbvWasm()).getPrePeginHtlcConnectorInfo(params);
+}
+
+/**
+ * Compute the minimum depositor claim value (PegIn output 1) in satoshis.
+ *
+ * This covers the full downstream tx graph cost (Claim → Assert → Payout)
+ * based on the protocol parameters.
+ */
+export async function computeMinClaimValue(
+  txGraphVersion: number,
+  numLocalChallengers: number,
+  numUniversalChallengers: number,
+  councilQuorum: number,
+  councilSize: number,
+  feeRate: bigint,
+): Promise<bigint> {
+  return (await loadTbvWasm()).computeMinClaimValue(
+    txGraphVersion,
+    numLocalChallengers,
+    numUniversalChallengers,
+    councilQuorum,
+    councilSize,
+    feeRate,
+  );
+}
+
+/**
+ * Compute the minimum PegIn (activation) transaction fee in satoshis.
+ *
+ * `minPeginFee = peginTxVsize(numVks, numUcs) × minPeginFeeRate`. Each HTLC
+ * the depositor funds in the Pre-PegIn tx must reserve at least this fee
+ * inside its value (`htlcValue = peginAmount + depositorClaimValue +
+ * p2aAnchorValue + minPeginFee`, anchor 0 on vault core 1), otherwise the VP
+ * cannot afford to broadcast the PegIn at
+ * activation. The vsize comes from a Taproot script-path-spend weight
+ * prediction whose witness shape depends on the VK + UC signer count.
+ */
+export async function computeMinPeginFee(
+  txGraphVersion: number,
+  numVks: number,
+  numUcs: number,
+  minPeginFeeRate: bigint,
+): Promise<bigint> {
+  return (await loadTbvWasm()).computeMinPeginFee(
+    txGraphVersion,
+    numVks,
+    numUcs,
+    minPeginFeeRate,
+  );
+}
+
+/**
+ * Floor of the Payout transaction fee under `txGraphVersion`: the minimum of
+ * `estimatedVsize * feeRate` across every output-sizing model a deployed
+ * vault provider is known to have used (fixed-34, intermediate,
+ * script-aware). A VP-built payout paying less than this is provably not
+ * produced by any known VP build. `out0Len` must be the TRUSTED length of the
+ * pinned outs[0] script (1..=128); `out1Len` is the measured, UNTRUSTED
+ * commission-script length — safe here because padding cannot raise the floor
+ * (the fixed-34 model saturates the minimum) and shortening only lowers it.
+ * Pass `undefined` for `out1Len` on 2-output (non-VP-claimer) payouts.
+ * `feeRate` is the vault's version-locked `offchainParams.feeRate`.
+ */
+export async function computePayoutFeeFloor(
+  txGraphVersion: number,
+  numVaultKeepers: number,
+  numUniversalChallengers: number,
+  numLocalChallengers: number,
+  councilSize: number,
+  out0Len: number,
+  out1Len: number | null | undefined,
+  feeRate: bigint,
+): Promise<bigint> {
+  return (await loadTbvWasm()).computePayoutFeeFloor(
+    txGraphVersion,
+    numVaultKeepers,
+    numUniversalChallengers,
+    numLocalChallengers,
+    councilSize,
+    out0Len,
+    out1Len,
+    feeRate,
+  );
+}
+
+/**
+ * Tx graph versions the shipped vault-wasm binary can build. Callers must
+ * preflight the required version (fresh: active; resume: stamped) against
+ * this list and fail closed instead of hitting per-call errors mid-flow.
+ *
+ * Note: the facade constructors themselves fail closed on unsupported
+ * versions, and derived objects carry the version they were built with —
+ * value-level cross-checks live in `assertWasmPeginSizing` and the golden
+ * byte-parity tests, not in a per-call version echo.
+ */
+export async function supportedTxGraphVersions(): Promise<number[]> {
+  return (await loadTbvWasm()).supportedTxGraphVersions();
+}
+
+/**
+ * The PegIn transaction's P2A (pay-to-anchor) output for a graph version, or
+ * `null` when that version's PegIn carries no anchor (v1). The facade returns
+ * one record per version — never a zero-valued placeholder — so an absent
+ * anchor can't be mistaken for a real output. For v2/v3: 240 sats at vout 2,
+ * script `51024e73`.
+ */
+export async function peginP2aAnchorOutput(
+  txGraphVersion: number,
+): Promise<PeginP2aAnchorInfo | null> {
+  return (await loadTbvWasm()).peginP2aAnchorOutput(txGraphVersion);
+}
+
+/**
+ * Validate a PegIn transaction's P2A anchor against a graph version's rules:
+ * v2 and v3 require the exact anchor (240 sats, vout 2, P2A script) and v1
+ * requires that NO output carries the P2A script. Throws on any mismatch — a
+ * v2 PegIn checked as v1 fails closed, and vice versa.
+ */
+export async function validatePeginP2aAnchor(
+  txGraphVersion: number,
+  txHex: string,
+): Promise<void> {
+  return (await loadTbvWasm()).validatePeginP2aAnchor(txGraphVersion, txHex);
+}
+
+/**
+ * Creates a payout connector for vault transactions.
+ *
+ * The payout connector generates the necessary taproot scripts and information
+ * required for signing payout transactions (both optimistic and regular payout paths).
+ *
+ * @param params - Parameters for creating the payout connector
+ * @param network - Bitcoin network
+ * @returns Payout connector information including scripts, hashes, and address
+ */
+export async function createPayoutConnector(
+  params: PayoutConnectorParams,
+  network: Network,
+): Promise<PayoutConnectorInfo> {
+  return (await loadTbvWasm()).createPayoutConnector(params, network);
+}
+
+/**
+ * Get the Payout script and control block for the depositor's Assert output.
+ *
+ * Used to build the depositor's Payout PSBT (depositor-as-claimer path).
+ *
+ * @param params - Assert Payout/NoPayout connector parameters
+ * @returns Payout script and control block (hex encoded)
+ */
+export async function getAssertPayoutScriptInfo(
+  params: AssertPayoutNoPayoutConnectorParams,
+): Promise<AssertPayoutScriptInfo> {
+  return (await loadTbvWasm()).getAssertPayoutScriptInfo(params);
+}
+
+/**
+ * Get the NoPayout script and control block for a specific challenger.
+ *
+ * Used to build the depositor's NoPayout PSBT (depositor-as-claimer path).
+ * Each challenger has a distinct NoPayout script.
+ *
+ * @param params - Assert Payout/NoPayout connector parameters
+ * @param challengerPubkey - The challenger's x-only public key (hex encoded)
+ * @returns NoPayout script and control block (hex encoded)
+ */
+export async function getAssertNoPayoutScriptInfo(
+  params: AssertPayoutNoPayoutConnectorParams,
+  challengerPubkey: string,
+): Promise<AssertNoPayoutScriptInfo> {
+  return (await loadTbvWasm()).getAssertNoPayoutScriptInfo(
+    params,
+    challengerPubkey,
+  );
+}
+
+/**
+ * Get the ChallengeAssert script and control block.
+ *
+ * Used to build ChallengeAssert PSBTs for the depositor-as-claimer path.
+ * Each challenger has 2 ChallengeAssert transactions (X and Y), and this
+ * connector generates the spending scripts using WOTS public keys from the VP.
+ *
+ * @param params - ChallengeAssert connector parameters
+ * @returns Script and control block (hex encoded)
+ */
+export async function getChallengeAssertScriptInfo(
+  params: ChallengeAssertConnectorParams,
+): Promise<ChallengeAssertScriptInfo> {
+  return (await loadTbvWasm()).getChallengeAssertScriptInfo(params);
+}
+
+/**
+ * Derive 32-byte `authAnchor` (OP_RETURN preimage → VP bearer token).
+ * @stability frozen - btc-vault Rust owns this API through the vault-wasm pin (`VAULT_WASM_COMMIT`).
+ * Changing the derived bytes breaks VP auth for existing deposits. See CLAUDE.md §4.
+ */
+export async function expandAuthAnchor(root: Uint8Array): Promise<Uint8Array> {
+  return (await loadTbvWasm()).expandAuthAnchor(root);
+}
+
+/**
+ * Derive 32-byte `hashlockSecret` for HTLC `htlcVout` (preimage → `activateVaultWithSecret`).
+ * @stability frozen - btc-vault Rust owns this API.
+ * Changing the derived bytes means affected vaults can never activate. See CLAUDE.md §4.
+ */
+export async function expandHashlockSecret(
+  root: Uint8Array,
+  htlcVout: number,
+): Promise<Uint8Array> {
+  return (await loadTbvWasm()).expandHashlockSecret(root, htlcVout);
+}
+
+/**
+ * Derive 64-byte `wotsSeed` for HTLC `htlcVout` (→ WOTS keys, hashed as `depositorWotsPkHash`).
+ * @stability frozen - btc-vault Rust owns this API.
+ * Changing the derived bytes breaks existing `depositorWotsPkHash` values. No claim path remains. See CLAUDE.md §4.
+ */
+export async function expandWotsSeed(
+  root: Uint8Array,
+  htlcVout: number,
+): Promise<Uint8Array> {
+  return (await loadTbvWasm()).expandWotsSeed(root, htlcVout);
+}
+
+/**
+ * Derives the vault ID from a PegIn transaction hash and depositor ETH address.
+ *
+ * Vault ID = keccak256(abi.encode(peginTxHash, depositor))
+ * This matches the Solidity-side derivation in BTCVaultRegistry.
+ *
+ * @param peginTxHash - 32-byte PegIn tx hash in display order (big-endian), hex encoded
+ * @param depositor - 20-byte Ethereum address of the depositor, hex encoded
+ * @returns Hex-encoded vault ID (32 bytes)
+ */
+export async function deriveVaultId(
+  peginTxHash: string,
+  depositor: string,
+): Promise<string> {
+  return (await loadTbvWasm()).deriveVaultId(peginTxHash, depositor);
+}
+
+// ============================================================================
+// Delegated claim (depositor-as-claimer) — assembly and claim-time surface
+// ============================================================================
+//
+// The forwarding hop for the WASM exports that assemble the two files the
+// `vaultd vp wt` watchtower CLI consumes, and for the claim-time exports
+// that run a claim from those files without the CLI.
+//
+// EXPERIMENTAL — under test, signet only. These names and signatures can
+// change in a minor release. See services/delegated-claim.
+
+/**
+ * Depositor's Claim signing PSBT (base64) — spends PegIn:1, script path.
+ *
+ * @experimental
+ */
+export async function buildClaimPsbt(
+  txGraphVersion: number,
+  graphJson: string,
+): Promise<string> {
+  return (await loadTbvWasm()).buildClaimPsbt(txGraphVersion, graphJson);
+}
+
+/**
+ * Claimer's Assert signing PSBT (base64) — the single WOTS input.
+ *
+ * @experimental
+ */
+export async function buildAssertClaimerPsbt(
+  txGraphVersion: number,
+  graphJson: string,
+): Promise<string> {
+  return (await loadTbvWasm()).buildAssertClaimerPsbt(
+    txGraphVersion,
+    graphJson,
+  );
+}
+
+/**
+ * Claimer's Payout signing PSBT (base64) — input 1, Assert connector path.
+ *
+ * @experimental
+ */
+export async function buildPayoutClaimerPsbt(
+  txGraphVersion: number,
+  graphJson: string,
+): Promise<string> {
+  return (await loadTbvWasm()).buildPayoutClaimerPsbt(
+    txGraphVersion,
+    graphJson,
+  );
+}
+
+/**
+ * Depositor's Payout signing PSBT (base64) — input 0, the PegIn UTXO spend.
+ *
+ * @experimental
+ */
+export async function buildPayoutDepositorPsbt(
+  txGraphVersion: number,
+  graphJson: string,
+): Promise<string> {
+  return (await loadTbvWasm()).buildPayoutDepositorPsbt(
+    txGraphVersion,
+    graphJson,
+  );
+}
+
+/**
+ * Claimer's WronglyChallenged signing PSBTs, per challenger and GC index.
+ *
+ * @experimental
+ */
+export async function buildWronglyChallengedPsbts(
+  txGraphVersion: number,
+  graphJson: string,
+): Promise<WronglyChallengedPsbts> {
+  return (await loadTbvWasm()).buildWronglyChallengedPsbts(
+    txGraphVersion,
+    graphJson,
+  );
+}
+
+/**
+ * Verifies the Groth16 pegout proof and pins it into the artifacts, returning
+ * the updated artifacts JSON. Persist that copy: the one-time WOTS keypair
+ * signs exactly one proof, so a second, different one is refused.
+ *
+ * @experimental
+ */
+export async function pinPegoutProof(
+  txGraphVersion: number,
+  artifactsJson: string,
+  proofHex: string,
+): Promise<string> {
+  return (await loadTbvWasm()).pinPegoutProof(
+    txGraphVersion,
+    artifactsJson,
+    proofHex,
+  );
+}
+
+/**
+ * Finalizes the Assert from the pinned proof and the WOTS keypair, writes it
+ * into the artifacts and returns the updated artifacts JSON. The keypair
+ * never leaves the caller.
+ *
+ * @experimental
+ */
+export async function attachFinalizedAssert(
+  txGraphVersion: number,
+  artifactsJson: string,
+  keypairJson: string,
+): Promise<string> {
+  return (await loadTbvWasm()).attachFinalizedAssert(
+    txGraphVersion,
+    artifactsJson,
+    keypairJson,
+  );
+}
+
+/**
+ * Finalizes the Payout tx from the artifacts' signatures, consensus hex.
+ *
+ * @experimental
+ */
+export async function finalizePayout(
+  txGraphVersion: number,
+  artifactsJson: string,
+): Promise<string> {
+  return (await loadTbvWasm()).finalizePayout(txGraphVersion, artifactsJson);
+}
+
+/**
+ * Finalizes one WronglyChallenged tx — the answer to a ChallengeAssert.
+ *
+ * @experimental
+ */
+export async function finalizeWronglyChallenged(
+  txGraphVersion: number,
+  artifactsJson: string,
+  challengerPkHex: string,
+  gcIndex: number,
+  preimageHex: string,
+): Promise<string> {
+  return (await loadTbvWasm()).finalizeWronglyChallenged(
+    txGraphVersion,
+    artifactsJson,
+    challengerPkHex,
+    gcIndex,
+    preimageHex,
+  );
+}
+
+/**
+ * Applies the depositor signature to the Claim tx, returning consensus hex.
+ *
+ * @experimental
+ */
+export async function finalizeClaimTx(
+  txGraphVersion: number,
+  graphJson: string,
+  depositorSigHex: string,
+): Promise<string> {
+  return (await loadTbvWasm()).finalizeClaimTx(
+    txGraphVersion,
+    graphJson,
+    depositorSigHex,
+  );
+}
+
+/**
+ * Extracts a signed PSBT input's taproot script-path signature (hex).
+ *
+ * @experimental
+ */
+export async function extractTapScriptSig(
+  psbtBase64: string,
+  inputIndex: number,
+): Promise<string> {
+  return (await loadTbvWasm()).extractTapScriptSig(psbtBase64, inputIndex);
+}
+
+/**
+ * Derive the depositor's WOTS keypair from the 64-byte `wotsSeed`.
+ * @stability frozen — `HASH160(seed || block index)` binds on-chain through
+ * `depositorWotsPkHash`; see CLAUDE.md §4.
+ *
+ * @experimental
+ */
+export async function wotsKeypairFromSeed(
+  wotsSeed: Uint8Array,
+): Promise<WotsKeypairDerivation> {
+  return (await loadTbvWasm()).wotsKeypairFromSeed(wotsSeed);
+}
+
+/**
+ * Throws unless the keypair matches the WOTS keys the graph's Claim commits to.
+ *
+ * @experimental
+ */
+export async function validateWotsKeypairAgainstGraph(
+  txGraphVersion: number,
+  keypair: unknown,
+  graphJson: string,
+): Promise<void> {
+  return (await loadTbvWasm()).validateWotsKeypairAgainstGraph(
+    txGraphVersion,
+    keypair,
+    graphJson,
+  );
+}
+
+/**
+ * Assembles the watchtower `artifacts.json` content, verifying every signature.
+ *
+ * @experimental
+ */
+export async function buildWatchtowerArtifacts(
+  inputs: WatchtowerArtifactsInputs,
+): Promise<string> {
+  return (await loadTbvWasm()).buildWatchtowerArtifacts(inputs);
+}
+
+/**
+ * Re-verifies every claimer-side signature in an `artifacts.json`.
+ *
+ * @experimental
+ */
+export async function verifyWatchtowerArtifacts(
+  txGraphVersion: number,
+  artifactsJson: string,
+): Promise<void> {
+  return (await loadTbvWasm()).verifyWatchtowerArtifacts(
+    txGraphVersion,
+    artifactsJson,
+  );
+}
+
+export type {
+  AssertNoPayoutScriptInfo,
+  AssertPayoutNoPayoutConnectorParams,
+  AssertPayoutScriptInfo,
+  ChallengeAssertConnectorParams,
+  ChallengeAssertScriptInfo,
+  HtlcConnectorInfo,
+  HtlcConnectorParams,
+  Network,
+  PayoutConnectorInfo,
+  PayoutConnectorParams,
+  PeginP2aAnchorInfo,
+  PeginTxResult,
+  PrePeginParams,
+  PrePeginResult,
+  WatchtowerArtifactsInputs,
+  WotsKeypairDerivation,
+  WronglyChallengedPsbts,
+  WronglyChallengedSigs,
+};

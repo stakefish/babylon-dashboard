@@ -6,8 +6,10 @@
  */
 
 export * from "./activation";
+export * from "./delegated-claim";
 export * from "./deposit";
 export * from "./htlc";
 export * from "./participants";
 export * from "./pegout";
 export * from "./refund";
+export * from "./reclaim";

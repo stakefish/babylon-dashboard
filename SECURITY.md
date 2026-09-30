@@ -2,9 +2,9 @@
 
 `babylon-toolkit` is Babylon's frontend monorepo. It ships two browser dApps —
 [`services/vault`](services/vault) (the BTC Vault depositor lifecycle) and
-[`services/simple-staking`](services/simple-staking) (the BTC staking reference dApp) — and five
+[`services/simple-staking`](services/simple-staking) (the BTC staking reference dApp) — and six
 packages published to npm under `@babylonlabs-io/*` (`ts-sdk`, `babylon-tbv-rust-wasm`, `core-ui`,
-`wallet-connector`, `babylon-proto-ts`).
+`wallet-connector`, `babylon-proto-ts`, `ledger-vault-signer`).
 
 There is no server here. No database, no session store, no privileged API key that moves value. It
 is tempting to conclude that the security surface is therefore small. It is the opposite: **this
@@ -85,16 +85,22 @@ rubric below.
   Ethereum, Bitcoin, an indexer, and a vault provider; it writes only through the user's wallet.
 - **Security boundaries to preserve:**
   - Assertion of every WASM-returned value before it reaches a signed transaction
-    (`packages/babylon-tbv-rust-wasm/src/value-guards.ts`, `.../src/index.ts`)
+    (`packages/babylon-tbv-rust-wasm/src/value-guards.ts`, `.../src/index.ts`,
+    `packages/babylon-ts-sdk/src/tbv/core/wasm/value-guards.ts`,
+    `.../primitives/psbt/assertWasmPeginSizing.ts`, `.../primitives/psbt/constants.ts`,
+    `.../primitives/psbt/pegin.ts`, `.../primitives/psbt/peginInput.ts`,
+    `.../primitives/psbt/refund.ts`, `.../utils/transaction/fundPeginTransaction.ts`)
   - Agreement between the SDK fee model and the dApp estimate
-    (`packages/babylon-ts-sdk/src/tbv/core/utils/fee/peginFeeMath.ts`,
+    (`packages/babylon-ts-sdk/src/tbv/core/utils/fee/constants.ts`,
+    `.../utils/fee/peginFeeMath.ts`,
     `.../utils/utxo/selectUtxos.ts`, `services/vault/src/hooks/deposit/useEstimatedBtcFee.ts`)
   - Local construction of every PSBT the depositor signs, from on-chain-sourced connector data
     (`packages/babylon-ts-sdk/src/tbv/core/services/deposit/signDepositorGraph.ts`)
   - The frozen vault-secret derivation API and the `VAULT_WASM_COMMIT` pin
     (`packages/babylon-ts-sdk/src/tbv/core/vault-secrets/`,
     `packages/babylon-tbv-rust-wasm/scripts/build-wasm.js`)
-  - Pinning the VP's server identity to the on-chain `VaultProvider.btcPubKey`
+  - Pinning each VP token subject to its authoritative on-chain operation key:
+    the live key for JSON-RPC and the vault's frozen epoch key for gRPC
     (`packages/babylon-ts-sdk/src/tbv/core/clients/vault-provider/auth/serverIdentity.ts`)
   - Strict shape validation of everything read back from `localStorage`
     (`services/vault/src/storage/peginStorage.ts`)
@@ -197,26 +203,49 @@ _why_ they exist. Both documents must be updated together.
 
 ### The WASM value boundary
 
-`packages/babylon-tbv-rust-wasm/src/index.ts` is the JS surface over a Rust/WASM module that computes
-`htlcValue = peginAmount + depositorClaimValue + p2aAnchorValue + minPeginFee` internally. JavaScript
-receives numbers with no inherent validation: `wasm-bindgen` will happily hand back `0n`, and a
-`0n` HTLC value silently produces a transaction that funds nothing.
+`packages/babylon-tbv-rust-wasm/src/index.ts` has guarded JS functions over a Rust/WASM module that
+computes `htlcValue = peginAmount + depositorClaimValue + p2aAnchorValue + minPeginFee` internally.
+JavaScript receives numbers with no inherent validation: `wasm-bindgen` will happily hand back `0n`,
+and a `0n` HTLC value silently produces a transaction that funds nothing. SDK callers reach those
+functions through a lazy boundary, `packages/babylon-ts-sdk/src/tbv/core/wasm/index.ts`, which forwards
+without adding guards of its own — the facade's guards still apply.
+
+The Pre-PegIn path adds an independent TypeScript check. It derives every canonical HTLC output and
+the Taproot signing data before it creates a PSBT. It rejects a WASM transaction or signing field
+that does not match. The canonical transaction constants for this check are in
+`packages/babylon-ts-sdk/src/tbv/core/primitives/psbt/constants.ts`.
+
+The same entry (`src/index.ts`, `src/index-node.ts`) also exports the wasm-bindgen classes directly.
+That export is a second crossing, and it is unguarded. No value is checked at that export. The SDK's
+public `loadTbvWasm()` (`@babylonlabs-io/ts-sdk/tbv/core/wasm`) returns this engine module, so it also
+gives callers the classes. Every class consumer must cross-check at the call site. The only SDK
+consumer is `packages/babylon-ts-sdk/src/tbv/core/primitives/psbt/refund.ts`.
+It derives the canonical HTLC and signing data in TypeScript before it emits a refund PSBT.
+#2361 records the decision to keep these classes unguarded.
 
 The mitigation is `assertWasmBigint` / `assertPositiveBigintArray`
 (`packages/babylon-tbv-rust-wasm/src/value-guards.ts`), applied to every value crossing the boundary
-before it is used. Reviewer rule, restated from CLAUDE.md:
+before it is used. The input guard is duplicated at
+`packages/babylon-ts-sdk/src/tbv/core/wasm/value-guards.ts` for callers that must not statically
+import the WASM engine. The two copies are pinned to identical behaviour by
+`packages/babylon-ts-sdk/src/tbv/core/wasm/__tests__/value-guards.test.ts` and must be changed
+together. Reviewer rule, restated from CLAUDE.md:
 
 > **Every WASM output consumed by JS must be asserted against expected bounds before use.** If a
 > WASM-returned value feeds a signed transaction, cross-check it against an independently computed
 > expected value.
 
-Adding a new WASM getter without a guard is the easiest way to introduce a silent-wrong-value bug in
-this repository. The guard is not defence in depth here — it is the only check.
+Adding a new WASM getter without a guard, or a new class consumer without call-site cross-checks, is
+the easiest way to introduce a silent wrong-value bug in this repository. A facade guard can be the
+only check on a path that does not feed a signed transaction. The independent Pre-PegIn checks must
+remain in place for transaction outputs and signing data.
 
 ### Fee model consistency
 
 Two independent implementations must agree before broadcast:
 
+- `packages/babylon-ts-sdk/src/tbv/core/utils/fee/constants.ts` - shared transaction sizing and
+  safety limits
 - `packages/babylon-ts-sdk/src/tbv/core/utils/fee/peginFeeMath.ts` — the shared Pre-PegIn vsize/fee
   model
 - `packages/babylon-ts-sdk/src/tbv/core/utils/utxo/selectUtxos.ts` — UTXO selection with iterative
@@ -230,13 +259,15 @@ not only at the estimator — an estimator that agrees with itself proves nothin
 The real SDK model and dApp estimator are covered by
 [`.github/CODEOWNERS`](.github/CODEOWNERS) and
 [`.github/workflows/critical-path-check.yml`](.github/workflows/critical-path-check.yml). The
-critical-path inventory is hand-maintained in five places: this file, CLAUDE.md, CODEOWNERS,
-`critical-path-check.yml`, and `claude-md-drift.yml`. Update all five together when a path moves or
-is added. The scheduled drift workflow checks that listed paths exist and reports missing entries to
-a tracker issue, but it does not block a pull request. A group may be registered before its files
-exist — section 9 is registered ahead of the optional-BTC work (#2228) — so that the guard evaluates
-the new list on the pull request that moves the code; those paths stay in the drift workflow's
-`pending` list until the files land.
+critical-path inventory is hand-maintained in six places: this file, CLAUDE.md, CODEOWNERS, the SDK
+ESLint config, `critical-path-check.yml`, and `claude-md-drift.yml`. The SDK ESLint config contains
+only SDK paths because it applies package-level rules. The other five inventories cover the full
+repository. Update each applicable inventory when a path moves or is added. The scheduled drift
+workflow checks that listed paths exist and reports missing entries to a tracker issue, but it does
+not block a pull request. Section 9 includes
+`pegin-registration-client.ts` and `payout-script.ts` in the tree. It registers
+`scriptPubKeyAddress.ts` ahead of the remaining optional-BTC work (#2228). That path stays in the
+drift workflow's `pending` list until the file lands.
 
 ### Presigning the depositor graph
 
@@ -248,6 +279,13 @@ The core design decision is that **PSBTs are built locally, never accepted from 
 that enters the Taproot sighash — `witnessUtxo`, `tapLeafScript`, `controlBlock`, `tapInternalKey` —
 is constructed from on-chain connector parameters. A VP that could supply that metadata could make a
 depositor's signature valid for a different spend while the displayed transaction looked correct.
+
+The VP also supplies every Claim/Assert transaction pair. Before any wallet signing prompt, the SDK
+requires every Assert input 0 to spend output 0 of its own Claim. For the depositor graph it also
+requires the Claim to have exactly one input spending output 1 of the depositor's authoritative
+PegIn transaction. A VP/VK claimer funds its Claim from its own wallet, and only the depositor can
+spend PegIn output 1, so claimer Claims are not pinned to it. Without these checks, a
+self-consistent payout PSBT can still belong to a recovery chain that this vault never funds.
 
 Two further invariants, both asymmetric in their failure mode:
 
@@ -305,10 +343,14 @@ invalidates every existing deposit.** Users cannot derive matching keys, cannot 
 resume. This is not a compatibility inconvenience — it is permanent loss of access for in-flight
 deposits.
 
-Treat any such change as a hard fork requiring: a coordinated revision of `derive-vault-secrets.md` /
-`derive-context-hash.md`; updated golden vectors in `btc-vault` (`golden_vectors_pinned`), in
-vault-wasm (`lib.rs`), and in `vault-secrets/__tests__/expand.test.ts`; and a migration plan for
-in-flight deposits.
+Treat any such change as a hard fork requiring: updated golden vectors in `btc-vault`
+(`golden_vectors_pinned`), in vault-wasm (`lib.rs`), in `vault-secrets/__tests__/expand.test.ts` and in
+`vault-secrets/__tests__/context.golden.test.ts`;
+for the wallet-side derivation, updated conformance vectors in
+`vault-secrets/__tests__/deriveContextHash.vectors.test.ts` and a coordinated release with every
+external implementation that pins them (Ledger vault app, Keystone firmware, OneKey, UniSat); a
+matching revision of `docs/specs/derive-context-hash.md` / `docs/specs/derive-vault-secrets.md`, the
+readable form those implementers build from; and a migration plan for in-flight deposits.
 
 ### The `VAULT_WASM_COMMIT` pin
 
@@ -395,9 +437,12 @@ fetches a provider-supplied URL directly, and must not start.
 `packages/babylon-ts-sdk/src/tbv/core/clients/vault-provider/auth/serverIdentity.ts` verifies a
 BIP-322 signature by the VP's persistent key over
 `(SERVER_IDENTITY_DOMAIN, ephemeral_pubkey, expires_at)`, and pins `server_pubkey` against the
-on-chain `VaultProvider.btcPubKey` read from the registry contract. A mismatch rejects the token.
-This is what makes the proxy a transport rather than a trusted party: a compromised proxy cannot
-mint an identity it does not hold the key for.
+operation key read from the registry contract. The JSON-RPC subject uses the provider's live key;
+the gRPC subject uses the key selected by the vault's frozen VP epoch. After a rejected bearer
+exposes a stale JSON-RPC pin, the provider re-reads the authoritative live key and retries the
+BIP-322 bootstrap once. The frozen gRPC pin never follows live rotation. A mismatch after that
+bounded recovery rejects the token. This is what makes the proxy a transport rather than a trusted
+party: a compromised proxy cannot mint an identity it does not hold the on-chain key for.
 
 Related bounds worth preserving:
 
@@ -436,6 +481,15 @@ refactor.** `services/vault/src/context/deposit/` already encodes this distincti
 `terminalMilestones.ts`, which explicitly refuses to classify a vault from a `localStorage`-only
 status and requires an indexer-sourced one, and `computeDepositPollingResult.ts`, which keeps
 network-derived state independent of local storage so every tab converges.
+
+Aave reserve identity follows the same rule. `services/vault/src/applications/aave/services/fetchConfig.ts`
+proves each indexed reserve's underlying, hub, asset ID and decimals against the Core Spoke's
+`getReserve` before any market renders, and fails closed on disagreement. The hub is the contract
+every rate and liquidity read targets, so an indexer that rewrote it would falsify the figures a
+borrow is decided on. Everything else about a reserve stays indexer-sourced: the paused, frozen and
+borrowable flags, collateral risk, dynamic config key and collateral factor, which can trail chain
+state by the indexer's refresh interval, and the token symbol and name shown in the asset list and
+activity.
 
 ### Ethereum RPC and the registry trust root
 
@@ -661,7 +715,7 @@ available improvement in this section.
 
 ### Published packages
 
-Five packages ship to npm from `package-release.yml`, which runs with `id-token: write` for
+Six packages ship to npm from `package-release.yml`, which runs with `id-token: write` for
 provenance. Downstream consumers of `@babylonlabs-io/ts-sdk` and
 `@babylonlabs-io/babylon-tbv-rust-wasm` inherit this repository's transaction-construction and
 secret-derivation logic wholesale.
@@ -717,7 +771,9 @@ only repository-local safeguards.
 2. **The SDK fee model and the dApp estimate agree**, verified at the broadcast site, not only at
    the estimator.
 3. **Every PSBT the depositor signs is constructed locally** from on-chain-sourced connector data.
-   No PSBT, sighash input, or payout value is accepted from the vault provider verbatim.
+   No PSBT, sighash input, or payout value is accepted from the vault provider verbatim. Before any
+   signing prompt, every VP-supplied Assert input 0 spends output 0 of its own Claim, and the
+   depositor graph's Claim has exactly one input spending the authoritative PegIn output 1.
 4. **The VP-returned challenger set equals `local ∪ universal` exactly** — no missing entries, no
    extras — with `LocalChallengers` derived from the on-chain VK list.
 5. **Signatures produced with `useTweakedSigner: false` / `autoFinalized: false` are verified against
@@ -729,8 +785,10 @@ only repository-local safeguards.
    activation calldata is assembled.** The vault app always supplies it; SDK consumers must do the
    same. The secret is sourced from its generator, never from UI or storage state.
 8. **Split outputs sum exactly to `totalDeposit - fees`** and broadcast order is asserted explicitly.
-9. **The VP's `server_pubkey` is pinned to the on-chain `VaultProvider.btcPubKey`**, and every VP RPC
-   response passes runtime validation before any security-relevant field is used.
+9. **Each VP token subject's `server_pubkey` is pinned to its authoritative on-chain operation
+   key** — live for JSON-RPC and frozen at the vault's epoch for gRPC — and live-key recovery is
+   limited to one chain re-read and one BIP-322 retry. Every VP RPC response passes runtime
+   validation before any security-relevant field is used.
 10. **No value read from `localStorage` reaches PSBT construction, vault matching, or ID
     normalisation without passing `hasValidSecurityFields`.**
 11. **`script-src` carries no `'unsafe-inline'` and no `'unsafe-eval'`**, and the SRI build gate
@@ -749,18 +807,20 @@ only repository-local safeguards.
 
 | Area                | Adversary | Scenario                                                                          | Impact                                                                  | Mitigation                                                                                                      | Test / evidence                                                   |
 | ------------------- | --------- | --------------------------------------------------------------------------------- | ----------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------- |
-| WASM boundary       | F/—       | A WASM getter returns `0n` or a wrong value and reaches a signed tx               | **User fund loss**                                                      | `assertWasmBigint` / `assertPositiveBigintArray` on every crossing; independent cross-check                     | `babylon-tbv-rust-wasm` value-guard tests                         |
+| WASM boundary       | F/-       | WASM returns a wrong Pre-PegIn value, output, or Taproot signing field            | **User fund loss**                                                      | Bounds guards plus independent TypeScript derivation of the output layout and signing data                      | WASM guards; Pre-PegIn, PegIn input, and refund tests             |
 | Fee model           | —         | SDK and dApp fee models diverge; the tx is underfunded                            | User fund loss (stuck / failed deposit)                                 | Shared `peginFeeMath`; cross-check at broadcast                                                                 | SDK fee + `selectUtxos` tests                                     |
-| Critical-path guard | G         | A critical path moves but one hand-maintained inventory keeps the stale path      | Integrity (process)                                                     | Sections 1-8 are aligned; section 9 is pre-registered ahead of #2228; the existence check does not gate merges  | SECURITY.md, CLAUDE.md, CODEOWNERS, both critical-path workflows  |
+| Critical-path guard | G         | A critical path moves but one hand-maintained inventory keeps the stale path      | Integrity (process)                                                     | Five full inventories align; SDK ESLint mirrors its SDK subset; existence does not gate merges                  | SECURITY, CLAUDE, CODEOWNERS, ESLint, two workflows               |
 | Presigning          | A         | VP supplies PSBT metadata making a signature valid for a different spend          | **User fund loss**                                                      | PSBTs built locally from on-chain connector data only                                                           | `signDepositorGraph` tests                                        |
+| Presigning          | A         | VP supplies an unfunded Claim/Assert chain while requesting valid payout signatures | Deposit stalls; recovery chain is unusable                              | Bind depositor Claim to PegIn:1 and every Assert:0 to its Claim:0 before every signing prompt                   | graph fingerprint and depositor-presign tests                     |
 | Presigning          | A         | VP returns a challenger set with an extra or missing key                          | Recovery material missing / signature to an unrecognised key            | `deriveLocalChallengers` + exact `local ∪ universal` equality assert                                            | `signDepositorGraph` tests                                        |
 | Wallet signing      | E         | Wallet ignores `useTweakedSigner: false`, returns an invalid signature as success | User fund loss (silent)                                                 | Sighash verification of every produced signature                                                                | `verifyScriptPathSchnorrSignature` tests                          |
 | Vault secrets       | F/G       | `VAULT_WASM_COMMIT` bump rotates expander output                                  | **Permanent loss of access for every in-flight deposit**                | Frozen API; JS + Rust golden-vector gates on every bump                                                         | `vault-secrets/__tests__/expand.test.ts`, `golden_vectors_pinned` |
 | Activation          | —         | Wrong preimage submitted to `activateVaultWithSecret`                             | Funds permanently locked                                                | SDK pre-check when `hashlock` is supplied; the vault app always supplies it                                     | SDK `activateVault` tests                                         |
 | Artifacts           | A         | VP returns a valid JSON-RPC envelope wrapping a corrupt ~1 GB artifact body       | **Loss of independent claim capability**, discovered only at claim time | **Known gap** — only the envelope prefix is validated for large payloads                                        | close with end-to-end body validation                             |
-| VP auth             | A/D       | Compromised proxy impersonates a vault provider                                   | Integrity of the whole deposit flow                                     | BIP-322 server identity pinned to on-chain `btcPubKey`; 2h ephemeral-key lifetime cap                           | `serverIdentity.test.ts`                                          |
+| VP auth             | A/D       | Compromised proxy impersonates a vault provider                                   | Integrity of the whole deposit flow                                     | BIP-322 identity pinned per subject to the live or frozen-epoch on-chain operation key; bounded live-key refresh; 2h ephemeral-key lifetime cap | `serverIdentity.test.ts`, `tokenRegistry.test.ts`                  |
 | VP responses        | A         | Malformed or hostile VP response is cast without inspection                       | User fund loss / wedged flow                                            | `validators.ts` runtime checks; 2 MiB typed-response cap; no retry on writes                                    | `validators.test.ts`, `json-rpc-client.test.ts`                   |
 | Indexer             | B         | Wrong vault status induces an irreversible user action                            | User fund loss (indirect)                                               | Signature-bound values never sourced from the indexer; `terminalMilestones` refuses storage-only classification | deposit-context tests                                             |
+| Indexer             | B         | Indexer rewrites a reserve's hub, asset ID or decimals but keeps its underlying   | Borrow decided on false rates, liquidity or Max amount                  | Every indexed reserve's underlying, hub, asset ID and decimals proven via Core Spoke `getReserve`               | `fetchConfig.test.ts`                                             |
 | Config              | G         | Wrong `NEXT_PUBLIC_TBV_BTC_VAULT_REGISTRY` points the app at attacker contracts   | **User fund loss**                                                      | Strict env validation; blocking modal on failure — but a _valid wrong address_ passes                           | deployment review                                                 |
 | Screening           | G         | Typo'd or unset `NEXT_PUBLIC_TBV_UTILS_API` disables screening silently           | Compliance bypass                                                       | **Known gap** — `parseOptionalUrl` warns and returns `undefined`; `verifyAddress` then allows all               | add a production startup gate                                     |
 | Screening           | —         | User edits the `localStorage` verdict or the bundle                               | Compliance bypass                                                       | None possible client-side — documented as advisory, enforcement belongs server/contract-side                    | —                                                                 |
@@ -905,8 +965,9 @@ When changing this repository, explicitly consider:
   gate — MUST update the corresponding section and the severity anchors.
 - This file, [CLAUDE.md](CLAUDE.md), [`.github/CODEOWNERS`](.github/CODEOWNERS),
   [`.github/workflows/critical-path-check.yml`](.github/workflows/critical-path-check.yml), and
-  [`.github/workflows/claude-md-drift.yml`](.github/workflows/claude-md-drift.yml) contain five
-  hand-maintained critical-path inventories. **Change them together.** They have drifted before.
+  [`.github/workflows/claude-md-drift.yml`](.github/workflows/claude-md-drift.yml) contain the full
+  critical-path inventory. The SDK ESLint config mirrors only the SDK subset. **Change each
+  applicable inventory together.** They have drifted before.
 - Security-relevant PRs SHOULD reference the relevant attack-matrix row(s); if a row is missing, add
   it.
 - The **Bug severity classification** section is shared across repositories. Changes to it must be

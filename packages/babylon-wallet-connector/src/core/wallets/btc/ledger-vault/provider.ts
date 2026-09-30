@@ -1,9 +1,23 @@
+/**
+ * Ledger Vault adapter over `@babylonlabs-io/ledger-vault-signer`.
+ *
+ * Citation legend — `base:` = LedgerHQ/app-bitcoin `baseapp` @ `e400d8d8` (the
+ * vault app's submodule pin, paths under `src/`); `sdk:` = LedgerHQ/ledger-secure-sdk
+ * @ tag `v26.6.1` of https://github.com/LedgerHQ/ledger-secure-sdk — the SDK the app
+ * builds against (all five 0.10.1 release tags record `SDK version: v26.6.1`);
+ * unprefixed `.c` paths are
+ * LedgerHQ/app-babylon-vault @ `b0c0ac4d` (app 0.10.1).
+ */
+
 import {
   approveVaultIntent,
   assertDepositTermsDeviceCompatible,
+  assertRefundPsbtSignable,
+  augmentPsbtForRefund,
   augmentPsbtForWalletPolicy,
   buildDefaultTaprootPolicy,
   buildPopPsbtHex,
+  classifyRefundPsbt,
   connectDmkSession,
   createDmkApduSender,
   createDmkRawApduSender,
@@ -28,10 +42,12 @@ import {
   isSessionAlive,
   prepareSignPsbt,
   psbtPaysChangeScript,
+  refreshSessionApp,
   signPreparedVaultPsbt,
   SW_BAD_STATE,
   SW_CAP_EXCEEDED,
   SW_CLA_NOT_SUPPORTED,
+  SW_INS_NOT_SUPPORTED,
   type ApduSender,
   type DefaultTaprootWalletPolicy,
   type DepositTerms,
@@ -40,11 +56,13 @@ import {
   type IntentVaultGroup,
   type PreparedSignPsbt,
   type RawApduSender,
+  type RefundPsbtClassification,
   type SignVaultPsbtResult,
 } from "@babylonlabs-io/ledger-vault-signer";
 
-import type { IBTCProvider, InscriptionIdentifier, SignPsbtOptions } from "@/core/types";
+import type { IBTCProvider, InscriptionIdentifier, SigningProgress, SignPsbtOptions } from "@/core/types";
 import { Network } from "@/core/types";
+import { checkMinVersion } from "@/core/utils/checkMinVersion";
 import { getTaprootAddress, toNetwork } from "@/core/utils/wallet";
 import { ERROR_CODES, WalletError } from "@/error";
 
@@ -63,6 +81,18 @@ const COIN_TYPE_BY_NETWORK: Record<Network, number> = {
   [Network.TESTNET]: 1,
   [Network.SIGNET]: 1,
 };
+
+// Firmware Makefile APPNAME: COIN=babylon_vault → "Babylon Vault"; COIN=babylon_vault_testnet
+// (which targets signet) → "Babylon Vault Testnet". The dashboard reports "BOLOS".
+export const APP_NAME_BY_NETWORK: Record<Network, string> = {
+  [Network.MAINNET]: "Babylon Vault",
+  [Network.TESTNET]: "Babylon Vault Testnet",
+  [Network.SIGNET]: "Babylon Vault Testnet",
+};
+
+// Floor = app-babylon-vault develop @ b0c0ac4d (APPVERSION 0.10.1), the build the host's
+// envelope caps and refund checks are mirrored from.
+const MIN_APP_VERSION = "0.10.1";
 const ACCOUNT_INDEX = 0;
 const CHANGE_INDEX = 0;
 const ADDRESS_INDEX = 0;
@@ -79,7 +109,18 @@ const SCHNORR_SIG_BYTES = 64;
  * consumes it; failures invalidate to IDLE (`approve_vault_intent.c`). The
  * mirror pre-empts opaque SW_BAD_STATE with an actionable error.
  */
-type DeviceIntentState = { phase: "idle" } | { phase: "derived" } | { phase: "intent-loaded"; termsKey: string };
+type DeviceIntentState =
+  | { phase: "idle" }
+  | { phase: "derived" }
+  | {
+      phase: "intent-loaded";
+      termsKey: string;
+      /** Internal-order hex of the intent's Pre-PegIn txid — under INTENT_LOADED the
+       * device pins a refund's input 0 prevout to it (`sign_psbt_validate.c:1092-1097`). */
+      prepeginTxidInternalHex: string;
+      /** The approved `htlc_refund_timelock` — the device pins a refund leaf's CSV to it (`:902-916`). */
+      htlcRefundTimelock: number;
+    };
 
 /** Batch-level gate output, shared by every element of one public sign call. */
 interface SignContext {
@@ -102,11 +143,22 @@ interface StagedPsbt {
   readonly prepared: PreparedSignPsbt;
   readonly fingerprintKey: string;
   readonly label: string;
+  /**
+   * True for ANY classified refund, intent loaded or not: the device's
+   * standalone path consumes no dedup mask or cap in any vault state, and no
+   * failure on it invalidates the vault context — so the refund skips the
+   * replay guard and the pessimistic mirror reset.
+   */
+  readonly standaloneRefund: boolean;
 }
 
-/** Request identity for the replay guard: unsigned txid + the expectation pairs. */
+/**
+ * Request identity for the replay guard: unsigned txid + the expectation pairs.
+ * Keyed on the UNNARROWED classification — identity is a property of the PSBT,
+ * so re-submitting the same one with different `signInputs` cannot mint a new key.
+ */
 function signingRequestKey(prepared: PreparedSignPsbt): string {
-  const pairs = [...prepared.table.byInput.entries()]
+  const pairs = [...prepared.table.classifiedByInput.entries()]
     .map(([inputIndex, expectation]) =>
       expectation.kind === "tapscript"
         ? [...expectation.expectedLeafHashHexes]
@@ -125,7 +177,7 @@ function signingRequestKey(prepared: PreparedSignPsbt): string {
  * `ledger_btc*` staking adapters: different device app, different transport,
  * intent ceremony instead of wallet policies.
  *
- * Ships behind `NEXT_PUBLIC_FF_ENABLE_LEDGER_VAULT_WALLET` (default off).
+ * Consumers gate availability by wallet id (see `./index.ts`).
  * Covers connect, the key read, the intent ceremony, SIGN_PSBT for the
  * no-policy tapscript flows (#2219), the BIP-322 PoP under the default wallet
  * policy (#2221), and key-path Pre-PegIn signing under that same policy (#2222).
@@ -169,7 +221,8 @@ export class LedgerVaultProvider implements IBTCProvider {
   /** Request-identity keys ({@link signingRequestKey}) signed under the CURRENT loaded intent. */
   private signedFingerprints = new Set<string>();
   /**
-   * ONE in-flight device ceremony (derive/approve/sign) at a time — a
+   * ONE in-flight device ceremony (derive/approve/sign, plus the connect
+   * re-gate's app read) at a time — a
    * concurrent APDU would be eaten with 0x6A80 and desync the interrupt loop.
    * Token-scoped: teardown clears it SYNCHRONOUSLY so a new connection can
    * operate while a stale call is still settling; that call's finally
@@ -178,12 +231,20 @@ export class LedgerVaultProvider implements IBTCProvider {
   private activeOperation: symbol | undefined;
   /** Abort handle into the in-flight signing loop; fired by teardown (B3's only abort source). */
   private signAbortController: AbortController | undefined;
+  /** Connection-scoped like the fields above: cleared in teardownSession. */
+  private readonly signingProgressListeners = new Set<(progress: SigningProgress) => void>();
 
   constructor(private readonly network: Network = Network.MAINNET) {}
 
   /**
-   * See {@link activeOperation}. The busy throw costs zero device I/O; it
-   * fires only on a caller bug (two overlapping ceremonies).
+   * See {@link activeOperation}. The busy throw costs zero device I/O. Two
+   * overlapping ceremonies are a caller bug; {@link gateUngatedSession} also
+   * holds the lock for one GET_APP_AND_VERSION on a tab return, so a ceremony
+   * started in that window hits this legitimately. The window is one instant
+   * exchange: the SDK answers a locked device with 0x5515 before the app's
+   * dispatcher sees it (`sdk:io_legacy/src/os_io_legacy.c:414-423` @ v26.6.1),
+   * and DMK 1.7.1
+   * never holds the read for an unlock (IntentQueueService has no lock gating).
    */
   private async withDeviceOperation<T>(operation: string, fn: () => Promise<T>): Promise<T> {
     if (this.activeOperation) {
@@ -264,7 +325,13 @@ export class LedgerVaultProvider implements IBTCProvider {
     // Idempotent while the session lives: visibility checks re-call this
     // outside a user gesture, where WebHID's requestDevice rejects — tearing
     // down a healthy session would turn an alt-tab into a forced disconnect.
-    if (this.session && (await this.probeSessionAlive(this.session))) return;
+    // Pin the handle before the await: a disconnect mid-probe clears
+    // this.session synchronously, and the gate would deref undefined.
+    const live = this.session;
+    if (live && (await this.probeSessionAlive(live))) {
+      await this.gateUngatedSession(live, token);
+      return;
+    }
     // A disconnect during the probe means the caller no longer wants a
     // session — skip opening one at all.
     if (token !== this.disconnectToken) return;
@@ -273,19 +340,9 @@ export class LedgerVaultProvider implements IBTCProvider {
     // This bumps connectionGeneration (not the token — it is our own cleanup).
     if (this.session) await this.teardownSession();
 
+    let session: DmkSessionHandle;
     try {
-      const session = await connectDmkSession();
-      // A disconnect racing any await up to here (the probe, teardown, or this
-      // connect) bumped the token — tear the fresh session down rather than
-      // installing it behind a disconnected wallet.
-      if (token !== this.disconnectToken) {
-        await disconnectDmkSession(session);
-        return;
-      }
-      this.session = session;
-      this.send = withWalletErrorMapping(createDmkApduSender(session));
-      this.rawSend = createDmkRawApduSender(session);
-      this.connectionGeneration += 1;
+      session = await connectDmkSession();
     } catch (error) {
       // DMK errors don't extend Error — classify on `_tag`/`originalError`.
       // A dismissed WebHID picker becomes NoAccessibleDeviceError("No selected
@@ -300,7 +357,87 @@ export class LedgerVaultProvider implements IBTCProvider {
         wallet: WALLET_PROVIDER_NAME,
       });
     }
+
+    // A disconnect racing any await up to here (the probe, teardown, or the
+    // connect) bumped the token — tear the fresh session down rather than
+    // installing it behind a disconnected wallet.
+    if (token !== this.disconnectToken) {
+      await disconnectDmkSession(session);
+      return;
+    }
+    const refusal = this.refuseUnexpectedApp(session);
+    if (refusal) {
+      await disconnectDmkSession(session);
+      throw refusal;
+    }
+    this.session = session;
+    this.send = withWalletErrorMapping(createDmkApduSender(session));
+    this.rawSend = createDmkRawApduSender(session);
+    this.connectionGeneration += 1;
   };
+
+  /**
+   * A session installed after a failed preflight was never gated, and a
+   * retry (unlock, open an app, connect again) reuses it while it lives. Read
+   * the app now and gate it. The phase alone is not "no ceremony in flight"
+   * (derive, approve, PoP and refund all send at idle), so the read skips a
+   * running ceremony and holds the ceremony lock itself.
+   */
+  private async gateUngatedSession(session: DmkSessionHandle, token: number): Promise<void> {
+    // A disconnect that landed during the probe already owns the session.
+    if (token !== this.disconnectToken || this.session !== session) return;
+    if (session.appName !== undefined || this.activeOperation || this.deviceState.phase !== "idle") return;
+    const refreshed = await this.withDeviceOperation("connectWallet", () => refreshSessionApp(session));
+    // A disconnect or teardown during the read owns the session now.
+    if (token !== this.disconnectToken || this.session !== session) return;
+    const refusal = this.refuseUnexpectedApp(refreshed);
+    if (refusal) {
+      await this.teardownSession();
+      throw refusal;
+    }
+    // Nothing learned: the copy is equal, so leave the senders alone.
+    if (refreshed.appName === undefined) return;
+    // Same session: keep the generation, rebuild the senders so the app hint names the app.
+    this.session = refreshed;
+    this.send = withWalletErrorMapping(createDmkApduSender(refreshed));
+    this.rawSend = createDmkRawApduSender(refreshed);
+  }
+
+  /**
+   * Refuse, before the first vault APDU, an app the connect preflight shows is
+   * wrong or too old. A failed preflight (no name) is let through: the first
+   * APDU then reports its own typed error.
+   */
+  private refuseUnexpectedApp(session: DmkSessionHandle): WalletError | undefined {
+    const expected = APP_NAME_BY_NETWORK[this.network];
+    if (session.appName !== undefined && session.appName !== expected) {
+      return new WalletError({
+        code: ERROR_CODES.DEVICE_WRONG_APP,
+        message: `Open the ${expected} app on your Ledger and try again.`,
+        wallet: WALLET_PROVIDER_NAME,
+      });
+    }
+    if (session.appVersion === undefined) return undefined;
+    const version = checkMinVersion(session.appVersion, MIN_APP_VERSION);
+    if (version === "below") {
+      return new WalletError({
+        code: ERROR_CODES.INCOMPATIBLE_WALLET_VERSION,
+        message: `Your ${expected} app is out of date (${session.appVersion}). Update it to ${MIN_APP_VERSION} or later and try again.`,
+        wallet: WALLET_PROVIDER_NAME,
+        version: session.appVersion,
+      });
+    }
+    // Non-canonical version (fork or canary build): fail closed without claiming
+    // it is old, and do not echo the device's own string back to the user.
+    if (version === "unparseable") {
+      return new WalletError({
+        code: ERROR_CODES.INCOMPATIBLE_WALLET_VERSION,
+        message: `Unable to verify your ${expected} app version. Install the official app ${MIN_APP_VERSION} or later and try again.`,
+        wallet: WALLET_PROVIDER_NAME,
+      });
+    }
+    return undefined;
+  }
 
   /**
    * Release the device session; the DMK singleton stays up. `closeDmk()` here
@@ -331,6 +468,8 @@ export class LedgerVaultProvider implements IBTCProvider {
     this.pubkeyHexPromise = undefined;
     this.policyContextPromise = undefined;
     this.signedFingerprints = new Set();
+    // A subscriber abandoned by a stale batch must not see the next connection's ticks.
+    this.signingProgressListeners.clear();
     // Release the ceremony lock and stop an in-flight signing loop NOW — the
     // stale call's finally only releases its own token, and its rejection
     // commits nothing (the generation just changed).
@@ -377,7 +516,7 @@ export class LedgerVaultProvider implements IBTCProvider {
         this.assertSameConnection(generation);
         // Our two read paths must agree on the depositor key. The device does
         // byte-compare the policy xpub against its own derivation
-        // (`base:policy.c:1483-1495` @ e400d8d8, via `init_global_state.c:230-236`),
+        // (`base:policy.c:1483-1495` @ e400d8d8, via `base:init_global_state.c:230-236`),
         // but only at SIGN_PSBT — by then approveDepositTerms has already spent
         // the intent ceremony. This guards a host-side desync (depositorPath vs
         // accountPath, coin type, a refactor of either getter), not a device fault.
@@ -425,7 +564,7 @@ export class LedgerVaultProvider implements IBTCProvider {
 
   /**
    * Pre-PegIn change must sit on the BIP-86 change branch: the base app marks
-   * an output internal only there (`process_in_outs.c:114-117`), and
+   * an output internal only there (`base:process_in_outs.c:114-117`), and
    * `_validate_prepegin` accepts change only when internal. Derived host-side
    * from the device's verbatim account xpub; the device re-derives and
    * byte-compares the script at signing time.
@@ -442,7 +581,7 @@ export class LedgerVaultProvider implements IBTCProvider {
 
   /**
    * Derive the 32-byte context root, always with the approval screen — a
-   * silent derivation produces a root that can never load an intent.
+   * silent derivation returns no root, and the host needs it.
    */
   deriveContextHash = async (appName: string, context: string): Promise<string> =>
     this.withDeviceOperation("deriveContextHash", () => this.doDeriveContextHash(appName, context));
@@ -476,6 +615,16 @@ export class LedgerVaultProvider implements IBTCProvider {
     this.assertSameConnection(generation);
     this.deviceState = { phase: "derived" };
     return Buffer.from(root).toString("hex");
+  };
+
+  /**
+   * DepositTermsApprover.validateDepositTerms (#2110 T4): the envelope gate
+   * alone — no device I/O, no state, callable before the first approval
+   * screen. The envelope never reads `prepeginTxid`, so provisional terms
+   * with a placeholder txid validate correctly.
+   */
+  validateDepositTerms = async (terms: DepositTerms): Promise<void> => {
+    assertDepositTermsDeviceCompatible(terms);
   };
 
   /**
@@ -618,7 +767,12 @@ export class LedgerVaultProvider implements IBTCProvider {
     this.deviceState = { phase: "idle" };
     await approveVaultIntent(send, intent);
     this.assertSameConnection(generation);
-    this.deviceState = { phase: "intent-loaded", termsKey: key };
+    this.deviceState = {
+      phase: "intent-loaded",
+      termsKey: key,
+      prepeginTxidInternalHex: Buffer.from(intent.scalars.prepeginTxidInternal).toString("hex"),
+      htlcRefundTimelock: intent.scalars.htlcRefundTimelock,
+    };
     // A NEW ceremony ran: the device's signature counters and dedup masks are
     // fresh, so the same PSBT bytes are legitimately signable again. (The
     // byte-equal re-approval no-op above returns earlier and keeps both.)
@@ -644,21 +798,100 @@ export class LedgerVaultProvider implements IBTCProvider {
    * SIGN_PSBT under the loaded intent (#2219 B3). Tapscript PSBTs sign in
    * no-policy mode; all-key-path ones (Pre-PegIn, #2222) sign under the default
    * wallet policy after {@link augmentPsbtForWalletPolicy} adds the derivation
-   * fields. Never finalizes — the SDK extracts signatures and finalizes itself.
-   * Every rejection before the device loop starts leaves the mirror and the
-   * loaded intent untouched.
+   * fields. A refund — classified from the provider's OWN parse, never a
+   * caller flag (#2371) — is the one standalone sign: the device accepts it
+   * with no loaded intent (`sign_psbt_validate.c:902-916`), so only the intent
+   * requirement is waived; every other gate still runs, and
+   * {@link augmentPsbtForRefund} adds the derivation entries the device
+   * requires. Never finalizes — the SDK extracts signatures and finalizes
+   * itself. Every rejection before the device loop starts leaves the mirror
+   * and the loaded intent untouched.
    */
   signPsbt = async (psbtHex: string, options?: SignPsbtOptions): Promise<string> =>
     this.withDeviceOperation("signPsbt", () =>
       this.withSignAbort(async (controller) => {
-        const ctx = await this.gateSignContext();
-        const staged = await this.stagePsbt(psbtHex, options, "signPsbt", new Set(), ctx.depositorXOnlyHex);
+        const refund = classifyRefundPsbt(psbtHex);
+        if (refund !== undefined) {
+          // Pure term pins first — this rejection really is zero device I/O,
+          // not even the liveness probe or a cold derivation read.
+          try {
+            assertRefundPsbtSignable(refund);
+          } catch (error) {
+            throw toStagingWalletError(error, "signPsbt rejected before any device I/O");
+          }
+        }
+        const ctx = await this.gateSignContext(refund === undefined);
+        let stagingHex = psbtHex;
+        if (refund !== undefined) {
+          this.assertRefundSignable(refund, ctx.depositorXOnlyHex);
+          const { masterFingerprintHex } = await this.getPolicyContext();
+          this.assertSameConnection(ctx.generation);
+          try {
+            stagingHex = augmentPsbtForRefund({
+              psbtHex,
+              depositorXOnlyHex: ctx.depositorXOnlyHex,
+              masterFingerprintHex,
+              depositorPath: this.depositorPath,
+            });
+          } catch (error) {
+            // The policy read above may have exchanged APDUs on a cold cache —
+            // "before the ceremony", not "before device I/O".
+            throw toStagingWalletError(error, "signPsbt rejected before the signing ceremony");
+          }
+        }
+        const staged = await this.stagePsbt(
+          stagingHex,
+          options,
+          "signPsbt",
+          new Set(),
+          ctx.depositorXOnlyHex,
+          // A refund routes to the device's standalone sign path in EVERY vault
+          // state (`sign_psbt_validate.c:3718` dispatch), and that path consumes
+          // no dedup mask or cap (`sign_custom_inputs.c`, standalone section —
+          // contrast PegIn `:184` and Payout `:401`), so re-signing one is
+          // always a fresh user-approved ceremony.
+          refund !== undefined,
+        );
         // Staging awaits the policy read; a reconnect during it would leave the
         // captured sender stale (signPsbts guards the same way per element).
         this.assertSameConnection(ctx.generation);
         return this.signStaged(staged, ctx, controller);
       }),
     );
+
+  /**
+   * Zero-I/O refund gates (#2371). The key check pre-empts the device's own
+   * derive-and-compare (`sign_psbt_validate.c:920-965`); the vault check
+   * pre-empts the INTENT_LOADED pins on the leaf CSV (`:906-910`) and input 0's
+   * prevout (`:1092-1097`) — both fire pre-approval on-device, but as an opaque
+   * SW_INCORRECT_DATA whose failure path would also take {@link signStaged}'s
+   * pessimistic mirror reset. Rejecting here keeps the typed error AND the
+   * loaded intent. No automatic reset — tearing down a loaded ceremony is
+   * never a silent side effect of a refund attempt.
+   */
+  private assertRefundSignable(refund: RefundPsbtClassification, depositorXOnlyHex: string): void {
+    if (refund.leafKeyHex !== depositorXOnlyHex) {
+      throw new WalletError({
+        code: ERROR_CODES.INVALID_PARAMS,
+        message: `${WALLET_PROVIDER_NAME}: the refund leaf key is not this device's depositor key — this device cannot sign this refund.`,
+        wallet: WALLET_PROVIDER_NAME,
+      });
+    }
+    const state = this.deviceState;
+    if (
+      state.phase === "intent-loaded" &&
+      (refund.inputTxidInternalHex !== state.prepeginTxidInternalHex || refund.csv !== state.htlcRefundTimelock)
+    ) {
+      throw new WalletError({
+        code: ERROR_CODES.DEVICE_CEREMONY_INVALID,
+        message:
+          `${WALLET_PROVIDER_NAME} holds an approved intent for a different vault — the device pins a ` +
+          `refund's timelock and Pre-PegIn txid to the loaded intent and would reject this one. ` +
+          `Reconnect the device (or restart that deposit's flow from derivation) and retry the refund.`,
+        wallet: WALLET_PROVIDER_NAME,
+      });
+    }
+  }
 
   /**
    * Device ceremonies run strictly sequentially, array order, fail-fast — a
@@ -676,6 +909,20 @@ export class LedgerVaultProvider implements IBTCProvider {
             message: `${WALLET_PROVIDER_NAME} signPsbts requires at least one PSBT.`,
             wallet: WALLET_PROVIDER_NAME,
           });
+        }
+        // A refund is a standalone single-PSBT ceremony — signPsbt classifies
+        // and augments it. Staged unaugmented here it would start a ceremony
+        // the device rejects (missing derivation entries). The scan is pure,
+        // so it runs BEFORE the intent gate: a no-intent caller must get this
+        // actionable refusal, not "restart the flow from derivation".
+        for (const [index, hex] of psbtsHexes.entries()) {
+          if (classifyRefundPsbt(hex) !== undefined) {
+            throw new WalletError({
+              code: ERROR_CODES.INVALID_PARAMS,
+              message: `signPsbts[${index}]: a refund signs standalone via signPsbt — it cannot be part of a batch ceremony.`,
+              wallet: WALLET_PROVIDER_NAME,
+            });
+          }
         }
         const ctx = await this.gateSignContext();
         const stagedKeys = new Set<string>();
@@ -711,6 +958,9 @@ export class LedgerVaultProvider implements IBTCProvider {
           }
           this.assertSameConnection(ctx.generation);
           signed.push(await this.signStaged(one, ctx, controller));
+          // After signStaged's commit (generation checked, fingerprint
+          // recorded), so a stale or failed ceremony never ticks.
+          this.emitSigningProgress({ completed: signed.length, total: psbtsHexes.length });
         }
         return signed;
       }),
@@ -725,6 +975,27 @@ export class LedgerVaultProvider implements IBTCProvider {
   cancelSigning = (): void => {
     this.signAbortController?.abort();
   };
+
+  /** Optional affordance (see `IBTCProvider`): per-ceremony ticks out of a `signPsbts` batch. */
+  subscribeSigningProgress = (listener: (progress: SigningProgress) => void): (() => void) => {
+    this.signingProgressListeners.add(listener);
+    return () => {
+      this.signingProgressListeners.delete(listener);
+    };
+  };
+
+  // Display-only: a listener bug must not abort a non-idempotent ceremony
+  // (same contract as the signer's per-YIELD onProgress).
+  private emitSigningProgress(progress: SigningProgress): void {
+    // Snapshot: a listener that (un)subscribes inside a tick must not extend this loop.
+    for (const listener of [...this.signingProgressListeners]) {
+      try {
+        listener(progress);
+      } catch {
+        // Swallowed on purpose — progress is cosmetic.
+      }
+    }
+  }
 
   /**
    * ONE AbortController per public sign call (plan D1) — it spans a whole
@@ -746,8 +1017,9 @@ export class LedgerVaultProvider implements IBTCProvider {
    * the device state is gone with it (generation-guarded against a racing
    * reconnect's fresh state).
    *
-   * `requireIntent: false` is for the state-independent PoP — every other
-   * caller keeps the default.
+   * `requireIntent: false` is for the signs the device itself accepts without
+   * an intent — the state-independent PoP and the standalone refund (#2371);
+   * every other caller keeps the default.
    */
   private async gateSignContext(requireIntent = true): Promise<SignContext> {
     const { session, rawSend } = this.requireSignContext();
@@ -788,6 +1060,7 @@ export class LedgerVaultProvider implements IBTCProvider {
     label: string,
     stagedKeys: ReadonlySet<string>,
     depositorXOnlyHex: string,
+    standaloneRefund = false,
   ): Promise<StagedPsbt> {
     // Never finalize, and never silently ignore a request to — the SDK
     // extracts signatures and finalizes itself.
@@ -800,21 +1073,21 @@ export class LedgerVaultProvider implements IBTCProvider {
         wallet: WALLET_PROVIDER_NAME,
       });
     }
-    // Buffer.from(hex) truncates silently — reject malformed input loudly.
-    if (!/^(?:[0-9a-fA-F]{2})+$/.test(psbtHex)) {
-      throw new WalletError({
-        code: ERROR_CODES.INVALID_PARAMS,
-        message: `${label} needs even-length hexadecimal; got ${psbtHex.length} chars.`,
-        wallet: WALLET_PROVIDER_NAME,
-      });
-    }
+    // Carrying a leaf is not the same as being signed: since #2281 Payout input 1
+    // carries the Assert payout leaf only so the device can display the terms.
+    // Only the indices are honoured: `publicKey` is inert because the table pins
+    // on the device-read key instead, and `useTweakedSigner` is inert because the
+    // device picks tweaking from the spend type (`base:sign_input.c:430-433`).
+    const signInputIndexes = options?.signInputs?.map((input) => input.index);
     let prepared: PreparedSignPsbt;
     try {
-      prepared = prepareSignPsbt({ psbtHex, depositorXOnlyHex });
+      prepared = prepareSignPsbt({ psbtHex, depositorXOnlyHex, signInputIndexes });
     } catch (error) {
       throw toStagingWalletError(error, `${label} rejected before device I/O`);
     }
-    const kinds = new Set(Array.from(prepared.table.byInput.values(), (expectation) => expectation.kind));
+    // Unnarrowed: the flow a PSBT belongs to is not something the caller's
+    // requested set gets to change, or a key-path input could hide behind it.
+    const kinds = new Set(Array.from(prepared.table.classifiedByInput.values(), (expectation) => expectation.kind));
     if (kinds.has("taproot-keypath")) {
       if (kinds.size > 1) {
         throw new WalletError({
@@ -825,7 +1098,7 @@ export class LedgerVaultProvider implements IBTCProvider {
       }
       // Key-path flows sign under the default wallet policy: derivation fields
       // make the inputs (and the change output) internal on-device, and the
-      // policy id routes the base app into sign_internal_inputs (`sign_psbt.c:142-148`).
+      // policy id routes the base app into sign_internal_inputs (`base:sign_psbt.c:142-148`).
       const { policy } = await this.getPolicyContext();
       // Read outside the try: a disconnect here is a connection error, and
       // re-wrapping it as INVALID_PARAMS would blame the caller's PSBT.
@@ -847,6 +1120,7 @@ export class LedgerVaultProvider implements IBTCProvider {
       try {
         // Pass the AUGMENTED hex: the signer's merge target is whatever hex it
         // prepared, so the SDK gets the derivation fields back with the tapKeySig.
+        // No signInputIndexes: it narrows tapscript only, and this path is key-path.
         prepared = prepareSignPsbt({ psbtHex: augmented, depositorXOnlyHex, walletPolicy: policy });
       } catch (error) {
         throw toStagingWalletError(error, `${label} rejected at policy-mode prepare`);
@@ -864,7 +1138,7 @@ export class LedgerVaultProvider implements IBTCProvider {
         wallet: WALLET_PROVIDER_NAME,
       });
     }
-    if (this.signedFingerprints.has(fingerprintKey)) {
+    if (!standaloneRefund && this.signedFingerprints.has(fingerprintKey)) {
       throw new WalletError({
         code: ERROR_CODES.INVALID_PARAMS,
         message:
@@ -874,12 +1148,26 @@ export class LedgerVaultProvider implements IBTCProvider {
         wallet: WALLET_PROVIDER_NAME,
       });
     }
-    return { prepared, fingerprintKey, label };
+    return { prepared, fingerprintKey, label, standaloneRefund };
   }
 
-  /** One device ceremony; every failure is classified against the mirror. */
+  /**
+   * One device ceremony; every failure is classified against the mirror.
+   *
+   * Locked-device words on the INITIAL SIGN_PSBT keep the intent because the app
+   * never ran it: 0x5515 is sent only by the SDK IO layer before dispatch
+   * (`sdk:io_legacy/src/os_io_legacy.c:416`, inside the `io_exchange` receive
+   * loop `:245-247` that the base app reads from, `base:src/boilerplate/dispatcher.c:74`);
+   * 0x6982 exists in the SDK only under ENABLE_ADDRESS_BOOK
+   * (`sdk:Makefile.standard_app:78-82`, unset in both Makefiles) and 0x5303 is not
+   * defined at all; neither the app nor `base:` ever sends any of the three
+   * (`base:src/boilerplate/sw.h:16-18` is a #define + _Static_assert only). Only the
+   * sign loop proves the initial APDU was the refused one (`preDispatch`); a lock on
+   * a CONTINUE or any other exchange is unproven — rounds may have run, caps may be
+   * committed — and takes the pessimistic reset below.
+   */
   private async signStaged(staged: StagedPsbt, ctx: SignContext, controller: AbortController): Promise<string> {
-    const { prepared, fingerprintKey, label } = staged;
+    const { prepared, fingerprintKey, label, standaloneRefund } = staged;
     const { session, rawSend, generation } = ctx;
     try {
       const result = await signPreparedVaultPsbt(rawSend, prepared, {
@@ -889,14 +1177,32 @@ export class LedgerVaultProvider implements IBTCProvider {
       });
       this.assertSameConnection(generation);
       // Success never consumes the intent: further (different) PSBTs sign
-      // under the same approval; this one never again.
-      this.signedFingerprints.add(fingerprintKey);
+      // under the same approval; this one never again. Any standalone refund
+      // is exempt — the device's standalone path consumes no dedup mask or
+      // cap in any vault state (`sign_custom_inputs.c`, standalone section).
+      if (!standaloneRefund) this.signedFingerprints.add(fingerprintKey);
       return result.signedPsbtHex;
     } catch (error) {
       const walletError = this.classifySignFailure(error, generation, label);
       // Mirror reset is signPsbt-only (PoP failures don't invalidate the vault
       // context); stale rejections and cancels were already handled in classify.
-      if (generation === this.connectionGeneration && !isLedgerSignPsbtAbortedError(error)) {
+      // Pre-dispatch lock keeps the intent (provenance in the method doc); an
+      // unproven lock is treated like any other sign failure.
+      const lockedBeforeDispatch = isLedgerDeviceLockedError(error) && error.preDispatch === true;
+      if (
+        generation === this.connectionGeneration &&
+        !isLedgerSignPsbtAbortedError(error) &&
+        !lockedBeforeDispatch &&
+        // Refunds keep the mirror: NOTHING on the device's refund path
+        // invalidates the vault context — not the validator's rejects
+        // (`sign_psbt_validate.c:811-1120` holds none of the file's six
+        // invalidate sites), not the standalone sign section, not the review
+        // screen's SW_DENY, and not the base app's PSBT-phase failures
+        // (zero vault references in `base:sign_psbt.c` and its phases).
+        // INTENT_LOADED is terminal until an explicit invalidate
+        // (`vault_context.c:44-47`). The abort branch above stays uniform.
+        !standaloneRefund
+      ) {
         // Pessimistically assume the device dropped the intent (error-path
         // invalidation is mixed in firmware — never assume survival).
         this.deviceState = { phase: "idle" };
@@ -968,13 +1274,13 @@ export class LedgerVaultProvider implements IBTCProvider {
 
   /**
    * BIP-322 simple proof of possession via SIGN_PSBT tx_version 0 (#2221).
-   * State-independent on the device (`sign_psbt_validate.c:3205-3213`): no
+   * State-independent on the device (`sign_psbt_validate.c:3573-3578`): no
    * approved intent is required, and signing it never touches the intent
    * mirror or the signed-fingerprint set — with ONE exception: a user cancel
    * resets both via {@link classifySignFailure}'s uniform post-cancel policy,
    * so a cancelled PoP costs a full derive + re-approve like any other cancel.
    * When an intent IS loaded the device requires the PoP key to equal the
-   * intent's depositor key (`:2764-2769`) — both derive from `depositorPath`,
+   * intent's depositor key (`:3071-3076`) — both derive from `depositorPath`,
    * so that holds by construction.
    */
   signMessage = async (message: string, type: "bip322-simple" | "ecdsa"): Promise<string> =>
@@ -1016,7 +1322,7 @@ export class LedgerVaultProvider implements IBTCProvider {
         }
         this.assertSameConnection(ctx.generation);
         // Without a wallet policy the device answers SW_OK with NO yield
-        // (`sign_custom_inputs.c:101-107`); the collector's completion check
+        // (`sign_custom_inputs.c:101-115`); the collector's completion check
         // already throws on that, this narrows the one yield we package.
         const [yielded] = result.yields;
         if (
@@ -1060,13 +1366,6 @@ function toStagingWalletError(error: unknown, context: string): WalletError {
   );
 }
 
-/**
- * Map the signer package's typed device outcomes onto the connector's
- * WalletError taxonomy; the messages (with their "User rejected" prefix)
- * pass through unchanged. Returns undefined for anything unrecognised.
- * Shared by the ceremony sender wrapper and the SIGN_PSBT seam — the raw
- * sender's loop errors never pass through {@link withWalletErrorMapping}.
- */
 /**
  * Sign-seam failure mapping: the two "intent gone" status words and the
  * signer's own typed sign errors carry DEVICE_CEREMONY_INVALID — the typed
@@ -1120,6 +1419,13 @@ function toSignFailureWalletError(error: unknown, label: string): WalletError {
   );
 }
 
+/**
+ * Map the signer package's typed device outcomes onto the connector's
+ * WalletError taxonomy; the messages (with their "User rejected" prefix)
+ * pass through unchanged. Returns undefined for anything unrecognised.
+ * Shared by the ceremony sender wrapper and the SIGN_PSBT seam — the raw
+ * sender's loop errors never pass through {@link withWalletErrorMapping}.
+ */
 function toSignerWalletError(error: unknown): WalletError | undefined {
   if (isLedgerUserRefusedError(error)) {
     return new WalletError(
@@ -1133,7 +1439,12 @@ function toSignerWalletError(error: unknown): WalletError | undefined {
       { cause: error },
     );
   }
-  if (isLedgerDeviceError(error) && error.statusWord === SW_CLA_NOT_SUPPORTED) {
+  // Both mean the running app is not the vault app: an unknown class, or a known
+  // class (the shared Bitcoin base) without the vault instructions.
+  if (
+    isLedgerDeviceError(error) &&
+    (error.statusWord === SW_CLA_NOT_SUPPORTED || error.statusWord === SW_INS_NOT_SUPPORTED)
+  ) {
     return new WalletError(
       { code: ERROR_CODES.DEVICE_WRONG_APP, message: error.message, wallet: WALLET_PROVIDER_NAME },
       { cause: error },
@@ -1195,7 +1506,7 @@ function fingerprintIntent(intent: {
 /**
  * Convert a display-order txid (what an explorer shows) to the internal order
  * the intent carries. The device compares it against the PSBT prevout, which
- * is also internal order (`vault_script.c:711-713`, "LE as stored").
+ * is also internal order (`vault_script.c:766-767`, "LE as stored").
  */
 function displayTxidToInternal(txidHex: string): Uint8Array {
   const clean = txidHex.replace(/^0x/, "");

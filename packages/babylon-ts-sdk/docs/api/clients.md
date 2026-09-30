@@ -52,22 +52,27 @@ Defined in: [packages/babylon-ts-sdk/src/tbv/core/clients/eth/operation-key-read
 ##### getCurrentOperationKeys()
 
 ```ts
-getCurrentOperationKeys(query): Promise<RawOperationKeys>;
+getCurrentOperationKeys(query, blockNumber?): Promise<RawOperationKeys>;
 ```
 
 Defined in: [packages/babylon-ts-sdk/src/tbv/core/clients/eth/operation-key-reader.ts](https://github.com/babylonlabs-io/babylon-toolkit/blob/main/packages/babylon-ts-sdk/src/tbv/core/clients/eth/operation-key-reader.ts)
 
 Resolve every participant's *current* operation key.
 
-Used for new peg-ins and for the VP auth pin. Needs no epoch read at all —
-each registry's `getCurrentOperationBtcKey` resolves its own genesis
-fallback, so an operator that never rotated yields its registration key.
+Used for new peg-ins. The VP-only current getter separately supplies the
+JSON-RPC auth pin. Needs no epoch read at all — each registry's
+`getCurrentOperationBtcKey` resolves its own genesis fallback, so an
+operator that never rotated yields its registration key.
 
 ###### Parameters
 
 ###### query
 
 [`OperationKeyQuery`](#operationkeyquery)
+
+###### blockNumber?
+
+`bigint`
 
 ###### Returns
 
@@ -139,6 +144,75 @@ script.
 ###### Implementation of
 
 [`OperationKeyReader`](#operationkeyreader).[`getPayoutScriptsAtEpochs`](#getpayoutscriptsatepochs-2)
+
+***
+
+### ViemPeginRegistrationClient
+
+Defined in: [packages/babylon-ts-sdk/src/tbv/core/clients/eth/pegin-registration-client.ts](https://github.com/babylonlabs-io/babylon-toolkit/blob/main/packages/babylon-ts-sdk/src/tbv/core/clients/eth/pegin-registration-client.ts)
+
+Ethereum-only client for the on-chain half of peg-in registration.
+
+It consumes Bitcoin artifacts that were prepared earlier, but owns no BTC
+wallet and imports neither Bitcoin libraries nor the Rust/WASM package.
+
+#### Constructors
+
+##### Constructor
+
+```ts
+new ViemPeginRegistrationClient(config): ViemPeginRegistrationClient;
+```
+
+Defined in: [packages/babylon-ts-sdk/src/tbv/core/clients/eth/pegin-registration-client.ts](https://github.com/babylonlabs-io/babylon-toolkit/blob/main/packages/babylon-ts-sdk/src/tbv/core/clients/eth/pegin-registration-client.ts)
+
+###### Parameters
+
+###### config
+
+[`ViemPeginRegistrationClientConfig`](#viempeginregistrationclientconfig)
+
+###### Returns
+
+[`ViemPeginRegistrationClient`](#viempeginregistrationclient)
+
+#### Methods
+
+##### registerPeginOnChain()
+
+```ts
+registerPeginOnChain(params): Promise<PeginRegistrationResult>;
+```
+
+Defined in: [packages/babylon-ts-sdk/src/tbv/core/clients/eth/pegin-registration-client.ts](https://github.com/babylonlabs-io/babylon-toolkit/blob/main/packages/babylon-ts-sdk/src/tbv/core/clients/eth/pegin-registration-client.ts)
+
+###### Parameters
+
+###### params
+
+[`RegisterPeginOnChainParams`](#registerpeginonchainparams)
+
+###### Returns
+
+`Promise`\<[`PeginRegistrationResult`](#peginregistrationresult)\>
+
+##### registerPeginBatchOnChain()
+
+```ts
+registerPeginBatchOnChain(params): Promise<PeginBatchRegistrationResult>;
+```
+
+Defined in: [packages/babylon-ts-sdk/src/tbv/core/clients/eth/pegin-registration-client.ts](https://github.com/babylonlabs-io/babylon-toolkit/blob/main/packages/babylon-ts-sdk/src/tbv/core/clients/eth/pegin-registration-client.ts)
+
+###### Parameters
+
+###### params
+
+[`RegisterPeginBatchOnChainParams`](#registerpeginbatchonchainparams)
+
+###### Returns
+
+`Promise`\<[`PeginBatchRegistrationResult`](#peginbatchregistrationresult)\>
 
 ***
 
@@ -308,7 +382,7 @@ If the deployment does not expose `peginActivationDelay()`, or
 ##### getPegInConfiguration()
 
 ```ts
-getPegInConfiguration(): Promise<PegInConfiguration>;
+getPegInConfiguration(blockNumber?): Promise<PegInConfiguration>;
 ```
 
 Defined in: [packages/babylon-ts-sdk/src/tbv/core/clients/eth/protocol-params-reader.ts](https://github.com/babylonlabs-io/babylon-toolkit/blob/main/packages/babylon-ts-sdk/src/tbv/core/clients/eth/protocol-params-reader.ts)
@@ -318,6 +392,17 @@ label atomically via multicall. The version is paired with the params so
 that a governance update between separate reads cannot let JS build BTC
 scripts with version N params while the contract registers the vault
 under version N+1.
+
+That guarantee holds only within this multicall. A caller that also reads
+participant keys — every fresh peg-in build does — must pass the same
+`blockNumber` here and to those reads, or the two describe different
+blocks and the pairing above buys nothing across the seam.
+
+###### Parameters
+
+###### blockNumber?
+
+`bigint`
 
 ###### Returns
 
@@ -357,6 +442,52 @@ optional observer invoked once per skipped
 ###### Implementation of
 
 [`ProtocolParamsReader`](#protocolparamsreader).[`fetchAllOffchainParams`](#fetchalloffchainparams-2)
+
+***
+
+### RegistrationLogsUnavailableError
+
+Defined in: [packages/babylon-ts-sdk/src/tbv/core/clients/eth/registration-logs-error.ts](https://github.com/babylonlabs-io/babylon-toolkit/blob/main/packages/babylon-ts-sdk/src/tbv/core/clients/eth/registration-logs-error.ts)
+
+#### Extends
+
+- `Error`
+
+#### Constructors
+
+##### Constructor
+
+```ts
+new RegistrationLogsUnavailableError(blockNumber): RegistrationLogsUnavailableError;
+```
+
+Defined in: [packages/babylon-ts-sdk/src/tbv/core/clients/eth/registration-logs-error.ts](https://github.com/babylonlabs-io/babylon-toolkit/blob/main/packages/babylon-ts-sdk/src/tbv/core/clients/eth/registration-logs-error.ts)
+
+###### Parameters
+
+###### blockNumber
+
+`bigint`
+
+###### Returns
+
+[`RegistrationLogsUnavailableError`](#registrationlogsunavailableerror)
+
+###### Overrides
+
+```ts
+Error.constructor
+```
+
+#### Properties
+
+##### blockNumber
+
+```ts
+readonly blockNumber: bigint;
+```
+
+Defined in: [packages/babylon-ts-sdk/src/tbv/core/clients/eth/registration-logs-error.ts](https://github.com/babylonlabs-io/babylon-toolkit/blob/main/packages/babylon-ts-sdk/src/tbv/core/clients/eth/registration-logs-error.ts)
 
 ***
 
@@ -403,7 +534,10 @@ Defined in: [packages/babylon-ts-sdk/src/tbv/core/clients/eth/signer-set-reader.
 ##### getVaultKeepersByVersion()
 
 ```ts
-getVaultKeepersByVersion(appEntryPoint, version): Promise<AddressBTCKeyPair[]>;
+getVaultKeepersByVersion(
+   appEntryPoint, 
+   version, 
+blockNumber?): Promise<AddressBTCKeyPair[]>;
 ```
 
 Defined in: [packages/babylon-ts-sdk/src/tbv/core/clients/eth/signer-set-reader.ts](https://github.com/babylonlabs-io/babylon-toolkit/blob/main/packages/babylon-ts-sdk/src/tbv/core/clients/eth/signer-set-reader.ts)
@@ -417,6 +551,10 @@ Defined in: [packages/babylon-ts-sdk/src/tbv/core/clients/eth/signer-set-reader.
 ###### version
 
 `number`
+
+###### blockNumber?
+
+`bigint`
 
 ###### Returns
 
@@ -451,7 +589,7 @@ Defined in: [packages/babylon-ts-sdk/src/tbv/core/clients/eth/signer-set-reader.
 ##### getCurrentVaultKeepersVersion()
 
 ```ts
-getCurrentVaultKeepersVersion(appEntryPoint): Promise<number>;
+getCurrentVaultKeepersVersion(appEntryPoint, blockNumber?): Promise<number>;
 ```
 
 Defined in: [packages/babylon-ts-sdk/src/tbv/core/clients/eth/signer-set-reader.ts](https://github.com/babylonlabs-io/babylon-toolkit/blob/main/packages/babylon-ts-sdk/src/tbv/core/clients/eth/signer-set-reader.ts)
@@ -462,6 +600,10 @@ Defined in: [packages/babylon-ts-sdk/src/tbv/core/clients/eth/signer-set-reader.
 
 `` `0x${string}` ``
 
+###### blockNumber?
+
+`bigint`
+
 ###### Returns
 
 `Promise`\<`number`\>
@@ -469,6 +611,40 @@ Defined in: [packages/babylon-ts-sdk/src/tbv/core/clients/eth/signer-set-reader.
 ###### Implementation of
 
 [`VaultKeeperReader`](#vaultkeeperreader).[`getCurrentVaultKeepersVersion`](#getcurrentvaultkeepersversion-2)
+
+##### getCurrentAppKeeperKeyEpoch()
+
+```ts
+getCurrentAppKeeperKeyEpoch(appEntryPoint, blockNumber?): Promise<bigint>;
+```
+
+Defined in: [packages/babylon-ts-sdk/src/tbv/core/clients/eth/signer-set-reader.ts](https://github.com/babylonlabs-io/babylon-toolkit/blob/main/packages/babylon-ts-sdk/src/tbv/core/clients/eth/signer-set-reader.ts)
+
+Read the application's current vault-keeper operation-key epoch.
+
+One counter for the whole application, bumped by any keeper's
+operation-key or payout-script append. The peg-in config fingerprint
+commits to it in place of the N resolved keeper keys, so it must be read
+at the same block as the roster it labels. Returned as `bigint`; the
+contract encodes it as `uint64` and a `Number` would truncate.
+
+###### Parameters
+
+###### appEntryPoint
+
+`` `0x${string}` ``
+
+###### blockNumber?
+
+`bigint`
+
+###### Returns
+
+`Promise`\<`bigint`\>
+
+###### Implementation of
+
+[`VaultKeeperReader`](#vaultkeeperreader).[`getCurrentAppKeeperKeyEpoch`](#getcurrentappkeeperkeyepoch-2)
 
 ***
 
@@ -515,7 +691,7 @@ Defined in: [packages/babylon-ts-sdk/src/tbv/core/clients/eth/signer-set-reader.
 ##### getUniversalChallengersByVersion()
 
 ```ts
-getUniversalChallengersByVersion(version): Promise<AddressBTCKeyPair[]>;
+getUniversalChallengersByVersion(version, blockNumber?): Promise<AddressBTCKeyPair[]>;
 ```
 
 Defined in: [packages/babylon-ts-sdk/src/tbv/core/clients/eth/signer-set-reader.ts](https://github.com/babylonlabs-io/babylon-toolkit/blob/main/packages/babylon-ts-sdk/src/tbv/core/clients/eth/signer-set-reader.ts)
@@ -525,6 +701,10 @@ Defined in: [packages/babylon-ts-sdk/src/tbv/core/clients/eth/signer-set-reader.
 ###### version
 
 `number`
+
+###### blockNumber?
+
+`bigint`
 
 ###### Returns
 
@@ -553,10 +733,16 @@ Defined in: [packages/babylon-ts-sdk/src/tbv/core/clients/eth/signer-set-reader.
 ##### getLatestUniversalChallengersVersion()
 
 ```ts
-getLatestUniversalChallengersVersion(): Promise<number>;
+getLatestUniversalChallengersVersion(blockNumber?): Promise<number>;
 ```
 
 Defined in: [packages/babylon-ts-sdk/src/tbv/core/clients/eth/signer-set-reader.ts](https://github.com/babylonlabs-io/babylon-toolkit/blob/main/packages/babylon-ts-sdk/src/tbv/core/clients/eth/signer-set-reader.ts)
+
+###### Parameters
+
+###### blockNumber?
+
+`bigint`
 
 ###### Returns
 
@@ -565,6 +751,35 @@ Defined in: [packages/babylon-ts-sdk/src/tbv/core/clients/eth/signer-set-reader.
 ###### Implementation of
 
 [`UniversalChallengerReader`](#universalchallengerreader).[`getLatestUniversalChallengersVersion`](#getlatestuniversalchallengersversion-2)
+
+##### getCurrentUcKeyEpoch()
+
+```ts
+getCurrentUcKeyEpoch(blockNumber?): Promise<bigint>;
+```
+
+Defined in: [packages/babylon-ts-sdk/src/tbv/core/clients/eth/signer-set-reader.ts](https://github.com/babylonlabs-io/babylon-toolkit/blob/main/packages/babylon-ts-sdk/src/tbv/core/clients/eth/signer-set-reader.ts)
+
+Read the protocol's current universal-challenger operation-key epoch.
+
+The challenger-axis counterpart to
+[VaultKeeperReader.getCurrentAppKeeperKeyEpoch](#getcurrentappkeeperkeyepoch-2): one protocol-wide
+counter the fingerprint commits to in place of the M resolved challenger
+keys. Returned as `bigint` for the same `uint64` reason.
+
+###### Parameters
+
+###### blockNumber?
+
+`bigint`
+
+###### Returns
+
+`Promise`\<`bigint`\>
+
+###### Implementation of
+
+[`UniversalChallengerReader`](#universalchallengerreader).[`getCurrentUcKeyEpoch`](#getcurrentuckeyepoch-2)
 
 ***
 
@@ -611,7 +826,7 @@ Defined in: [packages/babylon-ts-sdk/src/tbv/core/clients/eth/vault-registry-rea
 ##### getVaultProviderGenesisBtcPubKey()
 
 ```ts
-getVaultProviderGenesisBtcPubKey(vpAddress): Promise<OnChainBtcPubkey>;
+getVaultProviderGenesisBtcPubKey(vpAddress, blockNumber?): Promise<OnChainBtcPubkey>;
 ```
 
 Defined in: [packages/babylon-ts-sdk/src/tbv/core/clients/eth/vault-registry-reader.ts](https://github.com/babylonlabs-io/babylon-toolkit/blob/main/packages/babylon-ts-sdk/src/tbv/core/clients/eth/vault-registry-reader.ts)
@@ -644,6 +859,10 @@ the brand. Returns 64-char lowercase hex without the `0x` prefix.
 
 `` `0x${string}` ``
 
+###### blockNumber?
+
+`bigint`
+
 ###### Returns
 
 `Promise`\<[`OnChainBtcPubkey`](#onchainbtcpubkey)\>
@@ -651,6 +870,82 @@ the brand. Returns 64-char lowercase hex without the `0x` prefix.
 ###### Implementation of
 
 [`VaultRegistryReader`](#vaultregistryreader).[`getVaultProviderGenesisBtcPubKey`](#getvaultprovidergenesisbtcpubkey)
+
+##### getVaultProviderOperationBtcKeyAtEpoch()
+
+```ts
+getVaultProviderOperationBtcKeyAtEpoch(
+   vpAddress, 
+   epoch, 
+blockNumber?): Promise<OnChainBtcPubkey>;
+```
+
+Defined in: [packages/babylon-ts-sdk/src/tbv/core/clients/eth/vault-registry-reader.ts](https://github.com/babylonlabs-io/babylon-toolkit/blob/main/packages/babylon-ts-sdk/src/tbv/core/clients/eth/vault-registry-reader.ts)
+
+Read the VP operation key selected by `epoch`.
+
+This is public rather than hidden inside `OperationKeyReader` because
+subject-specific VP authentication needs exactly one participant: the
+gRPC bootstrap is signed by the key frozen into the vault, while the
+JSON-RPC bootstrap is signed by the provider's live key.
+
+###### Parameters
+
+###### vpAddress
+
+`` `0x${string}` ``
+
+###### epoch
+
+`bigint`
+
+###### blockNumber?
+
+`bigint`
+
+###### Returns
+
+`Promise`\<[`OnChainBtcPubkey`](#onchainbtcpubkey)\>
+
+###### Implementation of
+
+[`VaultRegistryReader`](#vaultregistryreader).[`getVaultProviderOperationBtcKeyAtEpoch`](#getvaultprovideroperationbtckeyatepoch)
+
+##### getVaultProviderApplication()
+
+```ts
+getVaultProviderApplication(vpAddress, blockNumber?): Promise<`0x${string}`>;
+```
+
+Defined in: [packages/babylon-ts-sdk/src/tbv/core/clients/eth/vault-registry-reader.ts](https://github.com/babylonlabs-io/babylon-toolkit/blob/main/packages/babylon-ts-sdk/src/tbv/core/clients/eth/vault-registry-reader.ts)
+
+Read the application entry point a vault provider is registered for.
+
+This is the registry's own `vaultProviders[vp].applicationEntryPoint`, and
+it is the value the peg-in submit path resolves internally — it selects
+which application's vault-keeper roster, roster version and keeper key
+epoch a deposit is bonded to. The dApp separately carries an entry point
+from its own configuration; the two agree today, but they are different
+sources of truth, so the build path reads this one and asserts the
+configured value matches it rather than trusting either alone.
+
+###### Parameters
+
+###### vpAddress
+
+`` `0x${string}` ``
+
+###### blockNumber?
+
+`bigint`
+
+###### Returns
+
+`Promise`\<`` `0x${string}` ``\>
+
+###### Implementation of
+
+[`VaultRegistryReader`](#vaultregistryreader).[`getVaultProviderApplication`](#getvaultproviderapplication)
 
 ##### getCurrentVaultProviderOperationBtcKey()
 
@@ -666,9 +961,9 @@ Falls back on-chain to the registration key when the provider has never
 rotated, so this returns the same value as
 `getVaultProviderGenesisBtcPubKey` until the first rotation.
 
-This is the key the VP's server signs its BIP-322 auth tokens with — a
-live per-operator identity, not a per-vault binding, so the auth pin uses
-the current key rather than any vault's frozen epoch.
+This is the key the VP's server uses for JSON-RPC-subject authentication.
+The gRPC-subject bootstrap is instead bound to the existing vault's frozen
+epoch and resolves through `getVaultProviderOperationBtcKeyAtEpoch`.
 
 ###### Parameters
 
@@ -886,6 +1181,106 @@ Defined in: [packages/babylon-ts-sdk/src/tbv/core/clients/eth/vault-registry-rea
 
 [`VaultRegistryReader`](#vaultregistryreader).[`getVaultData`](#getvaultdata)
 
+##### getMaxAcceptableCommissionBpsBatch()
+
+```ts
+getMaxAcceptableCommissionBpsBatch(vaultIds, createdAt): Promise<number[]>;
+```
+
+Defined in: [packages/babylon-ts-sdk/src/tbv/core/clients/eth/vault-registry-reader.ts](https://github.com/babylonlabs-io/babylon-toolkit/blob/main/packages/babylon-ts-sdk/src/tbv/core/clients/eth/vault-registry-reader.ts)
+
+Read the depositor's commission ceiling (`maxAcceptableCommissionBps`)
+for vaults registered in the same block, from their `PegInSubmittedV2`
+logs. Returned in `vaultIds` order.
+
+The contract bound-checks the ceiling and discards it (PeginLogic.sol,
+`VaultProviderCommissionExceeded`), so the registration log is its only
+on-chain source. One query at exactly `createdAt` — the `block.number`
+stamped at registration — so no block-range scan is needed and public-RPC
+range caps do not apply. Vault ids are matched case-insensitively.
+
+###### Parameters
+
+###### vaultIds
+
+readonly `` `0x${string}` ``[]
+
+###### createdAt
+
+`bigint`
+
+###### Returns
+
+`Promise`\<`number`[]\>
+
+###### Throws
+
+(transient, retry) when the
+node answers with no registration logs for the block at all.
+
+###### Throws
+
+when a vault has only its `PegInSubmitted` log — registrations
+that predate the V2 event (vault-contracts-aave-v4 #548) never emitted
+the ceiling — no registration log in its own `createdAt` block, or more
+than one V2 log.
+
+###### Implementation of
+
+[`VaultRegistryReader`](#vaultregistryreader).[`getMaxAcceptableCommissionBpsBatch`](#getmaxacceptablecommissionbpsbatch)
+
+***
+
+### MempoolNotFoundError
+
+Defined in: [packages/babylon-ts-sdk/src/tbv/core/clients/mempool/mempoolApi.ts](https://github.com/babylonlabs-io/babylon-toolkit/blob/main/packages/babylon-ts-sdk/src/tbv/core/clients/mempool/mempoolApi.ts)
+
+Thrown by `getTxInfo`, `getUtxoInfo`, `getTipHeight`, `getOutspend` and
+`getAddressTxs` when the mempool API answers HTTP 404, for example for a
+transaction it does not know. Their other failures throw a plain `Error`.
+
+#### Extends
+
+- `Error`
+
+#### Constructors
+
+##### Constructor
+
+```ts
+new MempoolNotFoundError(message): MempoolNotFoundError;
+```
+
+Defined in: [packages/babylon-ts-sdk/src/tbv/core/clients/mempool/mempoolApi.ts](https://github.com/babylonlabs-io/babylon-toolkit/blob/main/packages/babylon-ts-sdk/src/tbv/core/clients/mempool/mempoolApi.ts)
+
+###### Parameters
+
+###### message
+
+`string`
+
+###### Returns
+
+[`MempoolNotFoundError`](#mempoolnotfounderror)
+
+###### Overrides
+
+```ts
+Error.constructor
+```
+
+#### Properties
+
+##### status
+
+```ts
+readonly status: 404 = HTTP_NOT_FOUND;
+```
+
+Defined in: [packages/babylon-ts-sdk/src/tbv/core/clients/mempool/mempoolApi.ts](https://github.com/babylonlabs-io/babylon-toolkit/blob/main/packages/babylon-ts-sdk/src/tbv/core/clients/mempool/mempoolApi.ts)
+
+HTTP status of the failed response.
+
 ***
 
 ### VaultProviderRpcClient
@@ -897,7 +1292,7 @@ Concrete VP RPC client implementing all service interfaces.
 Usage:
 ```ts
 const client = new VaultProviderRpcClient("https://vp.example.com/rpc");
-const status = await client.getPeginStatus({ pegin_txid: "abc..." });
+const status = await client.getPeginStatusByVaultId({ vault_id: "0xabc..." });
 ```
 
 #### Implements
@@ -1050,21 +1445,22 @@ independently evaluate garbled circuits during a challenge.
 
 [`ClaimerArtifactsReader`](services.md#claimerartifactsreader).[`requestDepositorClaimerArtifacts`](services.md#requestdepositorclaimerartifacts)
 
-##### getPeginStatus()
+##### getPeginStatusByVaultId()
 
 ```ts
-getPeginStatus(params, signal?): Promise<GetPeginStatusResponse>;
+getPeginStatusByVaultId(params, signal?): Promise<GetPeginStatusResponse>;
 ```
 
 Defined in: [packages/babylon-ts-sdk/src/tbv/core/clients/vault-provider/api.ts](https://github.com/babylonlabs-io/babylon-toolkit/blob/main/packages/babylon-ts-sdk/src/tbv/core/clients/vault-provider/api.ts)
 
-Get the current pegin status from the vault provider daemon.
+Get the current pegin status from the vault provider daemon,
+addressed by the depositor-bound `vault_id`.
 
 ###### Parameters
 
 ###### params
 
-[`GetPeginStatusParams`](#getpeginstatusparams)
+[`GetPeginStatusByVaultIdParams`](#getpeginstatusbyvaultidparams)
 
 ###### signal?
 
@@ -1076,25 +1472,25 @@ Get the current pegin status from the vault provider daemon.
 
 ###### Implementation of
 
-[`PeginStatusReader`](services.md#peginstatusreader).[`getPeginStatus`](services.md#getpeginstatus)
+[`PeginStatusReader`](services.md#peginstatusreader).[`getPeginStatusByVaultId`](services.md#getpeginstatusbyvaultid)
 
-##### batchGetPeginStatus()
+##### batchGetPeginStatusByVaultId()
 
 ```ts
-batchGetPeginStatus(params, signal?): Promise<BatchGetPeginStatusResponse>;
+batchGetPeginStatusByVaultId(params, signal?): Promise<BatchGetPeginStatusResponse>;
 ```
 
 Defined in: [packages/babylon-ts-sdk/src/tbv/core/clients/vault-provider/api.ts](https://github.com/babylonlabs-io/babylon-toolkit/blob/main/packages/babylon-ts-sdk/src/tbv/core/clients/vault-provider/api.ts)
 
-Get pegin status for many txids in one round trip. Per-result envelope
-isolates per-pegin failures from the overall RPC. Caller must chunk
-inputs at `VP_BATCH_MAX_SIZE`.
+Get pegin status for many vault ids in one round trip. Per-result
+envelope isolates per-vault failures from the overall RPC. Caller must
+chunk inputs at `VP_BATCH_MAX_SIZE`.
 
 ###### Parameters
 
 ###### params
 
-[`BatchGetPeginStatusParams`](#batchgetpeginstatusparams)
+[`BatchGetPeginStatusByVaultIdParams`](#batchgetpeginstatusbyvaultidparams)
 
 ###### signal?
 
@@ -1104,22 +1500,23 @@ inputs at `VP_BATCH_MAX_SIZE`.
 
 `Promise`\<[`BatchGetPeginStatusResponse`](#batchgetpeginstatusresponse)\>
 
-##### batchGetPegoutStatus()
+##### batchGetPegoutStatusByVaultId()
 
 ```ts
-batchGetPegoutStatus(params, signal?): Promise<BatchGetPegoutStatusResponse>;
+batchGetPegoutStatusByVaultId(params, signal?): Promise<BatchGetPegoutStatusResponse>;
 ```
 
 Defined in: [packages/babylon-ts-sdk/src/tbv/core/clients/vault-provider/api.ts](https://github.com/babylonlabs-io/babylon-toolkit/blob/main/packages/babylon-ts-sdk/src/tbv/core/clients/vault-provider/api.ts)
 
-Get pegout status for many txids in one round trip. Same per-result
-envelope semantics as `batchGetPeginStatus`.
+Get pegout status for many vault ids in one round trip. Same per-result
+envelope semantics as `batchGetPeginStatusByVaultId`. A legacy claimer
+status from an older daemon is replaced with its current name.
 
 ###### Parameters
 
 ###### params
 
-[`BatchGetPegoutStatusParams`](#batchgetpegoutstatusparams)
+[`BatchGetPegoutStatusByVaultIdParams`](#batchgetpegoutstatusbyvaultidparams)
 
 ###### signal?
 
@@ -1233,9 +1630,11 @@ getOrCreate(input): VpTokenProvider;
 Defined in: [packages/babylon-ts-sdk/src/tbv/core/clients/vault-provider/auth/tokenRegistry.ts](https://github.com/babylonlabs-io/babylon-toolkit/blob/main/packages/babylon-ts-sdk/src/tbv/core/clients/vault-provider/auth/tokenRegistry.ts)
 
 Return the cached `VpTokenProvider` for `peginTxid` if one exists
-with matching `authAnchorHex` and `pinnedServerPubkey`, otherwise
-construct and cache a fresh provider. A mismatch on either throws —
-silent overwrite would mask derivation drift or VP pubkey rotation.
+with matching anchor, provider, audience, and subject-specific issuer
+bindings, otherwise construct and cache a fresh provider. A mismatch
+throws — silent overwrite would mask derivation drift or cross-provider
+cache reuse. A legitimate live JSON-RPC key rotation is handled inside
+`VpTokenProvider` through its chain-backed refresh callback.
 
 ###### Parameters
 
@@ -1250,18 +1649,21 @@ silent overwrite would mask derivation drift or VP pubkey rotation.
 ##### peek()
 
 ```ts
-peek(peginTxid): VpTokenProvider | undefined;
+peek(input): VpTokenProvider | undefined;
 ```
 
 Defined in: [packages/babylon-ts-sdk/src/tbv/core/clients/vault-provider/auth/tokenRegistry.ts](https://github.com/babylonlabs-io/babylon-toolkit/blob/main/packages/babylon-ts-sdk/src/tbv/core/clients/vault-provider/auth/tokenRegistry.ts)
 
-Return the cached provider, or `undefined` if none.
+Return the cached provider only when its request-facing identity matches.
+A missing entry is a normal cold-cache result; a binding mismatch throws
+so callers cannot attach one provider's bearer to another provider or
+depositor request.
 
 ###### Parameters
 
-###### peginTxid
+###### input
 
-`string`
+[`VpTokenRegistryLookup`](#vptokenregistrylookup)
 
 ###### Returns
 
@@ -1633,6 +2035,381 @@ Defined in: [packages/babylon-ts-sdk/src/tbv/core/clients/eth/operation-key-read
 
 ***
 
+### ViemPeginRegistrationClientConfig
+
+Defined in: [packages/babylon-ts-sdk/src/tbv/core/clients/eth/pegin-registration-client.ts](https://github.com/babylonlabs-io/babylon-toolkit/blob/main/packages/babylon-ts-sdk/src/tbv/core/clients/eth/pegin-registration-client.ts)
+
+#### Properties
+
+##### ethWallet
+
+```ts
+ethWallet: object;
+```
+
+Defined in: [packages/babylon-ts-sdk/src/tbv/core/clients/eth/pegin-registration-client.ts](https://github.com/babylonlabs-io/babylon-toolkit/blob/main/packages/babylon-ts-sdk/src/tbv/core/clients/eth/pegin-registration-client.ts)
+
+##### ethChain
+
+```ts
+ethChain: Chain;
+```
+
+Defined in: [packages/babylon-ts-sdk/src/tbv/core/clients/eth/pegin-registration-client.ts](https://github.com/babylonlabs-io/babylon-toolkit/blob/main/packages/babylon-ts-sdk/src/tbv/core/clients/eth/pegin-registration-client.ts)
+
+##### publicClient
+
+```ts
+publicClient: object;
+```
+
+Defined in: [packages/babylon-ts-sdk/src/tbv/core/clients/eth/pegin-registration-client.ts](https://github.com/babylonlabs-io/babylon-toolkit/blob/main/packages/babylon-ts-sdk/src/tbv/core/clients/eth/pegin-registration-client.ts)
+
+##### btcVaultRegistry
+
+```ts
+btcVaultRegistry: `0x${string}`;
+```
+
+Defined in: [packages/babylon-ts-sdk/src/tbv/core/clients/eth/pegin-registration-client.ts](https://github.com/babylonlabs-io/babylon-toolkit/blob/main/packages/babylon-ts-sdk/src/tbv/core/clients/eth/pegin-registration-client.ts)
+
+##### receiptTimeoutMs?
+
+```ts
+optional receiptTimeoutMs: number;
+```
+
+Defined in: [packages/babylon-ts-sdk/src/tbv/core/clients/eth/pegin-registration-client.ts](https://github.com/babylonlabs-io/babylon-toolkit/blob/main/packages/babylon-ts-sdk/src/tbv/core/clients/eth/pegin-registration-client.ts)
+
+##### requireQuotedCommissionBps
+
+```ts
+requireQuotedCommissionBps: boolean;
+```
+
+Defined in: [packages/babylon-ts-sdk/src/tbv/core/clients/eth/pegin-registration-client.ts](https://github.com/babylonlabs-io/babylon-toolkit/blob/main/packages/babylon-ts-sdk/src/tbv/core/clients/eth/pegin-registration-client.ts)
+
+Refuse to register without a `quotedCommissionBps`. Set it to `true` when
+the depositor approved deposit terms on a device: approval froze the
+commission ceiling from the quote, so the chain-current fallback could
+admit a commission the device would later refuse to pay out.
+
+Required, with no default: an omitted flag would silently pick the unsafe
+direction for the integrator least able to probe the wallet capability.
+
+***
+
+### RegisterPeginOnChainParams
+
+Defined in: [packages/babylon-ts-sdk/src/tbv/core/clients/eth/pegin-registration-client.ts](https://github.com/babylonlabs-io/babylon-toolkit/blob/main/packages/babylon-ts-sdk/src/tbv/core/clients/eth/pegin-registration-client.ts)
+
+#### Properties
+
+##### unsignedPrePeginTx
+
+```ts
+unsignedPrePeginTx: string;
+```
+
+Defined in: [packages/babylon-ts-sdk/src/tbv/core/clients/eth/pegin-registration-client.ts](https://github.com/babylonlabs-io/babylon-toolkit/blob/main/packages/babylon-ts-sdk/src/tbv/core/clients/eth/pegin-registration-client.ts)
+
+##### depositorSignedPeginTx
+
+```ts
+depositorSignedPeginTx: string;
+```
+
+Defined in: [packages/babylon-ts-sdk/src/tbv/core/clients/eth/pegin-registration-client.ts](https://github.com/babylonlabs-io/babylon-toolkit/blob/main/packages/babylon-ts-sdk/src/tbv/core/clients/eth/pegin-registration-client.ts)
+
+##### vaultProvider
+
+```ts
+vaultProvider: `0x${string}`;
+```
+
+Defined in: [packages/babylon-ts-sdk/src/tbv/core/clients/eth/pegin-registration-client.ts](https://github.com/babylonlabs-io/babylon-toolkit/blob/main/packages/babylon-ts-sdk/src/tbv/core/clients/eth/pegin-registration-client.ts)
+
+##### hashlock
+
+```ts
+hashlock: `0x${string}`;
+```
+
+Defined in: [packages/babylon-ts-sdk/src/tbv/core/clients/eth/pegin-registration-client.ts](https://github.com/babylonlabs-io/babylon-toolkit/blob/main/packages/babylon-ts-sdk/src/tbv/core/clients/eth/pegin-registration-client.ts)
+
+##### depositorWotsPkHash
+
+```ts
+depositorWotsPkHash: `0x${string}`;
+```
+
+Defined in: [packages/babylon-ts-sdk/src/tbv/core/clients/eth/pegin-registration-client.ts](https://github.com/babylonlabs-io/babylon-toolkit/blob/main/packages/babylon-ts-sdk/src/tbv/core/clients/eth/pegin-registration-client.ts)
+
+##### popSignature
+
+```ts
+popSignature: PopSignature;
+```
+
+Defined in: [packages/babylon-ts-sdk/src/tbv/core/clients/eth/pegin-registration-client.ts](https://github.com/babylonlabs-io/babylon-toolkit/blob/main/packages/babylon-ts-sdk/src/tbv/core/clients/eth/pegin-registration-client.ts)
+
+##### depositorBtcPubkeyRaw
+
+```ts
+depositorBtcPubkeyRaw: string;
+```
+
+Defined in: [packages/babylon-ts-sdk/src/tbv/core/clients/eth/pegin-registration-client.ts](https://github.com/babylonlabs-io/babylon-toolkit/blob/main/packages/babylon-ts-sdk/src/tbv/core/clients/eth/pegin-registration-client.ts)
+
+Raw x-only, compressed, or uncompressed BTC pubkey from the PoP wallet.
+
+##### htlcVout
+
+```ts
+htlcVout: number;
+```
+
+Defined in: [packages/babylon-ts-sdk/src/tbv/core/clients/eth/pegin-registration-client.ts](https://github.com/babylonlabs-io/babylon-toolkit/blob/main/packages/babylon-ts-sdk/src/tbv/core/clients/eth/pegin-registration-client.ts)
+
+##### depositorPayoutScriptPubKey
+
+```ts
+depositorPayoutScriptPubKey: string;
+```
+
+Defined in: [packages/babylon-ts-sdk/src/tbv/core/clients/eth/pegin-registration-client.ts](https://github.com/babylonlabs-io/babylon-toolkit/blob/main/packages/babylon-ts-sdk/src/tbv/core/clients/eth/pegin-registration-client.ts)
+
+Bitcoin output script bytes, not an address. The client verifies that the
+script pays the proof-of-possession key before it submits the transaction.
+
+##### quotedCommissionBps?
+
+```ts
+optional quotedCommissionBps: number;
+```
+
+Defined in: [packages/babylon-ts-sdk/src/tbv/core/clients/eth/pegin-registration-client.ts](https://github.com/babylonlabs-io/babylon-toolkit/blob/main/packages/babylon-ts-sdk/src/tbv/core/clients/eth/pegin-registration-client.ts)
+
+##### expectedFingerprint
+
+```ts
+expectedFingerprint: `0x${string}`;
+```
+
+Defined in: [packages/babylon-ts-sdk/src/tbv/core/clients/eth/pegin-registration-client.ts](https://github.com/babylonlabs-io/babylon-toolkit/blob/main/packages/babylon-ts-sdk/src/tbv/core/clients/eth/pegin-registration-client.ts)
+
+`keccak256(abi.encode(...))` over the protocol state the Pre-PegIn was
+built against — see the SDK's `pegin-fingerprint` module.
+
+The registry recomputes it live at inclusion and reverts with
+`PeginFingerprintChanged` on any difference, so it must be computed from
+the same block-pinned snapshot that shaped the Bitcoin scripts. Required,
+with no default: a fingerprint the caller did not resolve is not a
+fingerprint, and the registry has no way to tell the two apart.
+
+***
+
+### PeginRegistrationResult
+
+Defined in: [packages/babylon-ts-sdk/src/tbv/core/clients/eth/pegin-registration-client.ts](https://github.com/babylonlabs-io/babylon-toolkit/blob/main/packages/babylon-ts-sdk/src/tbv/core/clients/eth/pegin-registration-client.ts)
+
+#### Properties
+
+##### ethTxHash
+
+```ts
+ethTxHash: `0x${string}`;
+```
+
+Defined in: [packages/babylon-ts-sdk/src/tbv/core/clients/eth/pegin-registration-client.ts](https://github.com/babylonlabs-io/babylon-toolkit/blob/main/packages/babylon-ts-sdk/src/tbv/core/clients/eth/pegin-registration-client.ts)
+
+##### vaultId
+
+```ts
+vaultId: `0x${string}`;
+```
+
+Defined in: [packages/babylon-ts-sdk/src/tbv/core/clients/eth/pegin-registration-client.ts](https://github.com/babylonlabs-io/babylon-toolkit/blob/main/packages/babylon-ts-sdk/src/tbv/core/clients/eth/pegin-registration-client.ts)
+
+##### peginTxHash
+
+```ts
+peginTxHash: `0x${string}`;
+```
+
+Defined in: [packages/babylon-ts-sdk/src/tbv/core/clients/eth/pegin-registration-client.ts](https://github.com/babylonlabs-io/babylon-toolkit/blob/main/packages/babylon-ts-sdk/src/tbv/core/clients/eth/pegin-registration-client.ts)
+
+***
+
+### BatchPeginRegistrationItem
+
+Defined in: [packages/babylon-ts-sdk/src/tbv/core/clients/eth/pegin-registration-client.ts](https://github.com/babylonlabs-io/babylon-toolkit/blob/main/packages/babylon-ts-sdk/src/tbv/core/clients/eth/pegin-registration-client.ts)
+
+#### Properties
+
+##### depositorSignedPeginTx
+
+```ts
+depositorSignedPeginTx: string;
+```
+
+Defined in: [packages/babylon-ts-sdk/src/tbv/core/clients/eth/pegin-registration-client.ts](https://github.com/babylonlabs-io/babylon-toolkit/blob/main/packages/babylon-ts-sdk/src/tbv/core/clients/eth/pegin-registration-client.ts)
+
+##### hashlock
+
+```ts
+hashlock: `0x${string}`;
+```
+
+Defined in: [packages/babylon-ts-sdk/src/tbv/core/clients/eth/pegin-registration-client.ts](https://github.com/babylonlabs-io/babylon-toolkit/blob/main/packages/babylon-ts-sdk/src/tbv/core/clients/eth/pegin-registration-client.ts)
+
+##### htlcVout
+
+```ts
+htlcVout: number;
+```
+
+Defined in: [packages/babylon-ts-sdk/src/tbv/core/clients/eth/pegin-registration-client.ts](https://github.com/babylonlabs-io/babylon-toolkit/blob/main/packages/babylon-ts-sdk/src/tbv/core/clients/eth/pegin-registration-client.ts)
+
+##### depositorPayoutScriptPubKey
+
+```ts
+depositorPayoutScriptPubKey: string;
+```
+
+Defined in: [packages/babylon-ts-sdk/src/tbv/core/clients/eth/pegin-registration-client.ts](https://github.com/babylonlabs-io/babylon-toolkit/blob/main/packages/babylon-ts-sdk/src/tbv/core/clients/eth/pegin-registration-client.ts)
+
+Bitcoin output script bytes, not an address. The client verifies that the
+script pays the proof-of-possession key before it submits the transaction.
+
+##### depositorWotsPkHash
+
+```ts
+depositorWotsPkHash: `0x${string}`;
+```
+
+Defined in: [packages/babylon-ts-sdk/src/tbv/core/clients/eth/pegin-registration-client.ts](https://github.com/babylonlabs-io/babylon-toolkit/blob/main/packages/babylon-ts-sdk/src/tbv/core/clients/eth/pegin-registration-client.ts)
+
+***
+
+### RegisterPeginBatchOnChainParams
+
+Defined in: [packages/babylon-ts-sdk/src/tbv/core/clients/eth/pegin-registration-client.ts](https://github.com/babylonlabs-io/babylon-toolkit/blob/main/packages/babylon-ts-sdk/src/tbv/core/clients/eth/pegin-registration-client.ts)
+
+#### Properties
+
+##### vaultProvider
+
+```ts
+vaultProvider: `0x${string}`;
+```
+
+Defined in: [packages/babylon-ts-sdk/src/tbv/core/clients/eth/pegin-registration-client.ts](https://github.com/babylonlabs-io/babylon-toolkit/blob/main/packages/babylon-ts-sdk/src/tbv/core/clients/eth/pegin-registration-client.ts)
+
+##### unsignedPrePeginTx
+
+```ts
+unsignedPrePeginTx: string;
+```
+
+Defined in: [packages/babylon-ts-sdk/src/tbv/core/clients/eth/pegin-registration-client.ts](https://github.com/babylonlabs-io/babylon-toolkit/blob/main/packages/babylon-ts-sdk/src/tbv/core/clients/eth/pegin-registration-client.ts)
+
+##### requests
+
+```ts
+requests: BatchPeginRegistrationItem[];
+```
+
+Defined in: [packages/babylon-ts-sdk/src/tbv/core/clients/eth/pegin-registration-client.ts](https://github.com/babylonlabs-io/babylon-toolkit/blob/main/packages/babylon-ts-sdk/src/tbv/core/clients/eth/pegin-registration-client.ts)
+
+##### popSignature
+
+```ts
+popSignature: PopSignature;
+```
+
+Defined in: [packages/babylon-ts-sdk/src/tbv/core/clients/eth/pegin-registration-client.ts](https://github.com/babylonlabs-io/babylon-toolkit/blob/main/packages/babylon-ts-sdk/src/tbv/core/clients/eth/pegin-registration-client.ts)
+
+##### depositorBtcPubkeyRaw
+
+```ts
+depositorBtcPubkeyRaw: string;
+```
+
+Defined in: [packages/babylon-ts-sdk/src/tbv/core/clients/eth/pegin-registration-client.ts](https://github.com/babylonlabs-io/babylon-toolkit/blob/main/packages/babylon-ts-sdk/src/tbv/core/clients/eth/pegin-registration-client.ts)
+
+Raw x-only, compressed, or uncompressed BTC pubkey from the PoP wallet.
+
+##### quotedCommissionBps?
+
+```ts
+optional quotedCommissionBps: number;
+```
+
+Defined in: [packages/babylon-ts-sdk/src/tbv/core/clients/eth/pegin-registration-client.ts](https://github.com/babylonlabs-io/babylon-toolkit/blob/main/packages/babylon-ts-sdk/src/tbv/core/clients/eth/pegin-registration-client.ts)
+
+##### expectedFingerprint
+
+```ts
+expectedFingerprint: `0x${string}`;
+```
+
+Defined in: [packages/babylon-ts-sdk/src/tbv/core/clients/eth/pegin-registration-client.ts](https://github.com/babylonlabs-io/babylon-toolkit/blob/main/packages/babylon-ts-sdk/src/tbv/core/clients/eth/pegin-registration-client.ts)
+
+See [RegisterPeginOnChainParams.expectedFingerprint](#expectedfingerprint). One value for
+the whole batch: the fingerprint takes no per-request input and a batch
+fixes one vault provider, so every entry would resolve the same value.
+
+***
+
+### BatchPeginRegistrationResultItem
+
+Defined in: [packages/babylon-ts-sdk/src/tbv/core/clients/eth/pegin-registration-client.ts](https://github.com/babylonlabs-io/babylon-toolkit/blob/main/packages/babylon-ts-sdk/src/tbv/core/clients/eth/pegin-registration-client.ts)
+
+#### Properties
+
+##### vaultId
+
+```ts
+vaultId: `0x${string}`;
+```
+
+Defined in: [packages/babylon-ts-sdk/src/tbv/core/clients/eth/pegin-registration-client.ts](https://github.com/babylonlabs-io/babylon-toolkit/blob/main/packages/babylon-ts-sdk/src/tbv/core/clients/eth/pegin-registration-client.ts)
+
+##### peginTxHash
+
+```ts
+peginTxHash: `0x${string}`;
+```
+
+Defined in: [packages/babylon-ts-sdk/src/tbv/core/clients/eth/pegin-registration-client.ts](https://github.com/babylonlabs-io/babylon-toolkit/blob/main/packages/babylon-ts-sdk/src/tbv/core/clients/eth/pegin-registration-client.ts)
+
+***
+
+### PeginBatchRegistrationResult
+
+Defined in: [packages/babylon-ts-sdk/src/tbv/core/clients/eth/pegin-registration-client.ts](https://github.com/babylonlabs-io/babylon-toolkit/blob/main/packages/babylon-ts-sdk/src/tbv/core/clients/eth/pegin-registration-client.ts)
+
+#### Properties
+
+##### ethTxHash
+
+```ts
+ethTxHash: `0x${string}`;
+```
+
+Defined in: [packages/babylon-ts-sdk/src/tbv/core/clients/eth/pegin-registration-client.ts](https://github.com/babylonlabs-io/babylon-toolkit/blob/main/packages/babylon-ts-sdk/src/tbv/core/clients/eth/pegin-registration-client.ts)
+
+##### vaults
+
+```ts
+vaults: BatchPeginRegistrationResultItem[];
+```
+
+Defined in: [packages/babylon-ts-sdk/src/tbv/core/clients/eth/pegin-registration-client.ts](https://github.com/babylonlabs-io/babylon-toolkit/blob/main/packages/babylon-ts-sdk/src/tbv/core/clients/eth/pegin-registration-client.ts)
+
+***
+
 ### VaultBasicInfo
 
 Defined in: [packages/babylon-ts-sdk/src/tbv/core/clients/eth/types.ts](https://github.com/babylonlabs-io/babylon-toolkit/blob/main/packages/babylon-ts-sdk/src/tbv/core/clients/eth/types.ts)
@@ -1798,16 +2575,6 @@ vaultProviderCommissionBps: number;
 ```
 
 Defined in: [packages/babylon-ts-sdk/src/tbv/core/clients/eth/types.ts](https://github.com/babylonlabs-io/babylon-toolkit/blob/main/packages/babylon-ts-sdk/src/tbv/core/clients/eth/types.ts)
-
-##### claimExpiredUntil
-
-```ts
-claimExpiredUntil: bigint;
-```
-
-Defined in: [packages/babylon-ts-sdk/src/tbv/core/clients/eth/types.ts](https://github.com/babylonlabs-io/babylon-toolkit/blob/main/packages/babylon-ts-sdk/src/tbv/core/clients/eth/types.ts)
-
-Block deadline (uint256) for depositor reclaim. TODO(#1690): wire to refund flow.
 
 ##### vaultCoreVersion
 
@@ -1977,7 +2744,7 @@ Defined in: [packages/babylon-ts-sdk/src/tbv/core/clients/eth/types.ts](https://
 ##### getVaultProviderGenesisBtcPubKey()
 
 ```ts
-getVaultProviderGenesisBtcPubKey(vpAddress): Promise<OnChainBtcPubkey>;
+getVaultProviderGenesisBtcPubKey(vpAddress, blockNumber?): Promise<OnChainBtcPubkey>;
 ```
 
 Defined in: [packages/babylon-ts-sdk/src/tbv/core/clients/eth/types.ts](https://github.com/babylonlabs-io/babylon-toolkit/blob/main/packages/babylon-ts-sdk/src/tbv/core/clients/eth/types.ts)
@@ -1997,6 +2764,43 @@ RFC-006 registry — as does every caller.
 ###### vpAddress
 
 `` `0x${string}` ``
+
+###### blockNumber?
+
+`bigint`
+
+###### Returns
+
+`Promise`\<[`OnChainBtcPubkey`](#onchainbtcpubkey)\>
+
+##### getVaultProviderOperationBtcKeyAtEpoch()
+
+```ts
+getVaultProviderOperationBtcKeyAtEpoch(
+   vpAddress, 
+   epoch, 
+blockNumber?): Promise<OnChainBtcPubkey>;
+```
+
+Defined in: [packages/babylon-ts-sdk/src/tbv/core/clients/eth/types.ts](https://github.com/babylonlabs-io/babylon-toolkit/blob/main/packages/babylon-ts-sdk/src/tbv/core/clients/eth/types.ts)
+
+Read the vault provider operation key selected by an RFC-006 epoch.
+Existing-vault consumers pass the vault's frozen `vpKeyEpoch` here so a
+later rotation cannot move the result.
+
+###### Parameters
+
+###### vpAddress
+
+`` `0x${string}` ``
+
+###### epoch
+
+`bigint`
+
+###### blockNumber?
+
+`bigint`
 
 ###### Returns
 
@@ -2102,8 +2906,8 @@ getCurrentVaultProviderOperationBtcKey(vpAddress): Promise<OnChainBtcPubkey>;
 Defined in: [packages/babylon-ts-sdk/src/tbv/core/clients/eth/types.ts](https://github.com/babylonlabs-io/babylon-toolkit/blob/main/packages/babylon-ts-sdk/src/tbv/core/clients/eth/types.ts)
 
 Read a vault provider's *current* RFC-006 operation BTC key — the key its
-server signs auth tokens with. Falls back to the registration key when the
-provider has never rotated.
+server uses for the JSON-RPC token subject. Falls back to the registration
+key when the provider has never rotated.
 
 ###### Parameters
 
@@ -2114,6 +2918,72 @@ provider has never rotated.
 ###### Returns
 
 `Promise`\<[`OnChainBtcPubkey`](#onchainbtcpubkey)\>
+
+##### getMaxAcceptableCommissionBpsBatch()
+
+```ts
+getMaxAcceptableCommissionBpsBatch(vaultIds, createdAt): Promise<number[]>;
+```
+
+Defined in: [packages/babylon-ts-sdk/src/tbv/core/clients/eth/types.ts](https://github.com/babylonlabs-io/babylon-toolkit/blob/main/packages/babylon-ts-sdk/src/tbv/core/clients/eth/types.ts)
+
+Read the depositor's commission ceiling (`maxAcceptableCommissionBps`)
+for vaults registered in the same block `createdAt`, from their
+`PegInSubmittedV2` logs, in `vaultIds` order. The contract discards the
+ceiling after bound-checking it, so the log is its only on-chain source.
+
+###### Parameters
+
+###### vaultIds
+
+readonly `` `0x${string}` ``[]
+
+###### createdAt
+
+`bigint`
+
+###### Returns
+
+`Promise`\<`number`[]\>
+
+###### Throws
+
+(transient, retry) when the
+node answers with no registration logs for the block at all.
+
+###### Throws
+
+when a vault has only its `PegInSubmitted` log (a registration
+that predates the V2 event), none, or more than one V2 log.
+
+##### getVaultProviderApplication()
+
+```ts
+getVaultProviderApplication(vpAddress, blockNumber?): Promise<`0x${string}`>;
+```
+
+Defined in: [packages/babylon-ts-sdk/src/tbv/core/clients/eth/types.ts](https://github.com/babylonlabs-io/babylon-toolkit/blob/main/packages/babylon-ts-sdk/src/tbv/core/clients/eth/types.ts)
+
+Read the application entry point a vault provider is registered for.
+
+The peg-in submit path resolves this internally and uses it to pick the
+keeper roster, the roster version and the keeper key epoch a deposit is
+bonded to. Pass `blockNumber` when the result will shape a Bitcoin lock,
+so it describes the same block as the roster reads that follow it.
+
+###### Parameters
+
+###### vpAddress
+
+`` `0x${string}` ``
+
+###### blockNumber?
+
+`bigint`
+
+###### Returns
+
+`Promise`\<`` `0x${string}` ``\>
 
 ***
 
@@ -2531,10 +3401,20 @@ Defined in: [packages/babylon-ts-sdk/src/tbv/core/clients/eth/types.ts](https://
 ##### getPegInConfiguration()
 
 ```ts
-getPegInConfiguration(): Promise<PegInConfiguration>;
+getPegInConfiguration(blockNumber?): Promise<PegInConfiguration>;
 ```
 
 Defined in: [packages/babylon-ts-sdk/src/tbv/core/clients/eth/types.ts](https://github.com/babylonlabs-io/babylon-toolkit/blob/main/packages/babylon-ts-sdk/src/tbv/core/clients/eth/types.ts)
+
+Pass `blockNumber` when the result will shape a Bitcoin lock, so this
+multicall and the participant-key reads describe the same block. Omit it
+for display-only reads, where a slightly stale value is harmless.
+
+###### Parameters
+
+###### blockNumber?
+
+`bigint`
 
 ###### Returns
 
@@ -2618,12 +3498,29 @@ Defined in: [packages/babylon-ts-sdk/src/tbv/core/clients/eth/types.ts](https://
 
 Interface for reading vault keepers from the ApplicationRegistry contract.
 
+The reads used to build a peg-in — here and on the sibling reader interfaces
+— take an optional `blockNumber` that pins them to one block instead of
+`latest`. Omitting it, the historical behaviour, is correct for every read
+that resolves against a vault's already-frozen epochs, because those are
+immutable once stamped. It is NOT correct for a fresh peg-in build: the
+participant keys, roster versions and protocol params that shape the Bitcoin
+lock must all describe the same block, or the lock commits to a mixture of
+chain states that never existed at once. See
+`services/deposit/validateOnChainParticipantKeys`.
+
+The `getCurrent*` roster reads are the exception and take no block. Nothing
+on the build path uses them — it resolves rosters by version instead — so
+they were left alone rather than given a pin no caller would pass.
+
 #### Methods
 
 ##### getVaultKeepersByVersion()
 
 ```ts
-getVaultKeepersByVersion(appEntryPoint, version): Promise<AddressBTCKeyPair[]>;
+getVaultKeepersByVersion(
+   appEntryPoint, 
+   version, 
+blockNumber?): Promise<AddressBTCKeyPair[]>;
 ```
 
 Defined in: [packages/babylon-ts-sdk/src/tbv/core/clients/eth/types.ts](https://github.com/babylonlabs-io/babylon-toolkit/blob/main/packages/babylon-ts-sdk/src/tbv/core/clients/eth/types.ts)
@@ -2637,6 +3534,10 @@ Defined in: [packages/babylon-ts-sdk/src/tbv/core/clients/eth/types.ts](https://
 ###### version
 
 `number`
+
+###### blockNumber?
+
+`bigint`
 
 ###### Returns
 
@@ -2663,7 +3564,7 @@ Defined in: [packages/babylon-ts-sdk/src/tbv/core/clients/eth/types.ts](https://
 ##### getCurrentVaultKeepersVersion()
 
 ```ts
-getCurrentVaultKeepersVersion(appEntryPoint): Promise<number>;
+getCurrentVaultKeepersVersion(appEntryPoint, blockNumber?): Promise<number>;
 ```
 
 Defined in: [packages/babylon-ts-sdk/src/tbv/core/clients/eth/types.ts](https://github.com/babylonlabs-io/babylon-toolkit/blob/main/packages/babylon-ts-sdk/src/tbv/core/clients/eth/types.ts)
@@ -2674,9 +3575,43 @@ Defined in: [packages/babylon-ts-sdk/src/tbv/core/clients/eth/types.ts](https://
 
 `` `0x${string}` ``
 
+###### blockNumber?
+
+`bigint`
+
 ###### Returns
 
 `Promise`\<`number`\>
+
+##### getCurrentAppKeeperKeyEpoch()
+
+```ts
+getCurrentAppKeeperKeyEpoch(appEntryPoint, blockNumber?): Promise<bigint>;
+```
+
+Defined in: [packages/babylon-ts-sdk/src/tbv/core/clients/eth/types.ts](https://github.com/babylonlabs-io/babylon-toolkit/blob/main/packages/babylon-ts-sdk/src/tbv/core/clients/eth/types.ts)
+
+Read the application's current vault-keeper operation-key epoch.
+
+One counter for the whole application, bumped by any keeper's
+operation-key or payout-script append. The peg-in config fingerprint
+commits to it in place of the N resolved keeper keys, so it must be read
+at the same block as the roster it labels. Returned as `bigint`; the
+contract encodes it as `uint64` and a `Number` would truncate.
+
+###### Parameters
+
+###### appEntryPoint
+
+`` `0x${string}` ``
+
+###### blockNumber?
+
+`bigint`
+
+###### Returns
+
+`Promise`\<`bigint`\>
 
 ***
 
@@ -2691,7 +3626,7 @@ Interface for reading universal challengers from the ProtocolParams contract.
 ##### getUniversalChallengersByVersion()
 
 ```ts
-getUniversalChallengersByVersion(version): Promise<AddressBTCKeyPair[]>;
+getUniversalChallengersByVersion(version, blockNumber?): Promise<AddressBTCKeyPair[]>;
 ```
 
 Defined in: [packages/babylon-ts-sdk/src/tbv/core/clients/eth/types.ts](https://github.com/babylonlabs-io/babylon-toolkit/blob/main/packages/babylon-ts-sdk/src/tbv/core/clients/eth/types.ts)
@@ -2701,6 +3636,10 @@ Defined in: [packages/babylon-ts-sdk/src/tbv/core/clients/eth/types.ts](https://
 ###### version
 
 `number`
+
+###### blockNumber?
+
+`bigint`
 
 ###### Returns
 
@@ -2721,14 +3660,45 @@ Defined in: [packages/babylon-ts-sdk/src/tbv/core/clients/eth/types.ts](https://
 ##### getLatestUniversalChallengersVersion()
 
 ```ts
-getLatestUniversalChallengersVersion(): Promise<number>;
+getLatestUniversalChallengersVersion(blockNumber?): Promise<number>;
 ```
 
 Defined in: [packages/babylon-ts-sdk/src/tbv/core/clients/eth/types.ts](https://github.com/babylonlabs-io/babylon-toolkit/blob/main/packages/babylon-ts-sdk/src/tbv/core/clients/eth/types.ts)
 
+###### Parameters
+
+###### blockNumber?
+
+`bigint`
+
 ###### Returns
 
 `Promise`\<`number`\>
+
+##### getCurrentUcKeyEpoch()
+
+```ts
+getCurrentUcKeyEpoch(blockNumber?): Promise<bigint>;
+```
+
+Defined in: [packages/babylon-ts-sdk/src/tbv/core/clients/eth/types.ts](https://github.com/babylonlabs-io/babylon-toolkit/blob/main/packages/babylon-ts-sdk/src/tbv/core/clients/eth/types.ts)
+
+Read the protocol's current universal-challenger operation-key epoch.
+
+The challenger-axis counterpart to
+[VaultKeeperReader.getCurrentAppKeeperKeyEpoch](#getcurrentappkeeperkeyepoch-2): one protocol-wide
+counter the fingerprint commits to in place of the M resolved challenger
+keys. Returned as `bigint` for the same `uint64` reason.
+
+###### Parameters
+
+###### blockNumber?
+
+`bigint`
+
+###### Returns
+
+`Promise`\<`bigint`\>
 
 ***
 
@@ -2881,22 +3851,27 @@ builds a lock no counterparty agrees with.
 ##### getCurrentOperationKeys()
 
 ```ts
-getCurrentOperationKeys(query): Promise<RawOperationKeys>;
+getCurrentOperationKeys(query, blockNumber?): Promise<RawOperationKeys>;
 ```
 
 Defined in: [packages/babylon-ts-sdk/src/tbv/core/clients/eth/types.ts](https://github.com/babylonlabs-io/babylon-toolkit/blob/main/packages/babylon-ts-sdk/src/tbv/core/clients/eth/types.ts)
 
 Resolve every participant's *current* operation key.
 
-Used for new peg-ins and for the VP auth pin. Needs no epoch read at all —
-each registry's `getCurrentOperationBtcKey` resolves its own genesis
-fallback, so an operator that never rotated yields its registration key.
+Used for new peg-ins. The VP-only current getter separately supplies the
+JSON-RPC auth pin. Needs no epoch read at all — each registry's
+`getCurrentOperationBtcKey` resolves its own genesis fallback, so an
+operator that never rotated yields its registration key.
 
 ###### Parameters
 
 ###### query
 
 [`OperationKeyQuery`](#operationkeyquery)
+
+###### blockNumber?
+
+`bigint`
 
 ###### Returns
 
@@ -3535,8 +4510,8 @@ optional retryableFor: (method) => boolean;
 Defined in: [packages/babylon-ts-sdk/src/tbv/core/clients/vault-provider/api.ts](https://github.com/babylonlabs-io/babylon-toolkit/blob/main/packages/babylon-ts-sdk/src/tbv/core/clients/vault-provider/api.ts)
 
 Custom retry predicate. Default retries only the idempotent read
-methods: `getPeginStatus`, `batchGetPeginStatus`, `batchGetPegoutStatus`,
-`requestDepositorPresignTransactions`.
+methods: `getPeginStatusByVaultId`, `batchGetPeginStatusByVaultId`,
+`batchGetPegoutStatusByVaultId`, `requestDepositorPresignTransactions`.
 
 ###### Parameters
 
@@ -3618,6 +4593,16 @@ Defined in: [packages/babylon-ts-sdk/src/tbv/core/clients/vault-provider/auth/cr
 
 Already-derived 32-byte auth-anchor preimage (64-char hex, no `0x`).
 
+##### providerAddress
+
+```ts
+providerAddress: string;
+```
+
+Defined in: [packages/babylon-ts-sdk/src/tbv/core/clients/vault-provider/auth/createAuthenticatedVpClient.ts](https://github.com/babylonlabs-io/babylon-toolkit/blob/main/packages/babylon-ts-sdk/src/tbv/core/clients/vault-provider/auth/createAuthenticatedVpClient.ts)
+
+Stable vault-provider address used to scope the registry entry.
+
 ##### pinnedServerPubkey
 
 ```ts
@@ -3627,6 +4612,40 @@ pinnedServerPubkey: OnChainBtcPubkey;
 Defined in: [packages/babylon-ts-sdk/src/tbv/core/clients/vault-provider/auth/createAuthenticatedVpClient.ts](https://github.com/babylonlabs-io/babylon-toolkit/blob/main/packages/babylon-ts-sdk/src/tbv/core/clients/vault-provider/auth/createAuthenticatedVpClient.ts)
 
 On-chain VP pubkey, branded so it can only come from the registry reader.
+
+##### grpcPinnedServerPubkey
+
+```ts
+grpcPinnedServerPubkey: OnChainBtcPubkey;
+```
+
+Defined in: [packages/babylon-ts-sdk/src/tbv/core/clients/vault-provider/auth/createAuthenticatedVpClient.ts](https://github.com/babylonlabs-io/babylon-toolkit/blob/main/packages/babylon-ts-sdk/src/tbv/core/clients/vault-provider/auth/createAuthenticatedVpClient.ts)
+
+Frozen-epoch VP pubkey used by the gRPC-subject bootstrap.
+
+##### grpcKeyEpoch
+
+```ts
+grpcKeyEpoch: bigint;
+```
+
+Defined in: [packages/babylon-ts-sdk/src/tbv/core/clients/vault-provider/auth/createAuthenticatedVpClient.ts](https://github.com/babylonlabs-io/babylon-toolkit/blob/main/packages/babylon-ts-sdk/src/tbv/core/clients/vault-provider/auth/createAuthenticatedVpClient.ts)
+
+Vault's frozen VP epoch, paired with `grpcPinnedServerPubkey`.
+
+##### refreshJsonRpcPinnedServerPubkey()?
+
+```ts
+optional refreshJsonRpcPinnedServerPubkey: () => Promise<OnChainBtcPubkey>;
+```
+
+Defined in: [packages/babylon-ts-sdk/src/tbv/core/clients/vault-provider/auth/createAuthenticatedVpClient.ts](https://github.com/babylonlabs-io/babylon-toolkit/blob/main/packages/babylon-ts-sdk/src/tbv/core/clients/vault-provider/auth/createAuthenticatedVpClient.ts)
+
+Re-read the current operation key after a JSON-RPC identity mismatch.
+
+###### Returns
+
+`Promise`\<[`OnChainBtcPubkey`](#onchainbtcpubkey)\>
 
 ##### depositorBtcPubkey
 
@@ -3681,6 +4700,16 @@ authAnchorHex: string;
 
 Defined in: [packages/babylon-ts-sdk/src/tbv/core/clients/vault-provider/auth/primeVpAuth.ts](https://github.com/babylonlabs-io/babylon-toolkit/blob/main/packages/babylon-ts-sdk/src/tbv/core/clients/vault-provider/auth/primeVpAuth.ts)
 
+##### providerAddress
+
+```ts
+providerAddress: string;
+```
+
+Defined in: [packages/babylon-ts-sdk/src/tbv/core/clients/vault-provider/auth/primeVpAuth.ts](https://github.com/babylonlabs-io/babylon-toolkit/blob/main/packages/babylon-ts-sdk/src/tbv/core/clients/vault-provider/auth/primeVpAuth.ts)
+
+Stable vault-provider address used to scope the registry entry.
+
 ##### pinnedServerPubkey
 
 ```ts
@@ -3688,6 +4717,40 @@ pinnedServerPubkey: OnChainBtcPubkey;
 ```
 
 Defined in: [packages/babylon-ts-sdk/src/tbv/core/clients/vault-provider/auth/primeVpAuth.ts](https://github.com/babylonlabs-io/babylon-toolkit/blob/main/packages/babylon-ts-sdk/src/tbv/core/clients/vault-provider/auth/primeVpAuth.ts)
+
+##### grpcPinnedServerPubkey
+
+```ts
+grpcPinnedServerPubkey: OnChainBtcPubkey;
+```
+
+Defined in: [packages/babylon-ts-sdk/src/tbv/core/clients/vault-provider/auth/primeVpAuth.ts](https://github.com/babylonlabs-io/babylon-toolkit/blob/main/packages/babylon-ts-sdk/src/tbv/core/clients/vault-provider/auth/primeVpAuth.ts)
+
+Frozen-epoch VP pubkey used by the gRPC-subject bootstrap.
+
+##### grpcKeyEpoch
+
+```ts
+grpcKeyEpoch: bigint;
+```
+
+Defined in: [packages/babylon-ts-sdk/src/tbv/core/clients/vault-provider/auth/primeVpAuth.ts](https://github.com/babylonlabs-io/babylon-toolkit/blob/main/packages/babylon-ts-sdk/src/tbv/core/clients/vault-provider/auth/primeVpAuth.ts)
+
+Vault's frozen VP epoch, paired with `grpcPinnedServerPubkey`.
+
+##### refreshJsonRpcPinnedServerPubkey()?
+
+```ts
+optional refreshJsonRpcPinnedServerPubkey: () => Promise<OnChainBtcPubkey>;
+```
+
+Defined in: [packages/babylon-ts-sdk/src/tbv/core/clients/vault-provider/auth/primeVpAuth.ts](https://github.com/babylonlabs-io/babylon-toolkit/blob/main/packages/babylon-ts-sdk/src/tbv/core/clients/vault-provider/auth/primeVpAuth.ts)
+
+Re-read the current operation key after a JSON-RPC identity mismatch.
+
+###### Returns
+
+`Promise`\<[`OnChainBtcPubkey`](#onchainbtcpubkey)\>
 
 ##### depositorBtcPubkey
 
@@ -3842,10 +4905,88 @@ authAnchorHex: string;
 
 Defined in: [packages/babylon-ts-sdk/src/tbv/core/clients/vault-provider/auth/tokenRegistry.ts](https://github.com/babylonlabs-io/babylon-toolkit/blob/main/packages/babylon-ts-sdk/src/tbv/core/clients/vault-provider/auth/tokenRegistry.ts)
 
+##### providerAddress
+
+```ts
+providerAddress: string;
+```
+
+Defined in: [packages/babylon-ts-sdk/src/tbv/core/clients/vault-provider/auth/tokenRegistry.ts](https://github.com/babylonlabs-io/babylon-toolkit/blob/main/packages/babylon-ts-sdk/src/tbv/core/clients/vault-provider/auth/tokenRegistry.ts)
+
+Stable provider identity used to prevent cross-provider cache reuse.
+
 ##### pinnedServerPubkey
 
 ```ts
 pinnedServerPubkey: OnChainBtcPubkey;
+```
+
+Defined in: [packages/babylon-ts-sdk/src/tbv/core/clients/vault-provider/auth/tokenRegistry.ts](https://github.com/babylonlabs-io/babylon-toolkit/blob/main/packages/babylon-ts-sdk/src/tbv/core/clients/vault-provider/auth/tokenRegistry.ts)
+
+##### grpcPinnedServerPubkey
+
+```ts
+grpcPinnedServerPubkey: OnChainBtcPubkey;
+```
+
+Defined in: [packages/babylon-ts-sdk/src/tbv/core/clients/vault-provider/auth/tokenRegistry.ts](https://github.com/babylonlabs-io/babylon-toolkit/blob/main/packages/babylon-ts-sdk/src/tbv/core/clients/vault-provider/auth/tokenRegistry.ts)
+
+Frozen-epoch issuer used only by the gRPC token subject.
+
+##### grpcKeyEpoch
+
+```ts
+grpcKeyEpoch: bigint;
+```
+
+Defined in: [packages/babylon-ts-sdk/src/tbv/core/clients/vault-provider/auth/tokenRegistry.ts](https://github.com/babylonlabs-io/babylon-toolkit/blob/main/packages/babylon-ts-sdk/src/tbv/core/clients/vault-provider/auth/tokenRegistry.ts)
+
+Frozen VP epoch that selected `grpcPinnedServerPubkey`.
+
+##### refreshJsonRpcPinnedServerPubkey()?
+
+```ts
+optional refreshJsonRpcPinnedServerPubkey: () => Promise<OnChainBtcPubkey>;
+```
+
+Defined in: [packages/babylon-ts-sdk/src/tbv/core/clients/vault-provider/auth/tokenRegistry.ts](https://github.com/babylonlabs-io/babylon-toolkit/blob/main/packages/babylon-ts-sdk/src/tbv/core/clients/vault-provider/auth/tokenRegistry.ts)
+
+Authoritative live-key resolver for bounded JSON-RPC pin recovery.
+
+###### Returns
+
+`Promise`\<[`OnChainBtcPubkey`](#onchainbtcpubkey)\>
+
+##### expectedAudienceXOnlyPubkey
+
+```ts
+expectedAudienceXOnlyPubkey: string;
+```
+
+Defined in: [packages/babylon-ts-sdk/src/tbv/core/clients/vault-provider/auth/tokenRegistry.ts](https://github.com/babylonlabs-io/babylon-toolkit/blob/main/packages/babylon-ts-sdk/src/tbv/core/clients/vault-provider/auth/tokenRegistry.ts)
+
+Depositor x-only pubkey (32-byte hex), asserted against each token's CWT `aud`.
+
+***
+
+### VpTokenRegistryLookup
+
+Defined in: [packages/babylon-ts-sdk/src/tbv/core/clients/vault-provider/auth/tokenRegistry.ts](https://github.com/babylonlabs-io/babylon-toolkit/blob/main/packages/babylon-ts-sdk/src/tbv/core/clients/vault-provider/auth/tokenRegistry.ts)
+
+#### Properties
+
+##### peginTxid
+
+```ts
+peginTxid: string;
+```
+
+Defined in: [packages/babylon-ts-sdk/src/tbv/core/clients/vault-provider/auth/tokenRegistry.ts](https://github.com/babylonlabs-io/babylon-toolkit/blob/main/packages/babylon-ts-sdk/src/tbv/core/clients/vault-provider/auth/tokenRegistry.ts)
+
+##### providerAddress
+
+```ts
+providerAddress: string;
 ```
 
 Defined in: [packages/babylon-ts-sdk/src/tbv/core/clients/vault-provider/auth/tokenRegistry.ts](https://github.com/babylonlabs-io/babylon-toolkit/blob/main/packages/babylon-ts-sdk/src/tbv/core/clients/vault-provider/auth/tokenRegistry.ts)
@@ -3857,8 +4998,6 @@ expectedAudienceXOnlyPubkey: string;
 ```
 
 Defined in: [packages/babylon-ts-sdk/src/tbv/core/clients/vault-provider/auth/tokenRegistry.ts](https://github.com/babylonlabs-io/babylon-toolkit/blob/main/packages/babylon-ts-sdk/src/tbv/core/clients/vault-provider/auth/tokenRegistry.ts)
-
-Depositor x-only pubkey (32-byte hex), asserted against each token's CWT `aud`.
 
 ***
 
@@ -3876,10 +5015,10 @@ Per-item entry in a VP batch response.
 
 #### Properties
 
-##### pegin\_txid
+##### vault\_id
 
 ```ts
-pegin_txid: string;
+vault_id: string;
 ```
 
 Defined in: [packages/babylon-ts-sdk/src/tbv/core/clients/vault-provider/batchAttribution.ts](https://github.com/babylonlabs-io/babylon-toolkit/blob/main/packages/babylon-ts-sdk/src/tbv/core/clients/vault-provider/batchAttribution.ts)
@@ -3928,15 +5067,15 @@ Defined in: [packages/babylon-ts-sdk/src/tbv/core/clients/vault-provider/batchPo
 
 Items to poll for this provider, e.g. `DepositToPoll[]`.
 
-##### getTxid()
+##### getVaultId()
 
 ```ts
-getTxid: (item) => string;
+getVaultId: (item) => string;
 ```
 
 Defined in: [packages/babylon-ts-sdk/src/tbv/core/clients/vault-provider/batchPoll.ts](https://github.com/babylonlabs-io/babylon-toolkit/blob/main/packages/babylon-ts-sdk/src/tbv/core/clients/vault-provider/batchPoll.ts)
 
-Extract the canonical txid for each item. Helper lowercases it.
+Extract the on-chain vault id for each item. Helper normalizes it.
 
 ###### Parameters
 
@@ -3951,19 +5090,20 @@ Extract the canonical txid for each item. Helper lowercases it.
 ##### batchCall()
 
 ```ts
-batchCall: (txids) => Promise<{
+batchCall: (vaultIds) => Promise<{
   results: readonly BatchResultEntry<TResult>[];
 }>;
 ```
 
 Defined in: [packages/babylon-ts-sdk/src/tbv/core/clients/vault-provider/batchPoll.ts](https://github.com/babylonlabs-io/babylon-toolkit/blob/main/packages/babylon-ts-sdk/src/tbv/core/clients/vault-provider/batchPoll.ts)
 
-Per-chunk RPC call. Receives lowercased txids; returns the batch
-envelope. Caller wraps `rpcClient.batchGet*Status({ pegin_txids })`.
+Per-chunk RPC call. Receives normalized (unprefixed, lowercase)
+vault ids; returns the batch envelope. Caller wraps
+`rpcClient.batchGet*StatusByVaultId({ vault_ids })`.
 
 ###### Parameters
 
-###### txids
+###### vaultIds
 
 `string`[]
 
@@ -3983,10 +5123,15 @@ Defined in: [packages/babylon-ts-sdk/src/tbv/core/clients/vault-provider/batchPo
 
 Handle a per-item envelope. Exactly one of `result` / `error` is
 populated (validator invariant). Caller decides UI state, logging,
-etc. Not invoked for txids surfaced via [onDuplicate](#onduplicate).
+etc. Not invoked for vault ids surfaced via [onDuplicate](#onduplicate).
 
-Note: `envelope.pegin_txid` is the lowercased txid the helper
+Note: `envelope.vault_id` is the normalized vault id the helper
 sent in the request, not whatever case/encoding the server echoed.
+
+Also dispatched with a locally-produced `error` for an item whose
+`getVaultId` is not a well-formed vault id. Such an item is never
+sent, because an unattributable id comes back as `missing` and would
+blame the provider for a caller-side defect.
 
 ###### Parameters
 
@@ -4094,19 +5239,19 @@ to project that onto per-item state.
 ##### onUnexpected()?
 
 ```ts
-optional onUnexpected: (echoedTxids) => void;
+optional onUnexpected: (echoedVaultIds) => void;
 ```
 
 Defined in: [packages/babylon-ts-sdk/src/tbv/core/clients/vault-provider/batchPoll.ts](https://github.com/babylonlabs-io/babylon-toolkit/blob/main/packages/babylon-ts-sdk/src/tbv/core/clients/vault-provider/batchPoll.ts)
 
-Server returned txids that were not in the request. Caller
+Server returned vault ids that were not in the request. Caller
 typically logs the count for observability — there's no recovery
 action since the original request items are unaffected. Optional;
 defaults to no-op.
 
 ###### Parameters
 
-###### echoedTxids
+###### echoedVaultIds
 
 `string`[]
 
@@ -4257,8 +5402,9 @@ optional retryableFor: (method) => boolean;
 Defined in: [packages/babylon-ts-sdk/src/tbv/core/clients/vault-provider/json-rpc-client.ts](https://github.com/babylonlabs-io/babylon-toolkit/blob/main/packages/babylon-ts-sdk/src/tbv/core/clients/vault-provider/json-rpc-client.ts)
 
 Predicate that decides which methods retry on transient errors.
-Default retries only `getPeginStatus`, `batchGetPeginStatus`,
-`batchGetPegoutStatus`, and `requestDepositorPresignTransactions`.
+Default retries only `getPeginStatusByVaultId`,
+`batchGetPeginStatusByVaultId`, `batchGetPegoutStatusByVaultId`, and
+`requestDepositorPresignTransactions`.
 Write methods are not retried by default.
 
 ###### Parameters
@@ -4555,6 +5701,27 @@ Defined in: [packages/babylon-ts-sdk/src/tbv/core/clients/vault-provider/types.t
 
 ```ts
 depositor_pk: string;
+```
+
+Defined in: [packages/babylon-ts-sdk/src/tbv/core/clients/vault-provider/types.ts](https://github.com/babylonlabs-io/babylon-toolkit/blob/main/packages/babylon-ts-sdk/src/tbv/core/clients/vault-provider/types.ts)
+
+***
+
+### GetPeginStatusByVaultIdParams
+
+Defined in: [packages/babylon-ts-sdk/src/tbv/core/clients/vault-provider/types.ts](https://github.com/babylonlabs-io/babylon-toolkit/blob/main/packages/babylon-ts-sdk/src/tbv/core/clients/vault-provider/types.ts)
+
+Params for `getPeginStatusByVaultId`. A vault is addressed by its
+depositor-bound `vault_id` (`keccak256(abi.encode(peginTxHash, depositor))`),
+hex-encoded with or without a `0x` prefix. A `pegin_txid` does not identify
+a vault — several vaults can share one txid.
+
+#### Properties
+
+##### vault\_id
+
+```ts
+vault_id: string;
 ```
 
 Defined in: [packages/babylon-ts-sdk/src/tbv/core/clients/vault-provider/types.ts](https://github.com/babylonlabs-io/babylon-toolkit/blob/main/packages/babylon-ts-sdk/src/tbv/core/clients/vault-provider/types.ts)
@@ -5061,7 +6228,7 @@ Defined in: [packages/babylon-ts-sdk/src/tbv/core/clients/vault-provider/types.t
 
 Defined in: [packages/babylon-ts-sdk/src/tbv/core/clients/vault-provider/types.ts](https://github.com/babylonlabs-io/babylon-toolkit/blob/main/packages/babylon-ts-sdk/src/tbv/core/clients/vault-provider/types.ts)
 
-Response from `getPeginStatus`.
+Response from `getPeginStatusByVaultId`.
 
 #### Properties
 
@@ -5072,6 +6239,20 @@ pegin_txid: string;
 ```
 
 Defined in: [packages/babylon-ts-sdk/src/tbv/core/clients/vault-provider/types.ts](https://github.com/babylonlabs-io/babylon-toolkit/blob/main/packages/babylon-ts-sdk/src/tbv/core/clients/vault-provider/types.ts)
+
+The peg-in txid the server stores for this vault. A mismatch with the
+caller's txid shows a status for a different peg-in; several vaults can
+share one txid, so it does not identify a vault.
+
+##### vault\_id
+
+```ts
+vault_id: string;
+```
+
+Defined in: [packages/babylon-ts-sdk/src/tbv/core/clients/vault-provider/types.ts](https://github.com/babylonlabs-io/babylon-toolkit/blob/main/packages/babylon-ts-sdk/src/tbv/core/clients/vault-provider/types.ts)
+
+The vault this response describes (`0x`-prefixed hex).
 
 ##### status
 
@@ -5267,8 +6448,8 @@ Defined in: [packages/babylon-ts-sdk/src/tbv/core/clients/vault-provider/types.t
 
 Defined in: [packages/babylon-ts-sdk/src/tbv/core/clients/vault-provider/types.ts](https://github.com/babylonlabs-io/babylon-toolkit/blob/main/packages/babylon-ts-sdk/src/tbv/core/clients/vault-provider/types.ts)
 
-Pegout status response. Embedded by `batchGetPegoutStatus` per-result
-envelopes. Mirrors btc-vault `GetPegoutStatusResponse`.
+Pegout status response. Embedded by `batchGetPegoutStatusByVaultId`
+per-result envelopes. Mirrors btc-vault `GetPegoutStatusResponse`.
 
 #### Properties
 
@@ -5279,6 +6460,16 @@ pegin_txid: string;
 ```
 
 Defined in: [packages/babylon-ts-sdk/src/tbv/core/clients/vault-provider/types.ts](https://github.com/babylonlabs-io/babylon-toolkit/blob/main/packages/babylon-ts-sdk/src/tbv/core/clients/vault-provider/types.ts)
+
+##### vault\_id
+
+```ts
+vault_id: string;
+```
+
+Defined in: [packages/babylon-ts-sdk/src/tbv/core/clients/vault-provider/types.ts](https://github.com/babylonlabs-io/babylon-toolkit/blob/main/packages/babylon-ts-sdk/src/tbv/core/clients/vault-provider/types.ts)
+
+The vault this response describes (`0x`-prefixed hex).
 
 ##### found
 
@@ -5306,23 +6497,23 @@ Defined in: [packages/babylon-ts-sdk/src/tbv/core/clients/vault-provider/types.t
 
 ***
 
-### BatchGetPeginStatusParams
+### BatchGetPeginStatusByVaultIdParams
 
 Defined in: [packages/babylon-ts-sdk/src/tbv/core/clients/vault-provider/types.ts](https://github.com/babylonlabs-io/babylon-toolkit/blob/main/packages/babylon-ts-sdk/src/tbv/core/clients/vault-provider/types.ts)
 
-Params for `batchGetPeginStatus`.
+Params for `batchGetPeginStatusByVaultId`.
 
 #### Properties
 
-##### pegin\_txids
+##### vault\_ids
 
 ```ts
-pegin_txids: string[];
+vault_ids: string[];
 ```
 
 Defined in: [packages/babylon-ts-sdk/src/tbv/core/clients/vault-provider/types.ts](https://github.com/babylonlabs-io/babylon-toolkit/blob/main/packages/babylon-ts-sdk/src/tbv/core/clients/vault-provider/types.ts)
 
-Up to MAX_BATCH_SIZE (50) txids per call.
+Up to MAX_BATCH_SIZE (50) vault ids per call (hex, `0x` prefix optional).
 
 ***
 
@@ -5330,17 +6521,19 @@ Up to MAX_BATCH_SIZE (50) txids per call.
 
 Defined in: [packages/babylon-ts-sdk/src/tbv/core/clients/vault-provider/types.ts](https://github.com/babylonlabs-io/babylon-toolkit/blob/main/packages/babylon-ts-sdk/src/tbv/core/clients/vault-provider/types.ts)
 
-Per-pegin entry in a `batchGetPeginStatus` response.
+Per-vault entry in a `batchGetPeginStatusByVaultId` response.
 
 #### Properties
 
-##### pegin\_txid
+##### vault\_id
 
 ```ts
-pegin_txid: string;
+vault_id: string;
 ```
 
 Defined in: [packages/babylon-ts-sdk/src/tbv/core/clients/vault-provider/types.ts](https://github.com/babylonlabs-io/babylon-toolkit/blob/main/packages/babylon-ts-sdk/src/tbv/core/clients/vault-provider/types.ts)
+
+Echo of the requested vault id, verbatim.
 
 ##### result
 
@@ -5364,7 +6557,7 @@ Defined in: [packages/babylon-ts-sdk/src/tbv/core/clients/vault-provider/types.t
 
 Defined in: [packages/babylon-ts-sdk/src/tbv/core/clients/vault-provider/types.ts](https://github.com/babylonlabs-io/babylon-toolkit/blob/main/packages/babylon-ts-sdk/src/tbv/core/clients/vault-provider/types.ts)
 
-Response from `batchGetPeginStatus`. Results are returned in request order.
+Response from `batchGetPeginStatusByVaultId`. Results are returned in request order.
 
 #### Properties
 
@@ -5378,21 +6571,23 @@ Defined in: [packages/babylon-ts-sdk/src/tbv/core/clients/vault-provider/types.t
 
 ***
 
-### BatchGetPegoutStatusParams
+### BatchGetPegoutStatusByVaultIdParams
 
 Defined in: [packages/babylon-ts-sdk/src/tbv/core/clients/vault-provider/types.ts](https://github.com/babylonlabs-io/babylon-toolkit/blob/main/packages/babylon-ts-sdk/src/tbv/core/clients/vault-provider/types.ts)
 
-Params for `batchGetPegoutStatus`.
+Params for `batchGetPegoutStatusByVaultId`.
 
 #### Properties
 
-##### pegin\_txids
+##### vault\_ids
 
 ```ts
-pegin_txids: string[];
+vault_ids: string[];
 ```
 
 Defined in: [packages/babylon-ts-sdk/src/tbv/core/clients/vault-provider/types.ts](https://github.com/babylonlabs-io/babylon-toolkit/blob/main/packages/babylon-ts-sdk/src/tbv/core/clients/vault-provider/types.ts)
+
+Vault ids to query (hex, `0x` prefix optional).
 
 ***
 
@@ -5400,17 +6595,19 @@ Defined in: [packages/babylon-ts-sdk/src/tbv/core/clients/vault-provider/types.t
 
 Defined in: [packages/babylon-ts-sdk/src/tbv/core/clients/vault-provider/types.ts](https://github.com/babylonlabs-io/babylon-toolkit/blob/main/packages/babylon-ts-sdk/src/tbv/core/clients/vault-provider/types.ts)
 
-Per-vault entry in a `batchGetPegoutStatus` response.
+Per-vault entry in a `batchGetPegoutStatusByVaultId` response.
 
 #### Properties
 
-##### pegin\_txid
+##### vault\_id
 
 ```ts
-pegin_txid: string;
+vault_id: string;
 ```
 
 Defined in: [packages/babylon-ts-sdk/src/tbv/core/clients/vault-provider/types.ts](https://github.com/babylonlabs-io/babylon-toolkit/blob/main/packages/babylon-ts-sdk/src/tbv/core/clients/vault-provider/types.ts)
+
+Echo of the requested vault id, verbatim.
 
 ##### result
 
@@ -5434,7 +6631,7 @@ Defined in: [packages/babylon-ts-sdk/src/tbv/core/clients/vault-provider/types.t
 
 Defined in: [packages/babylon-ts-sdk/src/tbv/core/clients/vault-provider/types.ts](https://github.com/babylonlabs-io/babylon-toolkit/blob/main/packages/babylon-ts-sdk/src/tbv/core/clients/vault-provider/types.ts)
 
-Response from `batchGetPegoutStatus`. Results are returned in request order.
+Response from `batchGetPegoutStatusByVaultId`. Results are returned in request order.
 
 #### Properties
 
@@ -5512,26 +6709,6 @@ type JsonRpcErrorSource = "wire" | "local";
 ```
 
 Defined in: [packages/babylon-ts-sdk/src/tbv/core/clients/vault-provider/json-rpc-client.ts](https://github.com/babylonlabs-io/babylon-toolkit/blob/main/packages/babylon-ts-sdk/src/tbv/core/clients/vault-provider/json-rpc-client.ts)
-
-***
-
-### GetPeginStatusParams
-
-```ts
-type GetPeginStatusParams = 
-  | {
-  pegin_txid: string;
-  vault_id?: never;
-}
-  | {
-  vault_id: string;
-  pegin_txid?: never;
-};
-```
-
-Defined in: [packages/babylon-ts-sdk/src/tbv/core/clients/vault-provider/types.ts](https://github.com/babylonlabs-io/babylon-toolkit/blob/main/packages/babylon-ts-sdk/src/tbv/core/clients/vault-provider/types.ts)
-
-Params for querying pegin status. Either pegin_txid or vault_id must be provided.
 
 ***
 
@@ -5622,6 +6799,60 @@ with no bonded key surfaces as an error rather than a silent all-zero key.
 
 ***
 
+### calculateBtcTxHash()
+
+```ts
+function calculateBtcTxHash(transactionHex): `0x${string}`;
+```
+
+Defined in: [packages/babylon-ts-sdk/src/tbv/core/clients/eth/pegin-transaction.ts](https://github.com/babylonlabs-io/babylon-toolkit/blob/main/packages/babylon-ts-sdk/src/tbv/core/clients/eth/pegin-transaction.ts)
+
+Calculate a Bitcoin txid without importing bitcoinjs-lib.
+
+#### Parameters
+
+##### transactionHex
+
+`string`
+
+#### Returns
+
+`` `0x${string}` ``
+
+***
+
+### derivePeginVaultId()
+
+```ts
+function derivePeginVaultId(peginTxHash, depositor): string;
+```
+
+Defined in: [packages/babylon-ts-sdk/src/tbv/core/clients/eth/pegin-transaction.ts](https://github.com/babylonlabs-io/babylon-toolkit/blob/main/packages/babylon-ts-sdk/src/tbv/core/clients/eth/pegin-transaction.ts)
+
+Derive the Solidity vault ID without loading the Rust/WASM package.
+
+Inputs accept an optional `0x` prefix to match the current PeginManager
+call sites. Address validation stays strict: lowercase and valid EIP-55
+addresses pass, while uppercase and incorrectly checksummed mixed-case
+addresses fail. The synchronous result is lowercase hex without a prefix,
+matching the WASM helper that this function replaces.
+
+#### Parameters
+
+##### peginTxHash
+
+`string`
+
+##### depositor
+
+`string`
+
+#### Returns
+
+`string`
+
+***
+
 ### validateOffchainParams()
 
 ```ts
@@ -5697,6 +6928,28 @@ names).
 #### Returns
 
 `void`
+
+***
+
+### isRegistrationLogsUnavailableError()
+
+```ts
+function isRegistrationLogsUnavailableError(err): err is RegistrationLogsUnavailableError;
+```
+
+Defined in: [packages/babylon-ts-sdk/src/tbv/core/clients/eth/registration-logs-error.ts](https://github.com/babylonlabs-io/babylon-toolkit/blob/main/packages/babylon-ts-sdk/src/tbv/core/clients/eth/registration-logs-error.ts)
+
+Matches `instanceof` OR the documented `name` (dual module instances).
+
+#### Parameters
+
+##### err
+
+`unknown`
+
+#### Returns
+
+`err is RegistrationLogsUnavailableError`
 
 ***
 
@@ -5781,6 +7034,14 @@ Get the current block tip height.
 Source: mempool.space API — `GET /api/blocks/tip/height` returns the height
 of the most recent block as a plain-text integer.
 
+The digit check alone is not enough to honour the contract below. A long
+enough run of digits passes `/^\d+$/` and then parses to a value no caller
+can use: 400 digits yields `Infinity`, and 20 digits yields a finite but
+unsafe integer. Callers subtract this from a confirmed block height to get a
+confirmation depth, so either one produces an enormous depth and clears any
+threshold it is compared against. Bound it to a safe integer here rather
+than leaving each caller to discover the gap.
+
 #### Parameters
 
 ##### apiUrl
@@ -5797,7 +7058,7 @@ The height of the most recent block
 
 #### Throws
 
-Error if the response is not a whole number
+Error if the response is not a whole number a caller can compute on
 
 ***
 
@@ -6200,6 +7461,30 @@ registry check and surfaces the same message.
 
 ***
 
+### isUnrecognizedDaemonStatusError()
+
+```ts
+function isUnrecognizedDaemonStatusError(error): boolean;
+```
+
+Defined in: [packages/babylon-ts-sdk/src/tbv/core/clients/vault-provider/validators.ts](https://github.com/babylonlabs-io/babylon-toolkit/blob/main/packages/babylon-ts-sdk/src/tbv/core/clients/vault-provider/validators.ts)
+
+Whether a batch status entry's `error` reports a pegin status outside
+[DaemonStatus](#daemonstatus). The batch validator moves such an entry to its
+`error` slot, so one unknown status does not fail the whole reply.
+
+#### Parameters
+
+##### error
+
+`string`
+
+#### Returns
+
+`boolean`
+
+***
+
 ### validateRequestDepositorClaimerArtifactsResponse()
 
 ```ts
@@ -6305,6 +7590,9 @@ Branching / terminal states:
   artifacts deleted.
 - ExpiredInClaim: terminal at the pegin-state-machine level; pegout-side
   work continues on the pegout_tracking row.
+- BabeSetupFailed: terminal — a challenger's BaBe decryptor session
+  failed verification, so BaBe setup cannot complete; reachable from
+  PendingBabeSetup.
 
 #### Enumeration Members
 
@@ -6444,6 +7732,14 @@ EXPIRED_IN_CLAIM: "ExpiredInClaim";
 
 Defined in: [packages/babylon-ts-sdk/src/tbv/core/clients/vault-provider/types.ts](https://github.com/babylonlabs-io/babylon-toolkit/blob/main/packages/babylon-ts-sdk/src/tbv/core/clients/vault-provider/types.ts)
 
+##### BABE\_SETUP\_FAILED
+
+```ts
+BABE_SETUP_FAILED: "BabeSetupFailed";
+```
+
+Defined in: [packages/babylon-ts-sdk/src/tbv/core/clients/vault-provider/types.ts](https://github.com/babylonlabs-io/babylon-toolkit/blob/main/packages/babylon-ts-sdk/src/tbv/core/clients/vault-provider/types.ts)
+
 ***
 
 ### RpcErrorCode
@@ -6462,6 +7758,18 @@ PEGIN_NOT_FOUND: 4001;
 ```
 
 Defined in: [packages/babylon-ts-sdk/src/tbv/core/clients/vault-provider/types.ts](https://github.com/babylonlabs-io/babylon-toolkit/blob/main/packages/babylon-ts-sdk/src/tbv/core/clients/vault-provider/types.ts)
+
+## References
+
+### PopSignature
+
+Re-exports [PopSignature](managers.md#popsignature)
+
+***
+
+### assertValidVaultCoreVersion
+
+Re-exports [assertValidVaultCoreVersion](primitives.md#assertvalidvaultcoreversion)
 
 ## Variables
 
@@ -6623,8 +7931,8 @@ Terminal VP statuses that represent failure outcomes — polling should
 stop immediately with an error rather than wait for timeout.
 
 Mirrors the failure subset of the server-side terminals
-(`allowed_transitions()` empty, see
-`btc-vault/crates/vaultd/src/workers/claimer/mod.rs:230-242`).
+(`allowed_transitions()` empty, see `PegInStatus` in
+`btc-vault/crates/vaultd/src/workers/claimer/mod.rs`).
 `Activated` IS terminal on-chain but is the success outcome, so it is
 intentionally excluded — a caller polling for an earlier state that
 races straight to `Activated` should treat that as success-via-overshoot,

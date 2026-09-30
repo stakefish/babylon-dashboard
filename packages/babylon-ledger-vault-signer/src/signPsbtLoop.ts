@@ -10,7 +10,7 @@
  * ≈ 5 s device deadline, `base:io_ext.h:28`).
  *
  * `base:` = LedgerHQ/app-bitcoin branch `baseapp` @ `e400d8d8`:
- * `io_ext.h`, `sw.h` and `dispatcher.c` live under `src/boilerplate/`,
+ * `io_ext.h` and `sw.h` live under `src/boilerplate/`,
  * `constants.h` under `src/`. The pin is load-bearing — the same paths on
  * `develop` describe different behaviour.
  *
@@ -142,6 +142,9 @@ export async function runSignPsbtLoop(
       ...opts.appIdentity,
       ins: lastSentApdu.ins,
       p1: lastSentApdu.p1,
+      // Only the initial APDU's refusal proves no round ran; a lock on a
+      // CONTINUE leaves caps possibly committed, so it stays unproven.
+      preDispatch: lastSentApdu === signPsbtApdu,
     });
     // classifyStatusWord is undefined only for 0x9000, excluded above.
     if (terminal === undefined) {

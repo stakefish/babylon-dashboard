@@ -1,4 +1,4 @@
-import { useMemo, type PropsWithChildren, type ReactNode } from "react";
+import { useEffect, useMemo, useRef, type PropsWithChildren, type ReactNode } from "react";
 
 import { WalletDialog } from "@/components/WalletProvider/components/WalletDialog";
 import { ONE_HOUR } from "@/constants";
@@ -28,6 +28,8 @@ export interface WalletProviderProps {
   dialogActions?: ReactNode;
   dialogCloseButtonClassName?: string;
   dialogActionsClassName?: string;
+  /** A short line under each chain's name on the connect screen that says why the app needs that wallet. */
+  chainDescriptions?: Partial<Record<Extract<ChainId, "ETH">, string>>;
 }
 
 /**
@@ -49,6 +51,7 @@ export function WalletProvider({
   dialogActions,
   dialogCloseButtonClassName,
   dialogActionsClassName,
+  chainDescriptions,
 }: PropsWithChildren<WalletProviderProps>) {
   const walletContext = context ?? (typeof window === "undefined" ? {} : window);
   const networkMap = useMemo(
@@ -61,15 +64,35 @@ export function WalletProvider({
   );
   const storage = useMemo(() => createAccountStorage(ttl, networkMap), [ttl, networkMap]);
 
-  useMemo(() => {
-    if (!appKitConfig) return;
+  const appKitInitializationFailure = useMemo(() => {
+    if (!appKitConfig) return null;
 
     try {
       initializeAppKitModal(appKitConfig);
+      return null;
     } catch (error) {
-      onError?.(error instanceof Error ? error : new Error("Failed to initialize the Ethereum AppKit modal"));
+      return {
+        error:
+          error instanceof Error
+            ? error
+            : new Error("Failed to initialize the Ethereum AppKit modal", { cause: error }),
+      };
     }
-  }, [appKitConfig, onError]);
+  }, [appKitConfig]);
+
+  const reportedAppKitFailure = useRef<typeof appKitInitializationFailure>(null);
+
+  useEffect(() => {
+    if (!appKitInitializationFailure) {
+      reportedAppKitFailure.current = null;
+      return;
+    }
+
+    if (!onError || reportedAppKitFailure.current === appKitInitializationFailure) return;
+
+    reportedAppKitFailure.current = appKitInitializationFailure;
+    onError(appKitInitializationFailure.error);
+  }, [appKitInitializationFailure, onError]);
 
   useAppKitOpenListener();
 
@@ -94,6 +117,7 @@ export function WalletProvider({
           actions={dialogActions}
           closeButtonClassName={dialogCloseButtonClassName}
           actionsClassName={dialogActionsClassName}
+          chainDescriptions={chainDescriptions}
         />
       </ChainProvider>
     </LifeCycleHooksProvider>

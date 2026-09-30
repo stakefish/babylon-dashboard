@@ -37,8 +37,18 @@ export interface LiquidationBand {
   label: string;
   /** Secondary label, e.g. "(contain vault 1)". Hidden in compact / tight bands. */
   sublabel?: string;
-  /** Collateral seized in this event, pre-formatted, e.g. "0.6 BTC". */
-  amountLabel: string;
+  /**
+   * Extra detail folded into the focusable rect's accessible name, for callers
+   * that render no `sublabel` but still need its content read out — e.g. the
+   * vault names behind an event.
+   */
+  accessibleDetail?: string;
+  /**
+   * Collateral seized in this event, pre-formatted, e.g. "0.6 BTC". Rendered
+   * as its own line when the band is tall enough. Omit when the caller has
+   * already folded the amount into `label`.
+   */
+  amountLabel?: string;
   /** Band vertical extent in price. `priceTop` is where the event triggers. */
   priceTop: number;
   priceBottom: number;
@@ -178,6 +188,12 @@ export interface TimelineProps extends LiquidationChartBase {
   visibleCandles?: number;
   /** Formats the crosshair readout price. Default: `$` + grouped integer. */
   formatPrice?: (price: number) => string;
-  /** Formats the crosshair readout timestamp. Default: locale date. */
+  /** Formats the time-axis tick labels. Default: locale date. */
   formatTime?: (timeMs: number) => string;
+  /**
+   * Formats the crosshair readout's timestamp. Defaults to `formatTime`, which
+   * a caller should override when its axis labels are abbreviated (a bare day
+   * number names no month).
+   */
+  formatReadoutTime?: (timeMs: number) => string;
 }

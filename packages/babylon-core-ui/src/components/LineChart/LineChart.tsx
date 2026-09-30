@@ -172,7 +172,7 @@ export function LineChart({
     if (event.pointerType === "mouse") setPointerX(null);
   };
 
-  if (collapsed) return null;
+  if (collapsed) return <div ref={parentRef} style={{ width: "100%" }} />;
 
   const hoverPx = hover === null ? null : xScale(hover.x);
   const tooltip = hover === null ? null : renderTooltip?.(hover);
@@ -195,7 +195,7 @@ export function LineChart({
           aria-label={ariaLabel}
         >
           <Group top={layout.plotTop} left={layout.plotLeft}>
-            {gridLines !== "none" && yTicks?.length ? (
+            {(gridLines === "both" || gridLines === "horizontal") && yTicks?.length ? (
               <GridRows
                 className="bbn-line-chart__grid"
                 scale={yScale}
@@ -204,7 +204,7 @@ export function LineChart({
                 aria-hidden
               />
             ) : null}
-            {gridLines === "both" && xTicks?.length ? (
+            {(gridLines === "both" || gridLines === "vertical") && xTicks?.length ? (
               <GridColumns
                 className="bbn-line-chart__grid"
                 scale={xScale}

@@ -18,7 +18,7 @@
  * @see btc-vault crates/vault/src/transactions/nopayout.rs - NoPayout structure
  */
 
-import { type Network } from "@babylonlabs-io/babylon-tbv-rust-wasm";
+import type { Network } from "@babylonlabs-io/babylon-tbv-rust-wasm";
 import { Transaction } from "bitcoinjs-lib";
 
 import type {
@@ -37,6 +37,7 @@ import {
   assertPsbtUnsignedTxMatches,
   type AssertPsbtUnsignedTxMatchesParams,
 } from "../../primitives/psbt/assertPsbtUnsignedTxMatches";
+import { DEPOSITOR_SIGNED_INPUT_COUNT } from "../../primitives/psbt/constants";
 import {
   assertNoPayoutOutputMatchesChallenger,
   buildNoPayoutPsbt,
@@ -52,16 +53,7 @@ import {
   validateWalletPubkey,
 } from "../../primitives/utils/bitcoin";
 import { createTaprootScriptPathSignOptions } from "../../utils/signing";
-
-/**
- * The depositor signs exactly one input (index 0) per payout/nopayout PSBT.
- * Used to construct SignPsbtOptions for wallet.signPsbt(). PSBTs may carry
- * additional inputs (the payout PSBT includes the assert prevout; the nopayout
- * PSBT includes the two ChallengeAssert prevouts) so the Taproot SIGHASH_DEFAULT
- * sighash commits to all prevouts, but those inputs are not signed by the
- * depositor.
- */
-const DEPOSITOR_SIGNED_INPUT_COUNT = 1;
+import { assertPresignClaimAssertLinkage } from "./graphFingerprint";
 
 /**
  * commissionBps placeholder for the depositor-as-claimer path — `buildPayoutPsbt`
@@ -546,6 +538,16 @@ export async function signDepositorGraph(
   params: SignDepositorGraphParams,
 ): Promise<DepositorAsClaimerPresignatures> {
   const { depositorGraph, btcWallet, signingContext } = params;
+
+  // Validate the complete funding chain before even reading the wallet key.
+  // The orchestrating flow performs the same check while fingerprinting, but
+  // this service is also a public entry point and must be safe on its own.
+  assertPresignClaimAssertLinkage({
+    peginTxHex: signingContext.peginTxHex,
+    claimTxHex: depositorGraph.claim_tx.tx_hex,
+    assertTxHex: depositorGraph.assert_tx.tx_hex,
+    path: "depositor_graph",
+  });
 
   const walletPublicKey = await btcWallet.getPublicKeyHex();
   // Fail fast if the connected wallet doesn't match the on-chain registered

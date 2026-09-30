@@ -1,6 +1,6 @@
-// prettier-ignore
-// @ts-expect-error - WASM files are in dist/generated/ (checked into git), not src/generated/
-import init, { WasmPrePeginTx, WasmPrePeginHtlcConnector, WasmPeginTx, computeMinClaimValue as wasmComputeMinClaimValue, computeMinPeginFee as wasmComputeMinPeginFee, computePayoutFeeFloor as wasmComputePayoutFeeFloor, deriveVaultId as wasmDeriveVaultId, expandAuthAnchor as wasmExpandAuthAnchor, expandHashlockSecret as wasmExpandHashlockSecret, expandWotsSeed as wasmExpandWotsSeed, peginP2aAnchorOutput as wasmPeginP2aAnchorOutput, supportedTxGraphVersions as wasmSupportedTxGraphVersions, validatePeginP2aAnchor as wasmValidatePeginP2aAnchor } from './generated/vault_wasm.js';
+import { getWasmBindings, initWasm as initializeWasm } from './wasm-loader.js';
+import { createDelegatedClaimApi } from './delegatedClaim.js';
+import { toError } from './errors.js';
 import type {
   PrePeginParams,
   PrePeginResult,
@@ -10,24 +10,15 @@ import type {
   PeginP2aAnchorInfo,
 } from './types.js';
 import { assertPositiveBigintArray, assertWasmBigint } from './value-guards.js';
-
-let wasmInitialized = false;
-let wasmInitPromise: Promise<void> | null = null;
+// tsc keeps this import path in the emitted declaration. It must resolve
+// from both src and dist, which must remain siblings under the package root.
+// scripts/check-lazy-entries.js checks the emitted path.
+import type * as Bindings from '../dist/generated/vault_wasm.js';
+// @ts-expect-error - generated artifacts live in dist/generated
+import * as generated from './generated/vault_wasm.js';
 
 export async function initWasm() {
-  if (wasmInitialized) return;
-  if (wasmInitPromise) return wasmInitPromise;
-
-  wasmInitPromise = (async () => {
-    try {
-      await init();
-      wasmInitialized = true;
-    } finally {
-      wasmInitPromise = null;
-    }
-  })();
-
-  return wasmInitPromise;
+  await initializeWasm();
 }
 
 /**
@@ -49,7 +40,7 @@ export async function initWasm() {
 export async function createPrePeginTransaction(
   params: PrePeginParams,
 ): Promise<PrePeginResult> {
-  await initWasm();
+  const { WasmPrePeginTx } = await getWasmBindings();
 
   // Leading arg selects the tx-graph version inside the vault-wasm facade;
   // an unsupported version throws before any construction (fail closed).
@@ -124,7 +115,7 @@ export async function buildPeginTxFromPrePegin(
   fundedPrePeginTxHex: string,
   htlcVout: number,
 ): Promise<PeginTxResult> {
-  await initWasm();
+  const { WasmPrePeginTx } = await getWasmBindings();
 
   const unfundedTx = new WasmPrePeginTx(
     params.txGraphVersion,
@@ -146,8 +137,8 @@ export async function buildPeginTxFromPrePegin(
     params.authAnchorHash,
   );
 
-  let fundedTx: WasmPrePeginTx | null = null;
-  let peginTx: WasmPeginTx | null = null;
+  let fundedTx: typeof unfundedTx | null = null;
+  let peginTx: ReturnType<typeof unfundedTx.buildPeginTx> | null = null;
   try {
     fundedTx = unfundedTx.fromFundedTransaction(fundedPrePeginTxHex);
     peginTx = fundedTx.buildPeginTx(timelockPegin, htlcVout);
@@ -178,7 +169,7 @@ export async function buildPeginTxFromPrePegin(
 export async function getPrePeginHtlcConnectorInfo(
   params: HtlcConnectorParams,
 ): Promise<HtlcConnectorInfo> {
-  await initWasm();
+  const { WasmPrePeginHtlcConnector } = await getWasmBindings();
 
   const connector = new WasmPrePeginHtlcConnector(
     params.txGraphVersion,
@@ -218,7 +209,8 @@ export async function computeMinClaimValue(
   councilSize: number,
   feeRate: bigint,
 ): Promise<bigint> {
-  await initWasm();
+  const { computeMinClaimValue: wasmComputeMinClaimValue } =
+    await getWasmBindings();
   try {
     return assertWasmBigint(
       wasmComputeMinClaimValue(
@@ -242,7 +234,8 @@ export async function computeMinClaimValue(
  * `minPeginFee = peginTxVsize(numVks, numUcs) × minPeginFeeRate`. Each HTLC
  * the depositor funds in the Pre-PegIn tx must reserve at least this fee
  * inside its value (`htlcValue = peginAmount + depositorClaimValue +
- * minPeginFee`), otherwise the VP cannot afford to broadcast the PegIn at
+ * p2aAnchorValue + minPeginFee`, anchor 0 on vault core 1), otherwise the VP
+ * cannot afford to broadcast the PegIn at
  * activation. The vsize comes from a Taproot script-path-spend weight
  * prediction whose witness shape depends on the VK + UC signer count.
  */
@@ -252,7 +245,8 @@ export async function computeMinPeginFee(
   numUcs: number,
   minPeginFeeRate: bigint,
 ): Promise<bigint> {
-  await initWasm();
+  const { computeMinPeginFee: wasmComputeMinPeginFee } =
+    await getWasmBindings();
   try {
     return assertWasmBigint(
       wasmComputeMinPeginFee(txGraphVersion, numVks, numUcs, minPeginFeeRate),
@@ -285,7 +279,8 @@ export async function computePayoutFeeFloor(
   out1Len: number | null | undefined,
   feeRate: bigint,
 ): Promise<bigint> {
-  await initWasm();
+  const { computePayoutFeeFloor: wasmComputePayoutFeeFloor } =
+    await getWasmBindings();
   try {
     return assertWasmBigint(
       wasmComputePayoutFeeFloor(
@@ -315,7 +310,8 @@ export async function computePayoutFeeFloor(
 export async function peginP2aAnchorOutput(
   txGraphVersion: number,
 ): Promise<PeginP2aAnchorInfo | null> {
-  await initWasm();
+  const { peginP2aAnchorOutput: wasmPeginP2aAnchorOutput } =
+    await getWasmBindings();
   let anchor;
   try {
     anchor = wasmPeginP2aAnchorOutput(txGraphVersion);
@@ -336,15 +332,16 @@ export async function peginP2aAnchorOutput(
 
 /**
  * Validate a PegIn transaction's P2A anchor against a graph version's rules:
- * v2 requires the exact anchor (240 sats, vout 2, P2A script) and v1 requires
- * that NO output carries the P2A script. Throws on any mismatch — a v2 PegIn
- * checked as v1 fails closed, and vice versa.
+ * v2 and v3 require the exact anchor (240 sats, vout 2, P2A script) and v1
+ * requires that NO output carries the P2A script. Throws on any mismatch — a
+ * v2 PegIn checked as v1 fails closed, and vice versa.
  */
 export async function validatePeginP2aAnchor(
   txGraphVersion: number,
   txHex: string,
 ): Promise<void> {
-  await initWasm();
+  const { validatePeginP2aAnchor: wasmValidatePeginP2aAnchor } =
+    await getWasmBindings();
   try {
     wasmValidatePeginP2aAnchor(txGraphVersion, txHex);
   } catch (err) {
@@ -363,17 +360,9 @@ export async function validatePeginP2aAnchor(
  * byte-parity tests, not in a per-call version echo.
  */
 export async function supportedTxGraphVersions(): Promise<number[]> {
-  await initWasm();
+  const { supportedTxGraphVersions: wasmSupportedTxGraphVersions } =
+    await getWasmBindings();
   return Array.from(wasmSupportedTxGraphVersions());
-}
-
-// wasm-bindgen rethrows Rust `JsValue::from_str(...)` errors as bare strings,
-// which break `err instanceof Error` and structured error handling. Normalize
-// to `Error` so the JS API surface is consistent with idiomatic JS rejection.
-function toError(err: unknown, fnName: string): Error {
-  if (err instanceof Error) return err;
-  const msg = typeof err === 'string' ? err : String(err);
-  return new Error(`${fnName}: ${msg}`);
 }
 
 /**
@@ -381,7 +370,7 @@ function toError(err: unknown, fnName: string): Error {
  * @stability frozen — owned by btc-vault Rust via the vault-wasm pin (`VAULT_WASM_COMMIT`); rotation breaks VP auth for existing deposits.
  */
 export async function expandAuthAnchor(root: Uint8Array): Promise<Uint8Array> {
-  await initWasm();
+  const { expandAuthAnchor: wasmExpandAuthAnchor } = await getWasmBindings();
   try {
     return wasmExpandAuthAnchor(root);
   } catch (err) {
@@ -397,7 +386,8 @@ export async function expandHashlockSecret(
   root: Uint8Array,
   htlcVout: number,
 ): Promise<Uint8Array> {
-  await initWasm();
+  const { expandHashlockSecret: wasmExpandHashlockSecret } =
+    await getWasmBindings();
   try {
     return wasmExpandHashlockSecret(root, htlcVout);
   } catch (err) {
@@ -413,7 +403,7 @@ export async function expandWotsSeed(
   root: Uint8Array,
   htlcVout: number,
 ): Promise<Uint8Array> {
-  await initWasm();
+  const { expandWotsSeed: wasmExpandWotsSeed } = await getWasmBindings();
   try {
     return wasmExpandWotsSeed(root, htlcVout);
   } catch (err) {
@@ -435,7 +425,7 @@ export async function deriveVaultId(
   peginTxHash: string,
   depositor: string,
 ): Promise<string> {
-  await initWasm();
+  const { deriveVaultId: wasmDeriveVaultId } = await getWasmBindings();
   const hashBytes = hexToBytes(peginTxHash);
   if (hashBytes.length !== 32) {
     throw new Error(`peginTxHash must be 32 bytes, got ${hashBytes.length}`);
@@ -480,6 +470,10 @@ export type {
   AssertNoPayoutScriptInfo,
   ChallengeAssertConnectorParams,
   ChallengeAssertScriptInfo,
+  WatchtowerArtifactsInputs,
+  WotsKeypairDerivation,
+  WronglyChallengedPsbts,
+  WronglyChallengedSigs,
 } from './types.js';
 
 // Export constants
@@ -503,7 +497,46 @@ export {
 // Export challenge assert connector utilities (depositor-as-claimer)
 export { getChallengeAssertScriptInfo } from './challengeAssertConnector.js';
 
-// Re-export raw WASM types for callers that need direct access
-// prettier-ignore
-// @ts-expect-error - WASM files are in dist/generated/ (checked into git), not src/generated/
-export { WasmPeginTx, WasmPeginPayoutConnector, WasmPrePeginTx, WasmPrePeginHtlcConnector } from './generated/vault_wasm.js';
+// The delegated-claim surface (graph v3 only): assembly of the two files the
+// `vaultd vp wt` watchtower CLI reads, and the claim-time execution that runs
+// from those same files without the CLI.
+//
+// EXPERIMENTAL — under test, signet only. These names and signatures can
+// change in a minor release. See src/delegatedClaim.ts.
+export const {
+  buildAssertClaimerPsbt,
+  buildClaimPsbt,
+  buildPayoutClaimerPsbt,
+  buildPayoutDepositorPsbt,
+  buildWatchtowerArtifacts,
+  buildWronglyChallengedPsbts,
+  attachFinalizedAssert,
+  extractTapScriptSig,
+  finalizeClaimTx,
+  finalizePayout,
+  finalizeWronglyChallenged,
+  pinPegoutProof,
+  validateWotsKeypairAgainstGraph,
+  verifyWatchtowerArtifacts,
+  wotsKeypairFromSeed,
+} = createDelegatedClaimApi(getWasmBindings);
+
+// Export wasm-bindgen classes
+/** wasm-bindgen class with no value guards. See README "WASM Classes". */
+export const WasmPeginTx: typeof Bindings.WasmPeginTx = generated.WasmPeginTx;
+export type WasmPeginTx = Bindings.WasmPeginTx;
+
+/** wasm-bindgen class with no value guards. See README "WASM Classes". */
+export const WasmPeginPayoutConnector: typeof Bindings.WasmPeginPayoutConnector =
+  generated.WasmPeginPayoutConnector;
+export type WasmPeginPayoutConnector = Bindings.WasmPeginPayoutConnector;
+
+/** wasm-bindgen class with no value guards. See README "WASM Classes". */
+export const WasmPrePeginTx: typeof Bindings.WasmPrePeginTx =
+  generated.WasmPrePeginTx;
+export type WasmPrePeginTx = Bindings.WasmPrePeginTx;
+
+/** wasm-bindgen class with no value guards. See README "WASM Classes". */
+export const WasmPrePeginHtlcConnector: typeof Bindings.WasmPrePeginHtlcConnector =
+  generated.WasmPrePeginHtlcConnector;
+export type WasmPrePeginHtlcConnector = Bindings.WasmPrePeginHtlcConnector;

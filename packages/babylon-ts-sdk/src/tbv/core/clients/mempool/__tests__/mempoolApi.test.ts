@@ -18,6 +18,7 @@ import {
   getTxHex,
   getTxInfo,
   getUtxoInfo,
+  MempoolNotFoundError,
   pushTx,
 } from "../mempoolApi";
 
@@ -67,6 +68,38 @@ function textResponse(body: string): Response {
     text: () => Promise.resolve(body),
   } as Response;
 }
+
+describe("transaction lookup errors", () => {
+  it("throws MempoolNotFoundError for an HTTP 404", async () => {
+    mockFetch.mockResolvedValueOnce(
+      new Response("Transaction not found", { status: 404 }),
+    );
+    const lookup = getTxInfo(VALID_TXID, API_URL);
+    await expect(lookup).rejects.toBeInstanceOf(MempoolNotFoundError);
+    await expect(lookup).rejects.toMatchObject({
+      name: "MempoolNotFoundError",
+      status: 404,
+      message:
+        "Failed to fetch from mempool API: Mempool API error (404): Transaction not found",
+    });
+  });
+
+  it.each([429, 500])("throws a plain Error for an HTTP %s", async (status) => {
+    mockFetch.mockResolvedValueOnce(new Response("Lookup failed", { status }));
+    await expect(getTxInfo(VALID_TXID, API_URL)).rejects.toStrictEqual(
+      new Error(
+        `Failed to fetch from mempool API: Mempool API error (${status}): Lookup failed`,
+      ),
+    );
+  });
+
+  it("keeps network failures distinct from missing transactions", async () => {
+    mockFetch.mockRejectedValueOnce(new TypeError("Failed to fetch"));
+    await expect(getTxInfo(VALID_TXID, API_URL)).rejects.toStrictEqual(
+      new Error("Failed to fetch from mempool API: Failed to fetch"),
+    );
+  });
+});
 
 describe("txid format validation", () => {
   it("getTxInfo rejects non-hex txid", async () => {
@@ -541,6 +574,28 @@ describe("getTipHeight", () => {
     await expect(getTipHeight(API_URL)).rejects.toThrow(
       /block tip height/i,
     );
+  });
+
+  // Callers subtract this height from a confirmed block height to get a
+  // confirmation depth, so a value that parses but cannot be computed on is
+  // worse than a parse failure — it silently clears any depth threshold.
+  it("throws on a digit string that parses to Infinity", async () => {
+    mockFetch.mockResolvedValueOnce(textResponse("1".repeat(400)));
+    await expect(getTipHeight(API_URL)).rejects.toThrow(/block tip height/i);
+  });
+
+  it("throws on a digit string that parses beyond the safe integer range", async () => {
+    // 1e20 satisfies Number.isInteger, so an isInteger check would let it
+    // through and yield a confirmation depth around 1e20.
+    mockFetch.mockResolvedValueOnce(textResponse("9".repeat(20)));
+    await expect(getTipHeight(API_URL)).rejects.toThrow(/block tip height/i);
+  });
+
+  it("accepts a height at the top of the safe integer range", async () => {
+    mockFetch.mockResolvedValueOnce(
+      textResponse(String(Number.MAX_SAFE_INTEGER)),
+    );
+    await expect(getTipHeight(API_URL)).resolves.toBe(Number.MAX_SAFE_INTEGER);
   });
 });
 

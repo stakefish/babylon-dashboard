@@ -33,7 +33,6 @@ function info(overrides: Partial<VaultProtocolInfo> = {}): VaultProtocolInfo {
     depositorPopSignature: "0x00" as Hex,
     prePeginTxHash: "0x00" as Hex,
     vaultProviderCommissionBps: 0,
-    claimExpiredUntil: 0n,
     vaultCoreVersion: 1,
     ...overrides,
   };
@@ -54,11 +53,14 @@ function buildRegistryReader(
     getProtocolInfoBatch,
     getVaultData: vi.fn(),
     getVaultProviderGenesisBtcPubKey: vi.fn(),
+    getVaultProviderOperationBtcKeyAtEpoch: vi.fn(),
     getPegInFee: vi.fn(),
     getVaultProviderCommission: vi.fn(),
     getVaultKeyEpochs: vi.fn(),
     getVaultKeyEpochsBatch: vi.fn(),
     getCurrentVaultProviderOperationBtcKey: vi.fn(),
+    getMaxAcceptableCommissionBpsBatch: vi.fn(),
+    getVaultProviderApplication: vi.fn(),
   };
 }
 

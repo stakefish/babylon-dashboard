@@ -79,7 +79,7 @@ with the exceptions recorded per file header; the substantive ones:
   (`LedgerHQ/ledger-secure-sdk` `lib_standard_app/varint.c` — `varint_size`
   `:25-40`, `varint_write` `:79-104`; blob `fb199f91`, byte-identical on
   `master@6862436` and on `API_LEVEL_25`/`26`/`27`). Both call sites live in the
-  base app pinned as `app-babylon-vault@develop`'s `bitcoin_app_base` submodule
+  base app pinned as `app-babylon-vault@b0c0ac4d`'s `bitcoin_app_base` submodule
   (`LedgerHQ/app-bitcoin@baseapp`, commit `e400d8d8`): the
   GET_MERKLE_LEAF_PROOF `tree_size`/`leaf_index` at
   `src/handler/lib/get_merkle_leaf_hash.c:33-37` (parsed at
@@ -137,11 +137,9 @@ full #2219 vendoring closure.
 From #2219 B1-d, `src/index.ts` → `signPsbt.ts` reaches this directory, so the
 vendored JavaScript is bundled into the published `dist/`. Verified against
 `dist/index.js.map`'s `sources` after a build: `varint`, `buffertools`,
-`psbtv2`, `merkle`, `merkleMap`, `merkelizedPsbt`, `clientCommands` are inlined
-(1,690 of the 1,789 vendored lines — everything except `policy.ts`'s 99);
-`policy.ts` is reachable only through a type position
-(`addKnownWalletPolicy`'s parameter) and stays tree-shaken out until
-#2221/#2222 use it. `bitcoinjs-lib` and `buffer` remain vite externals.
+`psbtv2`, `merkle`, `merkleMap`, `merkelizedPsbt`, `clientCommands` and, since
+#2221, `policy` are all inlined — all 1,789 vendored lines ship.
+`bitcoinjs-lib` and `buffer` remain vite externals.
 
 - **Attribution** lives in `THIRD-PARTY-NOTICES.md`, shipped via package.json
   `files`. `esbuild.legalComments: "none"` strips the per-file Apache-2.0
@@ -210,6 +208,11 @@ Vector provenance (`__tests__/vectors/signpsbt/`):
 - The outer inputs/outputs maps-roots hash each serialized per-map commitment as
   a `0x00`-prefixed leaf (`element_hash`) — a distinct byte treatment from the
   inner keys/values trees.
+- The pinned fixtures predate #2281, so no Payout vector carries a leaf on
+  input 1. `expectedSignatures.test.ts`'s "input 0 tapscript, other inputs
+  absent" case reads on that pin — a bump that adds the leaf must update it, and
+  the post-#2281 contract is covered against the real builder by
+  `services/vault/src/__tests__/contracts/ledgerPayoutSigning.test.ts`.
 - The v0 pegin fixtures carry zero-entry per-output maps pre-normalization; the
   `psbtv2` gate parses through them and pins that `normalizeToV2` synthesizes
   AMOUNT/SCRIPT into empty maps. (`deposit-flow__pegin__0` is a stale pre-v22

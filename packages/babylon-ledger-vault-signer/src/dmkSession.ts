@@ -2,11 +2,19 @@
  * DMK session lifecycle: discovery → connect → state gate → dispose behind a
  * Promise API, so everything above this file is device-free and testable.
  * Verified against the installed DMK 1.7.1 types, not the published docs.
+ * The transport is web-hid, swappable pre-build through the test/E2E-only
+ * {@link setDmkTransportOverride} seam (the `./testing` exports subpath).
  *
  * @module ledger-vault-signer/dmkSession
  */
 
-import type { DeviceManagementKit, DeviceSessionId, DiscoveredDevice } from "@ledgerhq/device-management-kit";
+import type {
+  DeviceManagementKit,
+  DeviceSessionId,
+  DiscoveredDevice,
+  TransportFactory,
+  TransportIdentifier,
+} from "@ledgerhq/device-management-kit";
 
 /**
  * The refresher injects `GET_APP_AND_VERSION` mid-ceremony, and whether that
@@ -20,8 +28,9 @@ export interface DmkSessionHandle {
   readonly dmk: DeviceManagementKit;
   readonly sessionId: DeviceSessionId;
   /**
-   * App name/version at connect time ("BOLOS" = dashboard). Diagnostic only;
-   * absent when the preflight failed. Never re-read between intent phases.
+   * App name/version at connect time ("BOLOS" = dashboard); absent when the
+   * preflight failed. The host gates connect on it, and re-reads it only while
+   * idle via `refreshSessionApp` — never between intent phases.
    */
   readonly appName?: string;
   readonly appVersion?: string;
@@ -29,37 +38,132 @@ export interface DmkSessionHandle {
 
 /**
  * One DMK per application, as a module-level lazy singleton (the connector is
- * not a React tree here). Two instances would register duplicate transport
- * listeners.
+ * not a React tree here). Two USED instances would each construct a transport,
+ * duplicating its listener pair — and DMK never destroys one.
  */
 let dmkInstance: DeviceManagementKit | undefined;
-let dmkPromise: Promise<DeviceManagementKit> | undefined;
+let dmkPromise: Promise<DmkBuild> | undefined;
+
+// One in-flight import() per specifier: under vitest a second concurrent import()
+// of a vi.mock'ed module resolves to the REAL package (4.0.9 startModuleRunner.js:461-472).
+function memoizedImport<T>(load: () => Promise<T>): () => Promise<T> {
+  let pending: Promise<T> | undefined;
+  return () => {
+    if (!pending) {
+      pending = load().catch((error: unknown) => {
+        pending = undefined;
+        throw error;
+      });
+    }
+    return pending;
+  };
+}
+const importDmk = memoizedImport(() => import("@ledgerhq/device-management-kit"));
+const importWebHid = memoizedImport(() => import("@ledgerhq/device-transport-kit-web-hid"));
+
+/** A DMK paired with the transport identifier its OWN build registered. */
+interface DmkBuild {
+  readonly dmk: DeviceManagementKit;
+  readonly transportIdentifier: TransportIdentifier;
+}
+
+/** Transport pair injected in place of the web-hid default. Test/E2E only. */
+export interface DmkTransportOverride {
+  readonly transportFactory: TransportFactory;
+  /** Must match what the factory's transport reports via `getIdentifier()`. */
+  readonly transportIdentifier: TransportIdentifier;
+}
+
+let transportOverride: DmkTransportOverride | undefined;
+
+/**
+ * TEST/E2E SEAM — replace the web-hid transport before the DMK is built. For
+ * Speculos, pass `speculosTransportFactory(url)` + `speculosIdentifier` from
+ * `@ledgerhq/device-transport-kit-speculos` (LedgerHQ/device-sdk-ts, tag
+ * `@ledgerhq/device-transport-kit-speculos@1.2.1`, api/SpeculosTransport.ts).
+ * The injector passes the factory in; this module never imports that package,
+ * so production bundles stay speculos-free.
+ *
+ * Exposed ONLY via the `./testing` exports subpath (never the main `.`
+ * surface): the vault dApp's DEV-gated Speculos bootstrap is the intended
+ * caller. What the code enforces is TIMING only — a swap after the DMK exists
+ * gets the loud throw below; keeping pre-build production calls out is the
+ * subpath boundary plus the consumer's build-time gate. THIS module still
+ * never imports the speculos package, so it contributes no speculos code to
+ * any bundle of this package.
+ *
+ * The override persists across {@link closeDmk}; pass `undefined` to restore
+ * the web-hid default.
+ *
+ * @throws while a DMK singleton exists (built or building): each build captures
+ * the factory it was given, so a late swap would leave discovery pointed at a
+ * transport that DMK does not hold. Call {@link closeDmk} first.
+ */
+export function setDmkTransportOverride(override: DmkTransportOverride | undefined): void {
+  if (dmkPromise !== undefined) {
+    throw new Error("setDmkTransportOverride: DMK already built or building — closeDmk() before changing transports");
+  }
+  transportOverride = override;
+}
 
 /**
  * Build (or reuse) the DMK instance. Memoised as a PROMISE, not the instance:
- * a check-then-act across the dynamic imports would let two concurrent
- * connects build two DMKs, and the loser's transport keeps live WebHID
- * listeners forever. A failed build clears the memo (identity-guarded) so
- * the next connect retries.
+ * a check-then-act across the dynamic imports would let two concurrent connects
+ * build two DMKs, and once both were USED each would hold its own transport and
+ * listener pair, with no way to destroy either. A failed build clears the memo
+ * (identity-guarded) so the next connect retries. Each build snapshots its
+ * transport and resolves the identifier alongside the DMK; one abandoned
+ * mid-flight by {@link closeDmk} rejects its callers, leaving its never-used
+ * instance to be garbage-collected unclosed (see {@link publish}).
  *
  * Every `@ledgerhq/device-*` import is dynamic so a provider that ships
  * disabled stays off the bundle's critical path — DMK pulls in xstate,
  * inversify, reflect-metadata and purify-ts.
  */
-function getDmk(): Promise<DeviceManagementKit> {
+function getDmk(): Promise<DmkBuild> {
   if (!dmkPromise) {
-    const build = (async () => {
-      const [{ DeviceManagementKitBuilder }, { webHidTransportFactory }] = await Promise.all([
-        import("@ledgerhq/device-management-kit"),
-        import("@ledgerhq/device-transport-kit-web-hid"),
+    // ONE read of the override per build: closeDmk() lifts the setter's guard,
+    // so a swap can land while this build is suspended on its imports.
+    const override = transportOverride;
+
+    /**
+     * Adopt as the singleton — or, if closeDmk() got here first, fail this
+     * build's callers. Deliberately NOT closed: `build()` only stores the
+     * factory, and DMK constructs transports when a use case first resolves
+     * TransportService — so `close()` would CONSTRUCT this orphan's transport
+     * (registering a WebHID listener pair) and then release nothing, since
+     * `CloseSessionsUseCase` only iterates existing sessions and never calls
+     * `destroy()`. Same fact as wallet-connector `provider.ts:305-309`.
+     */
+    function publish(built: DmkBuild): DmkBuild {
+      if (dmkPromise !== build) {
+        throw new Error(
+          "connectDmkSession: closeDmk() tore down this DMK while it was still building — retry to connect over a fresh one",
+        );
+      }
+      dmkInstance = built.dmk;
+      return built;
+    }
+
+    const build: Promise<DmkBuild> = (async () => {
+      // No .addLogger() on either path: DMK's own send/error logs include
+      // full APDU payload bytes.
+      if (override) {
+        const { DeviceManagementKitBuilder } = await importDmk();
+        const dmk = new DeviceManagementKitBuilder().addTransport(override.transportFactory).build();
+        return publish({ dmk, transportIdentifier: override.transportIdentifier });
+      }
+      const [{ DeviceManagementKitBuilder }, { webHidTransportFactory, webHidIdentifier }] = await Promise.all([
+        importDmk(),
+        importWebHid(),
       ]);
-      // No .addLogger(): DMK's own send/error logs include full APDU payload bytes.
-      dmkInstance = new DeviceManagementKitBuilder().addTransport(webHidTransportFactory).build();
-      return dmkInstance;
+      const dmk = new DeviceManagementKitBuilder().addTransport(webHidTransportFactory).build();
+      return publish({ dmk, transportIdentifier: webHidIdentifier });
     })().catch((error) => {
       if (dmkPromise === build) dmkPromise = undefined;
       throw error;
     });
+
     dmkPromise = build;
   }
   return dmkPromise;
@@ -74,15 +178,15 @@ function getDmk(): Promise<DeviceManagementKit> {
  * @throws If no device is selected or the connection fails
  */
 export async function connectDmkSession(): Promise<DmkSessionHandle> {
-  const dmk = await getDmk();
-  const [{ firstValueFrom }, { webHidIdentifier }] = await Promise.all([
-    import("rxjs"),
-    import("@ledgerhq/device-transport-kit-web-hid"),
-  ]);
+  // The identifier comes from the build, never from a re-read of the override:
+  // discovery must target the transport THIS DMK registered.
+  const { dmk, transportIdentifier } = await getDmk();
+  const { firstValueFrom } = await import("rxjs");
 
   // The browser picker guarantees a single device, so the first emission is
-  // the selection; unsubscribing immediately stops discovery.
-  const device: DiscoveredDevice = await firstValueFrom(dmk.startDiscovering({ transport: webHidIdentifier }));
+  // the selection; unsubscribing immediately stops discovery. (Speculos'
+  // startDiscovering likewise emits its single device.)
+  const device: DiscoveredDevice = await firstValueFrom(dmk.startDiscovering({ transport: transportIdentifier }));
 
   const sessionId = await dmk.connect({
     device,
@@ -94,22 +198,24 @@ export async function connectDmkSession(): Promise<DmkSessionHandle> {
 }
 
 /**
- * `GET_APP_AND_VERSION` preflight, run only at connect — the most useful fact
- * when the first vault APDU fails ("Babylon Vault" vs "Babylon Vault Testnet"
- * vs "BOLOS"). Sent explicitly rather than read from DMK's internal session
- * state. Diagnostic only: a failed read degrades to `undefined`.
+ * `GET_APP_AND_VERSION` preflight — the most useful fact when the first vault
+ * APDU fails ("Babylon Vault" vs "Babylon Vault Testnet" vs "BOLOS"). Run at
+ * connect, and again by {@link refreshSessionApp} when the host re-gates a
+ * session whose first read failed. Sent explicitly rather than read from DMK's
+ * internal session state. A failed read degrades to `undefined`; the host lets
+ * that through.
  */
 async function readAppAndVersion(
   dmk: DeviceManagementKit,
   sessionId: DeviceSessionId,
 ): Promise<{ appName?: string; appVersion?: string }> {
   try {
-    const { GetAppAndVersionCommand, isSuccessCommandResult } = await import("@ledgerhq/device-management-kit");
+    const { GetAppAndVersionCommand, isSuccessCommandResult } = await importDmk();
     const result = await dmk.sendCommand({ sessionId, command: new GetAppAndVersionCommand() });
     if (!isSuccessCommandResult(result)) return {};
     return { appName: result.data.name, appVersion: result.data.version };
   } catch {
-    // Preflight is diagnostics; the ceremony APDUs carry their own errors.
+    // No identity to gate on; the first vault APDU carries its own error.
     return {};
   }
 }
@@ -130,6 +236,19 @@ export async function isSessionAlive(handle: DmkSessionHandle): Promise<boolean>
     if ((error as { _tag?: string } | undefined)?._tag === "DeviceSessionNotFound") return false;
     throw error;
   }
+}
+
+/**
+ * Re-run the connect preflight on a live session whose first read failed, so
+ * a retry cannot ride in on an ungated session. Returns a copy of the handle
+ * with the app fields filled when the read succeeds, or with the same fields
+ * when it fails. The preflight is a BOLOS command, so it must not interleave
+ * with a device ceremony; the signer holds no ceremony state, so the caller
+ * enforces that.
+ */
+export async function refreshSessionApp(handle: DmkSessionHandle): Promise<DmkSessionHandle> {
+  const app = await readAppAndVersion(handle.dmk, handle.sessionId);
+  return { ...handle, ...app };
 }
 
 /** Disconnect the session; safe to call when already disconnected. */

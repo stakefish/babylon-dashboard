@@ -2,6 +2,15 @@ import { typescriptConfig } from "@internal/eslint-config/typescript";
 import { defineConfig } from "eslint/config";
 import tseslint from "typescript-eslint";
 
+const UNGUARDED_WASM_CLASS =
+  "/^Wasm(PeginTx|PrePeginTx|PeginPayoutConnector|PrePeginHtlcConnector)$/";
+const UNGUARDED_WASM_CLASS_MESSAGE =
+  "The engine classes WasmPeginTx, WasmPrePeginTx, WasmPeginPayoutConnector " +
+  "and WasmPrePeginHtlcConnector return values that the SDK does not check. " +
+  "Use the guarded builders in src/tbv/core/primitives instead. Only " +
+  "src/tbv/core/primitives/psbt/refund.ts may use these classes, because it " +
+  "cross-checks their output before it emits a PSBT.";
+
 export default defineConfig([
   ...typescriptConfig,
   {
@@ -22,15 +31,96 @@ export default defineConfig([
   {
     files: [
       "src/tbv/core/utils/utxo/selectUtxos.ts",
+      "src/tbv/core/utils/fee/constants.ts",
+      "src/tbv/core/utils/fee/peginFeeMath.ts",
+      "src/tbv/core/primitives/psbt/assertWasmPeginSizing.ts",
+      "src/tbv/core/primitives/psbt/constants.ts",
+      "src/tbv/core/primitives/psbt/pegin.ts",
+      "src/tbv/core/primitives/psbt/peginInput.ts",
+      "src/tbv/core/primitives/psbt/refund.ts",
+      "src/tbv/core/utils/transaction/fundPeginTransaction.ts",
       "src/tbv/core/primitives/psbt/payout.ts",
+      "src/tbv/core/services/deposit/signDepositorGraph.ts",
+      "src/tbv/core/vault-secrets/**/*.ts",
+      "src/tbv/core/wots/blockDerivation.ts",
+      "src/tbv/core/managers/PeginManager.ts",
       "src/tbv/integrations/aave/utils/vaultSplit.ts",
       "src/tbv/core/utils/signing.ts",
+      "src/tbv/core/clients/eth/pegin-transaction.ts",
+      "src/tbv/core/clients/eth/pegin-registration-client.ts",
+      "src/tbv/core/clients/eth/payout-script.ts",
+      "src/tbv/core/clients/eth/onChainBtcPubkey.ts",
+      "src/tbv/core/wasm/**/*.ts",
+      "src/tbv/core/services/delegated-claim/**/*.ts",
     ],
     ignores: ["**/__tests__/**", "**/*.test.{ts,tsx}"],
     rules: {
       "@typescript-eslint/no-explicit-any": "error",
       "@typescript-eslint/no-non-null-assertion": "error",
       "@typescript-eslint/ban-ts-comment": "error",
+    },
+  },
+  // LAZY WASM BOUNDARY - see the module JSDoc in src/tbv/core/wasm/index.ts.
+  // The optional engine peer is reachable only through src/tbv/core/wasm,
+  // which imports it dynamically. A value import anywhere else in src/ puts
+  // the engine back into every chunk that reaches the file, evaluated at
+  // import time. Type-only imports are erased, so they stay allowed. Tests
+  // read the engine directly on purpose - they are the differential oracle
+  // for the values the boundary re-exports, and are never bundled.
+  {
+    files: ["src/**/*.ts"],
+    ignores: ["src/tbv/core/wasm/**", "**/__tests__/**", "**/*.test.{ts,tsx}"],
+    rules: {
+      "@typescript-eslint/no-restricted-imports": [
+        "error",
+        {
+          patterns: [
+            {
+              group: [
+                "@babylonlabs-io/babylon-tbv-rust-wasm",
+                "@babylonlabs-io/babylon-tbv-rust-wasm/*",
+              ],
+              allowTypeImports: true,
+              message:
+                "Reach the vault WASM engine through src/tbv/core/wasm, which loads it lazily.",
+            },
+          ],
+        },
+      ],
+    },
+  },
+  // UNGUARDED WASM CLASSES - see CLAUDE.md > "WASM boundary (value computation)".
+  // loadTbvWasm() returns the engine module, which includes the wasm-bindgen
+  // classes. The classes have no value guards. The import ban above cannot see
+  // a class that a file takes from that module. Only refund.ts may take one,
+  // because it cross-checks the class output. Tests replace class methods on
+  // purpose - they prove the refund.ts checks.
+  {
+    files: ["src/**/*.ts"],
+    ignores: [
+      "src/tbv/core/primitives/psbt/refund.ts",
+      "**/__tests__/**",
+      "**/*.test.{ts,tsx}",
+    ],
+    rules: {
+      "no-restricted-syntax": [
+        "error",
+        {
+          selector: `ObjectPattern > Property:matches([key.name=${UNGUARDED_WASM_CLASS}], [key.value=${UNGUARDED_WASM_CLASS}])`,
+          message: UNGUARDED_WASM_CLASS_MESSAGE,
+        },
+        {
+          selector: `MemberExpression:matches([property.name=${UNGUARDED_WASM_CLASS}], [property.value=${UNGUARDED_WASM_CLASS}])`,
+          message: UNGUARDED_WASM_CLASS_MESSAGE,
+        },
+      ],
+    },
+  },
+  // Keep every type-only import in the top-level `import type` form.
+  {
+    files: ["src/**/*.ts"],
+    rules: {
+      "@typescript-eslint/no-import-type-side-effects": "error",
     },
   },
   {

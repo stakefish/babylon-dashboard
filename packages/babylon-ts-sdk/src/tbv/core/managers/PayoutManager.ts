@@ -23,6 +23,7 @@ import {
   validateWalletPubkey,
   type Network,
 } from "../primitives";
+import { DEPOSITOR_SIGNED_INPUT_COUNT } from "../primitives/psbt/constants";
 import { createTaprootScriptPathSignOptions } from "../utils/signing";
 
 /** Payout PSBTs are signed by the depositor on input 0 (Taproot script-path). */
@@ -140,7 +141,7 @@ interface SignPayoutBaseParams {
 /**
  * Parameters for signing a Payout transaction.
  *
- * Payout is used in the challenge path after Assert, when the claimer proves validity.
+ * Payout ends two of the peg-out paths; see {@link buildPayoutPsbt} for all of them.
  * Input 1 references the Assert transaction.
  */
 export interface SignPayoutParams extends SignPayoutBaseParams {
@@ -265,7 +266,10 @@ export class PayoutManager {
     // Sign PSBT via wallet (Taproot script-path spend, input 0 only)
     const signedPsbtHex = await this.config.btcWallet.signPsbt(
       payoutPsbt.psbtHex,
-      createTaprootScriptPathSignOptions(walletPubkeyRaw, 1),
+      createTaprootScriptPathSignOptions(
+        walletPubkeyRaw,
+        DEPOSITOR_SIGNED_INPUT_COUNT,
+      ),
     );
 
     assertPsbtUnsignedTxMatches({
@@ -369,7 +373,12 @@ export class PayoutManager {
         vpCommissionScriptPubKey: tx.vpCommissionScriptPubKey,
       });
       psbtsToSign.push(payoutPsbt.psbtHex);
-      signOptions.push(createTaprootScriptPathSignOptions(walletPubkeyRaw, 1));
+      signOptions.push(
+        createTaprootScriptPathSignOptions(
+          walletPubkeyRaw,
+          DEPOSITOR_SIGNED_INPUT_COUNT,
+        ),
+      );
     }
 
     // Batch sign all PSBTs with single wallet interaction

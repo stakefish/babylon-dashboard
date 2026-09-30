@@ -1,4 +1,4 @@
-import { useMemo, type PropsWithChildren, type ReactNode } from "react";
+import { useEffect, useMemo, useRef, type PropsWithChildren, type ReactNode } from "react";
 
 import { ONE_HOUR } from "@/constants";
 import { ChainConfigArr, ChainProvider, type ChainMetadataMap } from "@/context/Chain.context";
@@ -6,6 +6,7 @@ import { LifeCycleHooksProvider, type LifeCycleHooksProps } from "@/context/Life
 import { TomoConnectionProvider } from "@/context/TomoProvider";
 import { createAccountStorage } from "@/core/storage";
 import type { BBNConfig, BTCConfig, ChainId, ETHConfig } from "@/core/types";
+import { validateAddress, validateAddressWithPK } from "@/core/utils/wallet";
 import chainMetadata from "@/core/wallets";
 import { initializeAppKitModal, type AppKitModalConfig } from "@/core/wallets/appkit/appKitModal";
 import { useAppKitOpenListener } from "@/hooks/appkit/useAppKitOpenListener";
@@ -35,6 +36,7 @@ function deriveNetworkMap(config: Readonly<ChainConfigArr>): Record<string, stri
 }
 
 const metadata: ChainMetadataMap = chainMetadata;
+const btcValidation = { validateAddress, validateAddressWithPK };
 
 export interface WalletProviderProps {
   ttl?: number;
@@ -63,6 +65,8 @@ export interface WalletProviderProps {
   dialogCloseButtonClassName?: string;
   /** Overrides the wallet dialog's `dialogActions` slot default `right-4` position. */
   dialogActionsClassName?: string;
+  /** A short line under each chain's name on the connect screen that says why the app needs that wallet. */
+  chainDescriptions?: Partial<Record<ChainId, string>>;
 }
 
 export function WalletProvider({
@@ -81,26 +85,50 @@ export function WalletProvider({
   dialogActions,
   dialogCloseButtonClassName,
   dialogActionsClassName,
+  chainDescriptions,
 }: PropsWithChildren<WalletProviderProps>) {
   const networkMap = useMemo(() => deriveNetworkMap(config), [config]);
   const storage = useMemo(() => createAccountStorage(ttl, networkMap), [ttl, networkMap]);
 
   // Initialize unified AppKit modal synchronously before render (only if config provided)
   // This ensures both wagmi and bitcoin configs are available before children mount
-  useMemo(() => {
+  const appKitInitializationFailure = useMemo(() => {
     if (!appKitConfig) {
-      return;
+      return null;
     }
 
     try {
       // Initialize AppKit with the unified config
       // Config may have eth and/or btc properties
       initializeAppKitModal(appKitConfig);
+      return null;
     } catch (error) {
-      console.error("Failed to initialize AppKit modal:", error instanceof Error ? error.message : "Unknown error");
+      return {
+        error: error instanceof Error ? error : new Error("Failed to initialize AppKit modal", { cause: error }),
+      };
     }
   }, [appKitConfig]);
 
+  const reportedAppKitFailure = useRef<typeof appKitInitializationFailure>(null);
+  const loggedAppKitFailure = useRef<typeof appKitInitializationFailure>(null);
+
+  useEffect(() => {
+    if (!appKitInitializationFailure) {
+      reportedAppKitFailure.current = null;
+      loggedAppKitFailure.current = null;
+      return;
+    }
+
+    if (loggedAppKitFailure.current !== appKitInitializationFailure) {
+      loggedAppKitFailure.current = appKitInitializationFailure;
+      console.error("Failed to initialize AppKit modal:", appKitInitializationFailure.error.message);
+    }
+
+    if (!onError || reportedAppKitFailure.current === appKitInitializationFailure) return;
+
+    reportedAppKitFailure.current = appKitInitializationFailure;
+    onError(appKitInitializationFailure.error);
+  }, [appKitInitializationFailure, onError]);
 
   // Listen for requests to open the AppKit modal (triggered by connectors)
   // This hook gracefully handles cases where AppKit is not initialized
@@ -126,6 +154,7 @@ export function WalletProvider({
           </>
         )}
         <WalletDialog
+          btcValidation={btcValidation}
           persistent={persistent}
           storage={storage}
           config={config}
@@ -133,6 +162,7 @@ export function WalletProvider({
           actions={dialogActions}
           closeButtonClassName={dialogCloseButtonClassName}
           actionsClassName={dialogActionsClassName}
+          chainDescriptions={chainDescriptions}
         />
       </ChainProvider>
     </LifeCycleHooksProvider>
