@@ -10,10 +10,18 @@ type ErrorContext = {
   data?: Record<string, Value | Value[]>;
 };
 
-export default {
-  info: (message: string, { category, ...data }: Context = {}) =>
+interface Logger {
+  info(message: string, context?: Context): void;
+  warn(message: string, context?: Context): void;
+  error(error: Error, context?: ErrorContext): void;
+}
+
+const logger: Logger = {
+  info: (message, { category, ...data } = {}) =>
     console.info(`[${category ?? "info"}]`, message, data),
-  warn: (message: string, { category, ...data }: Context = {}) =>
+  warn: (message, { category, ...data } = {}) =>
     console.warn(`[${category ?? "warn"}]`, message, data),
-  error: (error: Error, _context: ErrorContext = {}) => console.error(error),
+  error: (error) => console.error(error),
 };
+
+export default logger;

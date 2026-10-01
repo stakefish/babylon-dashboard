@@ -23,7 +23,7 @@ const logger: Logger = {
     console.info(`[${category ?? "info"}]`, message, data),
   warn: (message, { category, ...data } = {}) =>
     console.warn(`[${category ?? "warn"}]`, message, data),
-  error: (error, _context = {}) => {
+  error: (error) => {
     console.error(error);
     return error.message;
   },
