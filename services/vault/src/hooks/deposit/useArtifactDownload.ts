@@ -47,6 +47,8 @@ import {
   saveArtifactDownloadReceipt,
   saveGraphMismatch,
 } from "@/utils/artifactDownloadStorage";
+import { postRegistrationWalletErrorMessage } from "@/utils/errors";
+import { getVpProxyUrl } from "@/utils/rpc";
 
 const ARTIFACT_RETRY_INTERVAL_MS = 10_000;
 
@@ -261,6 +263,28 @@ export function useArtifactDownload(options?: {
       }
       const signedGraphFingerprint = signedGraph.fingerprint;
 
+      // An address with no proxy URL would fail only inside the fetch, after
+      // the save dialog, with a raw error. Stop here with copy the card shows.
+      // The demo never reaches a VP, so it needs no URL.
+      if (!demoDownload) {
+        try {
+          getVpProxyUrl(providerAddress);
+        } catch (err) {
+          abortControllerRef.current?.abort();
+          captureFunnelFailure(
+            TELEMETRY_STAGE.ACTIVATION_ARTIFACTS,
+            err,
+            telemetryVaultId,
+            { tags: { site: "vp_proxy_url" } },
+          );
+          setState({
+            ...INITIAL_STATE,
+            error: COPY.deposit.recoveryArtifacts.vaultProviderUnreachable,
+          });
+          return;
+        }
+      }
+
       if (!demoDownload && !hasCachedToken && !requireBtcWallet()) {
         // Mark any in-flight download stale, as `cancel` does, so it settles
         // silently instead of overwriting this error.
@@ -420,9 +444,10 @@ export function useArtifactDownload(options?: {
             { tags: { site: "prime" } },
           );
           setError(
-            primeErr instanceof Error
-              ? primeErr.message
-              : COPY.deposit.recoveryArtifacts.authenticationFailed,
+            postRegistrationWalletErrorMessage(
+              primeErr,
+              COPY.deposit.recoveryArtifacts.authenticationFailed,
+            ),
           );
           return false;
         }
@@ -621,9 +646,10 @@ export function useArtifactDownload(options?: {
                 { tags: { site: "reprime" } },
               );
               setError(
-                primeErr instanceof Error
-                  ? primeErr.message
-                  : COPY.deposit.recoveryArtifacts.reauthenticationFailed,
+                postRegistrationWalletErrorMessage(
+                  primeErr,
+                  COPY.deposit.recoveryArtifacts.reauthenticationFailed,
+                ),
               );
               return;
             }

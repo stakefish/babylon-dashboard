@@ -17,7 +17,6 @@ import {
   type DepositTerms,
   type PrePeginApprovalWallet,
 } from "@babylonlabs-io/ts-sdk/tbv/core";
-import { getTxHex } from "@babylonlabs-io/ts-sdk/tbv/core/clients";
 import {
   assertPsbtUnsignedTxMatches,
   assertReturnedKeyPathSignatures,
@@ -27,16 +26,13 @@ import { Psbt, Transaction } from "bitcoinjs-lib";
 import { Buffer } from "buffer";
 
 import { COPY } from "@/copy";
-import { logger } from "@/infrastructure";
 
-import {
-  getBitcoinObserverApiUrl,
-  getMempoolApiUrl,
-} from "../../clients/btc/config";
+import { getMempoolApiUrl } from "../../clients/btc/config";
 import {
   isDepositorBtcKeyMismatchError,
   isDepositorWalletMismatchError,
 } from "../../utils/errors/depositorWalletMismatch";
+import { isDeviceCeremonyInvalidError } from "../../utils/errors/deviceErrors";
 
 import { fetchUTXOFromMempool } from "./vaultUtxoDerivationService";
 
@@ -82,14 +78,6 @@ export interface BroadcastPrePeginParams {
   unsignedTxHex: string;
 
   /**
-   * Pre-PegIn tx hash committed by the registered Ethereum vault(s). The
-   * finalized Bitcoin transaction, broadcast acknowledgement, and independent
-   * Bitcoin observation must all resolve to this txid before the broadcast is
-   * considered successful.
-   */
-  registeredPrePeginTxHash: string;
-
-  /**
    * BTC wallet provider with signing capability. May also implement the
    * intent-approval methods (`deriveContextHash`/`approveDepositTerms`); when it
    * does, `depositTerms` is required and the approval ceremony runs before
@@ -106,6 +94,13 @@ export interface BroadcastPrePeginParams {
    * (but still txid-validated) for non-approval wallets.
    */
   depositTerms?: DepositTerms;
+
+  /**
+   * The owning flow's abort signal. Once aborted, a lost-intent failure is not
+   * retried: the retry would open a fresh approval on the device for a flow
+   * the depositor has left.
+   */
+  signal?: AbortSignal;
 
   /**
    * Depositor's BTC public key (x-only format, 32 bytes hex)
@@ -326,6 +321,20 @@ async function signAndFinalizePsbt(
 
 const STAGE_FAILED = COPY.deposit.errors.prePeginStageFailed;
 
+/**
+ * Ceremony + sign attempts for an intent wallet. The second attempt exists
+ * for a device that lost its approved intent between the ceremony and the
+ * sign — a Ledger that left the vault app for the Ethereum app to sign the
+ * registration. The retry is keyed on the typed code, DEVICE_CEREMONY_INVALID,
+ * which the Ledger provider also raises for any other state the device can
+ * no longer continue from (a rejected intent state, an exhausted signature
+ * cap, a SIGN_PSBT protocol or yield mismatch). Each of those is recovered
+ * the same way, by a fresh derive → approve → sign with the user approving on
+ * the device again, and nothing has been broadcast before this point. Any
+ * other failure, or a second one, surfaces.
+ */
+const MAX_PRE_PEGIN_CEREMONY_ATTEMPTS = 2;
+
 // The labels route mapDepositError; `cause` keeps typed wallet rejections
 // visible to isUserCancellation's cause walk.
 function stageError(label: string, error: unknown): Error {
@@ -333,78 +342,54 @@ function stageError(label: string, error: unknown): Error {
   return new Error(`${label}: ${message}`, { cause: error });
 }
 
-const CANONICAL_TXID_RE = /^[0-9a-f]{64}$/;
-
-function normalizeRegisteredTxid(hash: string): string {
-  const txid = hash.startsWith("0x") ? hash.slice(2) : hash;
-  if (!/^[0-9a-fA-F]{64}$/.test(txid)) {
-    throw new Error("Registered Pre-PegIn hash is not a 32-byte hex txid");
-  }
-  return txid.toLowerCase();
-}
-
-export interface ObservePrePeginTransactionParams {
-  unsignedTxHex: string;
-  registeredPrePeginTxHash: string;
-  /**
-   * Who to ask. Defaults to the independent observer. `"broadcaster"` asks
-   * the mempool API that relayed the transaction.
-   */
-  source?: "observer" | "broadcaster";
-}
-
 /**
- * Check whether a Bitcoin data provider can see the registered Pre-PegIn
- * transaction.
- *
- * This is a reconcile shortcut, not a safety gate: the UTXO check and the
- * acknowledgement check still fail closed. So any read failure (404, outage,
- * rate limit) is "not observed", and the caller goes on to the normal
- * broadcast path. A response that resolves to a different txid is "not
- * observed" too: throwing would block every retry. Both cases log a warning,
- * so a misconfigured or unreachable observer does not go unnoticed.
+ * Intent-wallet ceremony (derive → approve) immediately before signing, with
+ * one fresh ceremony after a lost intent ({@link MAX_PRE_PEGIN_CEREMONY_ATTEMPTS}).
+ * The ceremony is a no-op for wallets that do not support deposit approval,
+ * and those never retry.
  */
-export async function isPrePeginTransactionObserved(
-  params: ObservePrePeginTransactionParams,
-): Promise<boolean> {
+async function approveAndSignPrePegin(params: {
+  psbtHex: string;
+  unsignedTxHex: string;
+  btcWalletProvider: BroadcastPrePeginParams["btcWalletProvider"];
+  depositorBtcPubkey: string;
+  depositTerms: BroadcastPrePeginParams["depositTerms"];
+  signal: BroadcastPrePeginParams["signal"];
+}): Promise<string> {
   const {
+    psbtHex,
     unsignedTxHex,
-    registeredPrePeginTxHash,
-    source = "observer",
+    btcWalletProvider,
+    depositorBtcPubkey,
+    depositTerms,
+    signal,
   } = params;
-  const apiUrl =
-    source === "broadcaster" ? getMempoolApiUrl() : getBitcoinObserverApiUrl();
-  const registeredTxid = normalizeRegisteredTxid(registeredPrePeginTxHash);
-  const cleanHex = unsignedTxHex.startsWith("0x")
-    ? unsignedTxHex.slice(2)
-    : unsignedTxHex;
-  const expectedTransaction = Transaction.fromHex(cleanHex);
-  if (expectedTransaction.getId() !== registeredTxid) {
-    throw new Error(
-      `Pre-PegIn txid ${expectedTransaction.getId()} does not match registered hash ${registeredTxid}`,
-    );
+  const isIntentWallet =
+    typeof btcWalletProvider.approveDepositTerms === "function";
+  for (let attempt = 1; ; attempt++) {
+    try {
+      await ensurePrePeginTermsApproval({
+        wallet: btcWalletProvider,
+        depositTerms,
+        fundedPrePeginTxHex: unsignedTxHex,
+        depositorBtcPubkey,
+      });
+      return await signAndFinalizePsbt(
+        psbtHex,
+        btcWalletProvider,
+        isIntentWallet,
+      );
+    } catch (error) {
+      // A flow the depositor has left must not open a fresh approval on the
+      // device: the retry is itself a device prompt.
+      const retry =
+        isIntentWallet &&
+        attempt < MAX_PRE_PEGIN_CEREMONY_ATTEMPTS &&
+        signal?.aborted !== true &&
+        isDeviceCeremonyInvalidError(error);
+      if (!retry) throw error;
+    }
   }
-
-  let observedTxid: string;
-  try {
-    observedTxid = Transaction.fromHex(
-      await getTxHex(registeredTxid, apiUrl),
-    ).getId();
-  } catch (error) {
-    logger.warn(
-      `[isPrePeginTransactionObserved] ${source} read failed for ${registeredTxid}`,
-      { error: error instanceof Error ? error.message : String(error) },
-    );
-    return false;
-  }
-
-  if (observedTxid !== registeredTxid) {
-    logger.warn(
-      `[isPrePeginTransactionObserved] ${source} returned txid ${observedTxid}, expected ${registeredTxid}`,
-    );
-    return false;
-  }
-  return true;
 }
 
 /**
@@ -420,16 +405,15 @@ export async function broadcastPrePeginTransaction(
 ): Promise<string> {
   const {
     unsignedTxHex,
-    registeredPrePeginTxHash,
     btcWalletProvider,
     depositorBtcPubkey,
     expectedUtxos,
     depositTerms,
+    signal,
   } = params;
 
   // Stage 1: prepare.
   let psbt: Psbt;
-  let registeredTxid: string;
   try {
     const cleanHex = unsignedTxHex.startsWith("0x")
       ? unsignedTxHex.slice(2)
@@ -438,14 +422,6 @@ export async function broadcastPrePeginTransaction(
 
     if (tx.ins.length === 0) {
       throw new Error("Transaction has no inputs");
-    }
-
-    registeredTxid = normalizeRegisteredTxid(registeredPrePeginTxHash);
-    const unsignedTxid = tx.getId();
-    if (unsignedTxid !== registeredTxid) {
-      throw new Error(
-        `Pre-PegIn txid ${unsignedTxid} does not match registered hash ${registeredTxid}`,
-      );
     }
 
     // Convert to PSBT with proper input fields
@@ -459,29 +435,15 @@ export async function broadcastPrePeginTransaction(
 
   // Stage 2: sign. Includes the ceremony so device failures read as signing.
   let signedTxHex: string;
-  let signedTxid: string;
   try {
-    // Intent-wallet ceremony (derive → approve) immediately before signing.
-    // No-op for wallets that do not support deposit approval.
-    await ensurePrePeginTermsApproval({
-      wallet: btcWalletProvider,
-      depositTerms,
-      fundedPrePeginTxHex: unsignedTxHex,
-      depositorBtcPubkey,
-    });
-
-    signedTxHex = await signAndFinalizePsbt(
-      psbt.toHex(),
+    signedTxHex = await approveAndSignPrePegin({
+      psbtHex: psbt.toHex(),
+      unsignedTxHex,
       btcWalletProvider,
-      typeof btcWalletProvider.approveDepositTerms === "function",
-    );
-    const signedTransaction = Transaction.fromHex(signedTxHex);
-    signedTxid = signedTransaction.getId();
-    if (signedTxid !== registeredTxid) {
-      throw new Error(
-        `Finalized Pre-PegIn txid ${signedTxid} does not match registered hash ${registeredTxid}`,
-      );
-    }
+      depositorBtcPubkey,
+      depositTerms,
+      signal,
+    });
   } catch (error) {
     // The device-envelope rejection and the caller's `signPsbt` depositor
     // re-checks are typed, user-actionable refusals: pass them unwrapped.
@@ -497,22 +459,7 @@ export async function broadcastPrePeginTransaction(
 
   // Stage 3: broadcast. Only the network POST may carry the broadcast label.
   try {
-    const apiUrl = getMempoolApiUrl();
-    const acknowledgement = await pushTx(signedTxHex, apiUrl);
-    if (!CANONICAL_TXID_RE.test(acknowledgement)) {
-      throw new Error(
-        "Broadcast service returned a non-canonical transaction acknowledgement",
-      );
-    }
-    if (acknowledgement !== signedTxid || acknowledgement !== registeredTxid) {
-      throw new Error(
-        `Broadcast acknowledgement ${acknowledgement} does not match expected txid ${signedTxid}`,
-      );
-    }
-
-    // This acknowledgement is not Bitcoin observation. The dashboard's
-    // independent observer decides whether CONFIRMING may suppress rebroadcast.
-    return signedTxid;
+    return await pushTx(signedTxHex, getMempoolApiUrl());
   } catch (error) {
     throw stageError(STAGE_FAILED.broadcast, error);
   }

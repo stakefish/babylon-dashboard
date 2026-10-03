@@ -94,6 +94,9 @@ const DEVICE_WRONG_APP_TITLE = "Wrong app on device";
 // and "Babylon Vault Testnet" on test networks.
 const DEVICE_WRONG_APP_BODY =
   "A different app is open on your signing device. Open the Babylon Vault app for this network and try again.";
+const DEVICE_DISCONNECTED_TITLE = "Signing device disconnected";
+const DEVICE_DISCONNECTED_BODY =
+  "Your signing device disconnected. Plug it in, unlock it, open the Babylon Vault app for this network, then reconnect it to continue.";
 // Action-required labels shared between the in-app badges
 // (`pegin.actionRequiredBadges`) and the browser-notification titles so the two
 // surfaces can't drift.
@@ -186,8 +189,6 @@ export const COPY = {
         "Vault provider is waiting for your WOTS public key. Click 'Submit WOTS Key' to continue.",
       broadcastMayHaveFailed:
         "Vault provider has not detected your deposit. The Pre-Pegin transaction may not have been broadcast. Click 'Broadcast' to retry.",
-      prePeginAwaitingObservation:
-        "Pre-Pegin transaction has been sent. Waiting for Bitcoin to show it. If this message stays, click 'Broadcast' to retry.",
       payoutsReadyForSigning:
         "Vault provider has prepared payout transactions. Click 'Sign Payouts' to pre-authorize your Bitcoin claim transactions.",
       prePeginBroadcast:
@@ -548,6 +549,40 @@ export const COPY = {
       verifyingDeposit: "Verifying signatures and collecting ACKs",
       confirmingActivation: "Confirming activation",
     },
+    // Ledger vault wallet only. One Ledger can hold both the
+    // depositor's Bitcoin key (Babylon Vault app) and, through a wallet such as
+    // MetaMask, their Ethereum account (Ethereum app). The device runs one app
+    // at a time, so these tell the depositor when to switch. The dApp cannot
+    // see whether the Ethereum account is on the same Ledger, so every
+    // Ethereum-side hint is conditional. Network-agnostic like
+    // DEVICE_WRONG_APP_BODY, except where the provider supplies the app name.
+    ledger: {
+      waitingForApp: {
+        title: (appName: string) => `Open the ${appName} app on your Ledger`,
+        body: "Unlock your Ledger if it is locked. This continues automatically once the app is open.",
+        cancel: "Cancel",
+      },
+      reapproveNotice:
+        "Switching apps clears the deposit approval on your Ledger, so it will ask you to approve this deposit again before signing.",
+      ethAppHint:
+        "If your Ethereum account is on this Ledger, open the Ethereum app on it to confirm this transaction.",
+      switchBackHint:
+        "A Bitcoin signature comes next. If you switched to the Ethereum app, open the Babylon Vault app on your Ledger again.",
+      authenticateSession: "Approve the vault provider session on your Ledger",
+      approvalBudget:
+        "With a Ledger, you approve several requests in the Babylon Vault app. If your Ethereum account is on the same Ledger, you also confirm the Ethereum transactions in the Ethereum app: the registration, and each BTCVault's activation.",
+      longWait:
+        "You can close this window and continue later. When you come back, plug in and unlock your Ledger and open the Babylon Vault app.",
+      activationPause: {
+        hint: "Secret retrieved. If your Ethereum account is on this Ledger, open the Ethereum app on it now, then select Continue.",
+        continue: "Continue",
+      },
+      reconnectButton: "Reconnect Ledger",
+      reconnectFailed:
+        "Couldn't reconnect your Ledger. Plug it in, unlock it and open the Babylon Vault app — update the app in Ledger Wallet if it is out of date — then choose your Ledger when your browser asks and try again.",
+      secretNotHeld:
+        "The retrieved secret is no longer available. Try again to retrieve it from your Ledger.",
+    },
     broadcastSuccess: {
       heading: "Pre-Pegin Broadcast",
       body: (amount: string, symbol: string) =>
@@ -730,6 +765,10 @@ export const COPY = {
       doNotCloseHint: "Do not close this window while downloading.",
       cannotAuthenticate:
         "Cannot authenticate with the vault provider. Please refresh and try again.",
+      // The deposit's vault provider address could not be turned into a
+      // proxy URL (malformed address or missing proxy configuration).
+      vaultProviderUnreachable:
+        "Cannot reach the vault provider for this deposit. Please refresh and try again.",
       // Progress/status lines surfaced in the card while the download hook
       // works through its fetch / re-auth / wait-for-signatures states.
       // The signature status shows while the cold-cache auth prime waits on
@@ -972,10 +1011,6 @@ export const COPY = {
         `Cannot continue: BTCVault is in ${state} state. This step is only valid while the BTCVault is PENDING.`,
       cannotBroadcastInOnChainState: (state: string) =>
         `Cannot continue: on-chain BTCVault is in ${state} state. This step is only valid while the vault is PENDING.`,
-      // A sibling id in the resumed batch is not a hex vault id. The record
-      // is malformed, so a retry cannot fix it.
-      invalidBatchVaultId: (vaultId: string) =>
-        `Cannot continue: this deposit lists an invalid BTCVault ID (${vaultId}). Refresh the page and try again.`,
       // Resume refuses a vault record with no depositor Bitcoin key. A wallet
       // reconnect cannot fix a malformed record, so this is not a mismatch.
       depositorBtcKeyMissing:
@@ -1229,6 +1264,10 @@ export const COPY = {
         title: "Wallet action not supported",
         body: "Your connected wallet can't perform an action this deposit requires. Please reconnect with a supported wallet and try again.",
       },
+      walletAccountNotSupported: {
+        title: "Account can't be used",
+        body: "The account selected in your wallet can't create the deposit secret. Switch to an account created from a recovery phrase or a private key, then try again.",
+      },
       // Typed device-state codes from the hardware-wallet provider; wording
       // shared with payoutSignatureErrors via the DEVICE_* constants above.
       deviceCeremonyInvalid: {
@@ -1242,6 +1281,10 @@ export const COPY = {
       deviceWrongApp: {
         title: DEVICE_WRONG_APP_TITLE,
         body: DEVICE_WRONG_APP_BODY,
+      },
+      deviceDisconnected: {
+        title: DEVICE_DISCONNECTED_TITLE,
+        body: DEVICE_DISCONNECTED_BODY,
       },
       // Vault-provider JSON-RPC error copy, consumed by `mapVpRpcError`
       // (utils/errors/formatting.ts). Title + message are both user-facing.
@@ -1397,6 +1440,11 @@ export const COPY = {
         message:
           "Your connected wallet can't perform an action this deposit requires, and the deposit can only continue with the wallet that created it. Try again after updating the app or that wallet, or contact support.",
       },
+      walletAccountNotSupported: {
+        title: "Account can't be used",
+        message:
+          "The account selected in your wallet can't create the deposit secret. Select the account that created this deposit, in the wallet you used to create it, then try again.",
+      },
       // Typed device-state codes from the hardware-wallet provider; wording
       // shared with deposit.errors via the DEVICE_* constants above.
       deviceCeremonyInvalid: {
@@ -1410,6 +1458,10 @@ export const COPY = {
       deviceWrongApp: {
         title: DEVICE_WRONG_APP_TITLE,
         message: DEVICE_WRONG_APP_BODY,
+      },
+      deviceDisconnected: {
+        title: DEVICE_DISCONNECTED_TITLE,
+        message: DEVICE_DISCONNECTED_BODY,
       },
       unexpected: {
         title: PAYOUT_SIGNING_ERROR_TITLE,
@@ -1534,6 +1586,8 @@ export const COPY = {
         "Your BTC wallet did not return an address. Please reconnect your wallet and try again.",
       addressMismatch:
         "Your BTC wallet account has changed. Please reconnect your wallet and try again.",
+      checkFailed:
+        "BTC wallet check failed. Please reconnect your wallet and try again.",
     },
     locked: {
       title: "Bitcoin wallet is locked",
@@ -2204,6 +2258,19 @@ export const COPY = {
     },
     reset: "Reset",
     eventTitle: (eventNumber: number) => `Liq Event ${eventNumber}`,
+    // Borrow-flow liquidation preview (applications/aave/components/LoanCard/
+    // Borrow/LiquidationPreview.tsx). Its bands are wider than the dashboard's,
+    // so they name the event in full and list the BTCVaults it seizes.
+    preview: {
+      title: "Liquidation preview",
+      totalCollateralLabel: "Total Collateral",
+      totalCollateralValue: (collateral: string, vaults: number) =>
+        `${collateral} (${vaults} ${vaults === 1 ? "vault" : "vaults"})`,
+      bandLabel: (eventNumber: number, vaultAmounts: string) =>
+        `Liquidation Event ${eventNumber} | ${vaultAmounts} BTCVaults`,
+      legendPrice: "Oracle BTC Price",
+      legendLiquidation: "Liq price",
+    },
     // Screen-reader-only. The band no longer draws this line, but the vault
     // names still belong in the focusable rect's accessible name.
     containVaults: (names: string) => `(contain ${names})`,

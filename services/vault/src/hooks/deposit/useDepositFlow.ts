@@ -116,8 +116,10 @@ import {
   isResumableDepositError,
   mapDepositError,
   mapDepositErrorAfterRegistration,
+  postRegistrationWalletErrorMessage,
   type DepositErrorContent,
 } from "@/utils/errors";
+import { isDeviceWrongAppError } from "@/utils/errors/deviceErrors";
 import {
   isUserCancellation,
   WALLET_CONNECTION_REJECTED_CODE,
@@ -250,6 +252,11 @@ export interface UseDepositFlowReturn {
    * only after the user finishes or rejects on the physical device.
    */
   cancelDeviceSign: () => void;
+  /**
+   * Records that the depositor cancelled a held device-app wait, so the
+   * multi-vault loops treat the resulting rejection as a stop.
+   */
+  markDeviceWaitCanceled: () => void;
 }
 
 export interface PeginCreationResult {
@@ -1003,18 +1010,13 @@ export function useDepositFlow(
           try {
             addPendingPegin(confirmedEthAddress, pendingRecord);
           } catch (persistErr) {
-            logger.error(
-              persistErr instanceof Error
-                ? persistErr
-                : new Error(String(persistErr)),
-              {
-                tags: {
-                  component: "useDepositFlow",
-                  phase: "persist-pending-pegin",
-                },
-                data: { vaultId: peginResult.vaultId },
+            logger.error(persistErr, {
+              tags: {
+                component: "useDepositFlow",
+                phase: "persist-pending-pegin",
               },
-            );
+              data: { vaultId: peginResult.vaultId },
+            });
             if (!warnings.some((w) => w.stage === "persistence")) {
               recordWarning({
                 stage: "persistence",
@@ -1139,7 +1141,7 @@ export function useDepositFlow(
         // No re-wrap: a wrapper here would replace the service's stage label.
         const prePeginBroadcastTxid = await broadcastPrePeginTransaction({
           unsignedTxHex: batchResult.fundedPrePeginTxHex,
-          registeredPrePeginTxHash: batchResult.depositTerms.prepeginTxid,
+          signal,
           btcWalletProvider: {
             signPsbt: async (psbtHex: string) => {
               const signedPsbtHex = await runCancellableSign(
@@ -1441,6 +1443,9 @@ export function useDepositFlow(
             } catch (error) {
               // Re-throw abort errors so they're suppressed by the outer catch
               if (signal.aborted) throw error;
+              // The depositor cancelled a held device wait: stop instead of
+              // retrying (or moving to the next vault) into the same prompt.
+              if (deviceCancelSettledRef.current) throw error;
 
               if (attempt < MAX_WOTS_ATTEMPTS) {
                 // submitWotsPublicKey is idempotent — if the VP already accepted
@@ -1452,8 +1457,10 @@ export function useDepositFlow(
                 continue;
               }
 
-              const errorMsg =
-                error instanceof Error ? error.message : String(error);
+              const errorMsg = postRegistrationWalletErrorMessage(
+                error,
+                String(error),
+              );
               recordWarning({
                 vaultId: result.vaultId,
                 stage: "wots",
@@ -1463,22 +1470,18 @@ export function useDepositFlow(
                   errorMsg,
                 ),
               });
-              logger.error(
-                error instanceof Error ? error : new Error(String(error)),
-                {
-                  // Tagged so the Sentry-side cancellation drop keeps it: the
-                  // loop continues to the next vault, so a rejected prompt here
-                  // leaves THIS vault without its WOTS key while the deposit
-                  // proceeds. That partial state is the reportable event even
-                  // though the cause is a user cancellation.
-                  tags: { partialFailure: "multi-vault" },
-                  data: {
-                    context:
-                      "[Multi-Vault] Failed to submit WOTS key for vault",
-                    vaultId: result.vaultId,
-                  },
+              logger.error(error, {
+                // Tagged so the Sentry-side cancellation drop keeps it: the
+                // loop continues to the next vault, so a rejected prompt here
+                // leaves THIS vault without its WOTS key while the deposit
+                // proceeds. That partial state is the reportable event even
+                // though the cause is a user cancellation.
+                tags: { partialFailure: "multi-vault" },
+                data: {
+                  context: "[Multi-Vault] Failed to submit WOTS key for vault",
+                  vaultId: result.vaultId,
                 },
-              );
+              });
             }
           }
 
@@ -1638,8 +1641,10 @@ export function useDepositFlow(
               continue;
             }
 
-            const errorMsg =
-              error instanceof Error ? error.message : String(error);
+            const errorMsg = postRegistrationWalletErrorMessage(
+              error,
+              String(error),
+            );
             recordWarning({
               vaultId: result.vaultId,
               stage: "payout",
@@ -1649,21 +1654,18 @@ export function useDepositFlow(
                 errorMsg,
               ),
             });
-            logger.error(
-              error instanceof Error ? error : new Error(String(error)),
-              {
-                // See the WOTS site above: the loop continues, so a rejected
-                // prompt leaves this vault under-signed while the deposit
-                // proceeds. Exempt from the cancellation drop.
-                tags: { partialFailure: "multi-vault" },
-                data: {
-                  context:
-                    "[Multi-Vault] Failed to sign or submit payouts for vault",
-                  vaultId: result.vaultId,
-                  providerAddress: provider.id,
-                },
+            logger.error(error, {
+              // See the WOTS site above: the loop continues, so a rejected
+              // prompt leaves this vault under-signed while the deposit
+              // proceeds. Exempt from the cancellation drop.
+              tags: { partialFailure: "multi-vault" },
+              data: {
+                context:
+                  "[Multi-Vault] Failed to sign or submit payouts for vault",
+                vaultId: result.vaultId,
+                providerAddress: provider.id,
               },
-            );
+            });
             // Post-loop invariant: unsigned vaults rest at the payout wait,
             // not the mid-signing step onProgress last set.
             setPerVaultSteps((prev) =>
@@ -1711,8 +1713,12 @@ export function useDepositFlow(
 
         // Don't show error if flow was aborted (user intentionally closed modal)
         if (!signal.aborted) {
+          // A canceled app wait rejects with DEVICE_WRONG_APP once the wait
+          // was announced; after the settle that is our cancel, not a
+          // wrong-app failure.
           const selfCanceled =
-            deviceCancelSettledRef.current && isUserCancellation(err);
+            deviceCancelSettledRef.current &&
+            (isUserCancellation(err) || isDeviceWrongAppError(err));
           // A settled self-cancel gets its own copy — the generic mapper reads
           // the wallet's CONNECTION_REJECTED as "You rejected the request",
           // which misattributes it. Post-registration copy names the Retry
@@ -1747,7 +1753,7 @@ export function useDepositFlow(
             setResumableVaultIds(registeredVaultIds);
           }
           setError(content);
-          logger.error(err instanceof Error ? err : new Error(String(err)), {
+          logger.error(err, {
             tags: { depositStep: DepositFlowStep[currentStepRef.current] },
             data: {
               context: "Multi-vault deposit flow error",
@@ -1813,6 +1819,14 @@ export function useDepositFlow(
     provider.cancelSigning();
   }, []);
 
+  // The wait panel's Cancel ends a held device-app wait on the provider; the
+  // held operation then rejects with DEVICE_WRONG_APP, which is not a user
+  // cancellation. Recording the settle here is what makes the multi-vault
+  // loops stop instead of prompting the next vault for the same app.
+  const markDeviceWaitCanceled = useCallback(() => {
+    deviceCancelSettledRef.current = true;
+  }, []);
+
   // The ref is only ever set/cleared together with the `deviceSignActive`
   // state, so this render read stays in sync.
   const canCancelDeviceSign =
@@ -1837,5 +1851,6 @@ export function useDepositFlow(
     canCancelDeviceSign,
     deviceCancelRequested,
     cancelDeviceSign,
+    markDeviceWaitCanceled,
   };
 }
